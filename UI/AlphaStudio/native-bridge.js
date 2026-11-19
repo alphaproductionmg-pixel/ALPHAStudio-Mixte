@@ -5,6 +5,7 @@
   const backend = window.__JUCE__ && window.__JUCE__.backend;
   if (!A || !backend || typeof backend.getNativeFunction !== 'function') return;
   const nativeCall = backend.getNativeFunction('alphaCommand');
+  let lastUiSignature = '';
   const send = (name, data) => nativeCall(name, data || {});
   const nativeIndex = (id) => {
     const match = /^native_(\d+)$/.exec(String(id || ''));
@@ -16,6 +17,10 @@
     requestState: () => send('getState'),
     applyState(snapshot) {
       if (!snapshot || !Array.isArray(snapshot.tracks)) return;
+      const signature = JSON.stringify(snapshot.tracks.map(t => ({
+        name: t.name, volumeDb: t.volumeDb, pan: t.pan, mute: t.mute,
+        solo: t.solo, arm: t.arm, clips: (t.clips || []).map(c => [c.name, c.startBars, c.lengthBars])
+      })));
       const nativeTracks = snapshot.tracks.map((t, i) => ({
         id: 'native_' + i, kind: 'audio', num: String(i + 1).padStart(2, '0'),
         name: t.name || ('Audio ' + (i + 1)), h: 64,
@@ -31,9 +36,16 @@
           len: Math.max(0.01, Number(clip.lengthBars || 1)), type: 'audio', wave: 'native'
         });
       }));
-      A.TRACKS.splice(4, A.TRACKS.length - 4, ...nativeTracks);
-      A.PARTS.splice(0, A.PARTS.length, ...nativeParts);
+      if (signature !== lastUiSignature) {
+        A.TRACKS.splice(4, A.TRACKS.length - 4, ...nativeTracks);
+        A.PARTS.splice(0, A.PARTS.length, ...nativeParts);
+        A.state.selectedTrack = nativeTracks.length ? nativeTracks[0].id : null;
+        A.state.selTracks = nativeTracks.length ? [nativeTracks[0].id] : [];
+        lastUiSignature = signature;
+        A.refresh();
+      }
       A.state.pos = Number(snapshot.positionBars || 1);
+      A.goto(A.state.pos);
       A.state.bars = Math.max(84, ...nativeParts.map(p => p.start + p.len + 8));
       A.state.playing = !!snapshot.playing;
       A.state.recording = !!snapshot.recording;
@@ -41,7 +53,14 @@
       A.state.click = !!snapshot.metronome;
       A.state.cycleL = Number(snapshot.loopStartBars || 1);
       A.state.cycleR = Number(snapshot.loopEndBars || 9);
-      A.refresh();
+      const playButton = document.getElementById('tpPlay');
+      const recButton = document.getElementById('tpRec');
+      const cycleButton = document.getElementById('tpCycleBtn');
+      const clickButton = document.getElementById('tpClick');
+      if (playButton) playButton.classList.toggle('active', A.state.playing && !A.state.recording);
+      if (recButton) recButton.classList.toggle('active', A.state.recording);
+      if (cycleButton) cycleButton.classList.toggle('active', A.state.cycle);
+      if (clickButton) clickButton.classList.toggle('on', A.state.click);
       const status = document.getElementById('sbStatus');
       if (status && snapshot.device) status.textContent = snapshot.device;
     }
@@ -76,10 +95,11 @@
   });
 
   document.addEventListener('pointerup', (event) => {
-    const fader = event.target.closest('.tl-fader[data-track]');
-    if (!fader) return;
-    const index = nativeIndex(fader.dataset.track);
-    const track = A.trackById(fader.dataset.track);
+    const fader = event.target.closest('.tl-fader');
+    const row = fader && fader.closest('.tl-row[data-track]');
+    if (!row) return;
+    const index = nativeIndex(row.dataset.track);
+    const track = A.trackById(row.dataset.track);
     if (index >= 0 && track) send('setTrack', { index, field: 'volumeDb', value: Number(track.db || 0) });
   }, true);
 
