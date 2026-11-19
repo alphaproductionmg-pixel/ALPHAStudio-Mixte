@@ -96,7 +96,7 @@ public:
     {
         VST3PluginFormat fmt;
         PluginDirectoryScanner scanner (engine.knownPlugins, fmt, fmt.getDefaultLocationsToSearch(), true,
-                                        engine.appDataDir().getChildFile ("scan-crash.txt"));
+                                        engine.applicationDataDir().getChildFile ("scan-crash.txt"));
         String name;
         while (scanner.scanNextFile (true, name))
         {
@@ -471,7 +471,7 @@ public:
         bpmSlider.onValueChange = [this] { engine.transport.bpm.store (bpmSlider.getValue()); repaintAll(); };
 
         addAndMakeVisible (statusLabel); addAndMakeVisible (cpuLabel);
-        statusLabel.setFont (11.0f); cpuLabel.setFont (11.0f);
+        statusLabel.setFont (FontOptions (11.0f)); cpuLabel.setFont (FontOptions (11.0f));
         cpuLabel.setJustificationType (Justification::centredRight);
         statusLabel.setColour (Label::textColourId, Colour (0xff8f959d)); cpuLabel.setColour (Label::textColourId, Colour (0xff8f959d));
 

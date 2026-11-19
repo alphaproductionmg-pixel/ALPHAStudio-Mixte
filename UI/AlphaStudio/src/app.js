@@ -2547,6 +2547,16 @@
     if (!noScroll) ensureVisible();
   }
 
+  /* J1 : curseur piloté par une horloge audio. Contrairement à setPos(),
+     cette entrée ne quantifie pas la position : elle suit currentTime sans dérive. */
+  function setPlayhead(p, follow) {
+    const v = Number(p);
+    state.pos = Math.min(state.bars, Math.max(1, Number.isFinite(v) ? v : 1));
+    updateCursor();
+    if (follow !== false && state.autoScroll) ensureVisible();
+    return state.pos;
+  }
+
   function posFromRulerEvent(e) {
     const vp = $('#ruler-vp').getBoundingClientRect();
     const x = e.clientX - vp.left + $('#lanes-vp').scrollLeft;
@@ -4123,6 +4133,7 @@
       renderTracks(); renderLanes(); renderOverview(); updateInspector(); updateInfoLine(); updateCursor(); updateStatus();
     },
     goto: (p) => { setPos(p); $('#sbStatus').textContent = 'Position : ' + fmtPos(state.pos); },
+    setPlayhead: setPlayhead,
     refresh: () => {
       renderTracks(); renderLanes(); renderOverview();
       updateInspector(); updateInfoLine(); updateCursor(); updateStatus();

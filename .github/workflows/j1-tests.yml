@@ -1,0 +1,31 @@
+name: J1 Web Audio regression
+
+on:
+  push:
+    paths:
+      - "UI/AlphaStudio/**"
+      - "tests/**"
+      - ".github/workflows/j1-tests.yml"
+  pull_request:
+    paths:
+      - "UI/AlphaStudio/**"
+      - "tests/**"
+      - ".github/workflows/j1-tests.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Build and run J1 tests
+        run: bash tests/run.sh

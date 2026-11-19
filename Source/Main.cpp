@@ -4,15 +4,18 @@ using namespace juce;
 AlphaWebMainComponent::AlphaWebMainComponent()
 {
     auto options = WebBrowserComponent::Options{}
-        .withBackend (WebBrowserComponent::Options::Backend::webview2)
-        .withWinWebView2Options (WebBrowserComponent::Options::WinWebView2{}
-            .withUserDataFolder (engine.appDataDir().getChildFile ("WebView2")))
         .withNativeIntegrationEnabled()
         .withNativeFunction ("alphaCommand",
             [this] (const Array<var>& args, WebBrowserComponent::NativeFunctionCompletion complete)
             {
                 handleCommand (args, std::move (complete));
             });
+
+   #if JUCE_WEB_BROWSER && JUCE_USE_WIN_WEBVIEW2
+    options = options.withBackend (WebBrowserComponent::Options::Backend::webview2)
+                     .withWinWebView2Options (WebBrowserComponent::Options::WinWebView2{}
+                         .withUserDataFolder (engine.applicationDataDir().getChildFile ("WebView2")));
+   #endif
 
     browser = std::make_unique<Browser> (options);
     browser->onPageReady = [this] { pageReady = true; publishState(); };
@@ -21,10 +24,15 @@ AlphaWebMainComponent::AlphaWebMainComponent()
     const auto appDir = File::getSpecialLocation (File::currentExecutableFile).getParentDirectory();
     const auto html = appDir.getChildFile ("UI").getChildFile ("AlphaStudio").getChildFile ("alpha-studio.html");
     if (html.existsAsFile())
-        browser->goToURL (html.getURL().toString (false));
+        browser->goToURL (URL (html).toString (false));
     else
         AlertWindow::showMessageBoxAsync (MessageBoxIconType::WarningIcon, "ALPHA Studio",
             "Interface introuvable : UI/AlphaStudio/alpha-studio.html");
+
+    engine.onChanged = [this] { publishState(); };
+    if (engine.hasAutosave()) engine.restoreAutosave();
+    else engine.loadDemo();
+    engine.setNativeStatus (TR ("Moteur Windows/JUCE prêt : projet, édition, enregistrement, mixage, MIDI et export WAV."));
 
     setSize (1600, 900);
     startTimerHz (20);
@@ -33,6 +41,9 @@ AlphaWebMainComponent::AlphaWebMainComponent()
 AlphaWebMainComponent::~AlphaWebMainComponent()
 {
     stopTimer();
+    alive->store (false);
+    if (exporting.load()) exportDone->wait (5000.0);
+    engine.onChanged = nullptr;
     browser.reset();
 }
 
@@ -41,225 +52,260 @@ void AlphaWebMainComponent::resized()
     if (browser != nullptr) browser->setBounds (getLocalBounds());
 }
 
-static double barsToSamples (double bars, double bpm, double sampleRate)
-{
-    return (jmax (1.0, bars) - 1.0) * 4.0 * 60.0 / bpm * sampleRate;
-}
-
-static double samplesToBars (double samples, double bpm, double sampleRate)
-{
-    return 1.0 + samples / (4.0 * 60.0 / bpm * sampleRate);
-}
-
 var AlphaWebMainComponent::buildState() const
 {
-    auto* root = new DynamicObject();
-    const double bpm = engine.transport.bpm.load();
-    const double sr = engine.sr();
-    const double samplesPerBar = 4.0 * 60.0 / bpm * sr;
-
-    root->setProperty ("tempo", bpm);
-    root->setProperty ("sampleRate", sr);
-    root->setProperty ("positionBars", samplesToBars ((double) engine.transport.pos.load(), bpm, sr));
-    root->setProperty ("playing", engine.transport.playing.load());
-    root->setProperty ("recording", engine.isRecording());
-    root->setProperty ("looping", engine.transport.looping.load());
-    root->setProperty ("metronome", engine.transport.metronome.load());
-    root->setProperty ("loopStartBars", samplesToBars ((double) engine.transport.loopStart.load(), bpm, sr));
-    root->setProperty ("loopEndBars", samplesToBars ((double) engine.transport.loopEnd.load(), bpm, sr));
-    root->setProperty ("device", engine.deviceInfo());
-
-    Array<var> trackArray;
-    for (size_t ti = 0; ti < engine.tracks.size(); ++ti)
-    {
-        const auto& track = engine.tracks[ti];
-        auto* item = new DynamicObject();
-        item->setProperty ("id", "native_" + String ((int) ti));
-        item->setProperty ("name", track->name);
-        item->setProperty ("volumeDb", (double) track->volDb);
-        item->setProperty ("pan", (double) track->pan);
-        item->setProperty ("mute", track->mute);
-        item->setProperty ("solo", track->solo);
-        item->setProperty ("arm", track->arm);
-        item->setProperty ("colour", "#" + track->colour.toString().substring (2));
-        item->setProperty ("levelL", (double) track->fader->levelL.load());
-        item->setProperty ("levelR", (double) track->fader->levelR.load());
-
-        Array<var> clips;
-        const SpinLock::ScopedLockType lock (track->source->lock);
-        for (size_t ci = 0; ci < track->source->clips.size(); ++ci)
-        {
-            const auto& clip = track->source->clips[ci];
-            auto* c = new DynamicObject();
-            c->setProperty ("id", "nativeClip_" + String ((int) ti) + "_" + String ((int) ci));
-            c->setProperty ("name", clip.name);
-            c->setProperty ("startBars", samplesToBars ((double) clip.start, bpm, sr));
-            c->setProperty ("lengthBars", (double) clip.len / samplesPerBar);
-            clips.add (var (c));
-        }
-        item->setProperty ("clips", var (clips));
-        trackArray.add (var (item));
-    }
-    root->setProperty ("tracks", var (trackArray));
-    return var (root);
+    return JSON::parse (alphaString (engine.stateJson()));
 }
 
 void AlphaWebMainComponent::publishState()
 {
     if (browser == nullptr || ! pageReady) return;
     browser->evaluateJavascript ("window.ALPHA_NATIVE && window.ALPHA_NATIVE.applyState("
-                                 + JSON::toString (buildState()) + ");");
+                                 + alphaString (engine.stateJson()) + ");");
 }
 
 void AlphaWebMainComponent::handleCommand (const Array<var>& args,
                                            WebBrowserComponent::NativeFunctionCompletion complete)
 {
-    const auto command = args.size() > 0 ? args[0].toString() : String();
+    const String command = args.size() > 0 ? args[0].toString() : String();
     const var payload = args.size() > 1 ? args[1] : var (new DynamicObject());
-    const auto value = [&payload] (const char* key, const var& fallback = var())
-    {
-        return payload.getProperty (Identifier (key), fallback);
-    };
+    const String payloadText = JSON::toString (payload);
 
     if (command == "getState") { complete (buildState()); return; }
-    if (command == "play") engine.play();
-    else if (command == "stop")
+    if (command == "quit")
     {
-        if (engine.isRecording())
-        {
-            const auto error = engine.stopRecording();
-            if (error.isNotEmpty())
-                AlertWindow::showMessageBoxAsync (MessageBoxIconType::WarningIcon, "ALPHA Studio", error);
-        }
-        else engine.stopTransport();
+        complete (buildState());
+        JUCEApplication::getInstance()->systemRequestedQuit();
+        return;
     }
-    else if (command == "record")
+    if (command == "openProject" || command == "saveProject" || command == "saveAs" ||
+        command == "saveNewVersion" || command == "saveTemplate" || command == "loadTemplateFile" ||
+        command == "importAudio" || command == "importMidi" ||
+        command == "exportMidi" || command == "importTrack" || command == "importTrackArchive" ||
+        command == "importOmf" || command == "importAaf" || command == "importXml" || command == "importCd")
     {
-        if (engine.isRecording()) engine.stopRecording();
+        openDialog (command, payload);
+        complete (buildState());
+        return;
+    }
+    if (command == "exportWav" || command == "exportTrack" || command == "exportStems")
+    {
+        exportWav (command == "exportStems" || command == "exportTrack");
+        complete (buildState());
+        return;
+    }
+
+    const String error = engine.command (command, payloadText);
+    if (error.isNotEmpty())
+    {
+        engine.setNativeStatus (error);
+        AlertWindow::showMessageBoxAsync (MessageBoxIconType::WarningIcon, "ALPHA Studio", error);
+    }
+    publishState();
+    complete (buildState());
+}
+
+void AlphaWebMainComponent::openDialog (const String& kind, const var& payload)
+{
+    auto& eng = engine;
+    const bool save = kind == "saveProject" || kind == "saveAs" || kind == "saveNewVersion" ||
+                      kind == "saveTemplate" || kind == "exportMidi";
+    const bool audio = kind == "importAudio" || kind == "importTrack" || kind == "importTrackArchive" ||
+                       kind == "importOmf" || kind == "importAaf" || kind == "importXml" || kind == "importCd";
+    String filters = "*.alphaproj;*.alpha";
+    String title = "Ouvrir un projet";
+    File initial = File::getSpecialLocation (File::userDocumentsDirectory);
+    int flags = FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles;
+
+    if (save)
+    {
+        title = kind == "exportMidi" ? "Exporter un fichier MIDI"
+              : kind == "saveTemplate" ? "Enregistrer comme modèle" : "Enregistrer le projet";
+        initial = kind == "saveTemplate"
+                    ? eng.templatesDir().getChildFile ("Nouveau modèle.alphaproj")
+                    : File::getSpecialLocation (File::userDocumentsDirectory).getChildFile (kind == "exportMidi" ? "Export.mid" : "Projet.alphaproj");
+        filters = kind == "exportMidi" ? "*.mid;*.midi" : "*.alphaproj;*.alpha";
+        flags = FileBrowserComponent::saveMode | FileBrowserComponent::warnAboutOverwriting;
+    }
+    else if (kind == "loadTemplateFile")
+    {
+        title = "Charger un modèle de projet";
+        initial = eng.templatesDir();
+        filters = "*.alphaproj";
+    }
+    else if (kind == "importMidi")
+    {
+        title = "Importer un fichier MIDI"; filters = "*.mid;*.midi";
+    }
+    else if (audio)
+    {
+        title = "Importer des fichiers audio ou un document";
+        filters = "*.wav;*.mp3;*.flac;*.ogg;*.aif;*.aiff;*.alphaproj;*.json;*.mid;*.midi";
+        flags |= FileBrowserComponent::canSelectMultipleItems;
+    }
+
+    chooser = std::make_unique<FileChooser> (title, initial, filters);
+    Component::SafePointer<AlphaWebMainComponent> safe (this);
+    chooser->launchAsync (flags, [safe, kind, payload] (const FileChooser& fc)
+    {
+        if (safe == nullptr) return;
+        auto& eng = safe->engine;
+        const auto results = fc.getResults();
+        const File result = fc.getResult();
+        const double startBars = (double) payload.getProperty (Identifier ("startBars"), var (1.0));
+        const int trackIndex = (int) payload.getProperty (Identifier ("trackIndex"), var (0));
+
+        if (kind == "openProject")
+        {
+            if (! result.existsAsFile()) return;
+            if (result.hasFileExtension (".alpha")) eng.loadProject (result);
+            else eng.loadProjectJson (result.withFileExtension ("alphaproj"));
+        }
+        else if (kind == "saveProject" || kind == "saveAs" || kind == "saveNewVersion")
+        {
+            if (result == File()) return;
+            File f = result.getFileExtension().isEmpty() ? result.withFileExtension ("alphaproj") : result;
+            if (f.hasFileExtension (".alpha")) eng.saveProject (f);
+            else eng.saveProjectJson (f);
+        }
+        else if (kind == "saveTemplate")
+        {
+            if (result == File()) return;
+            eng.saveTemplate (result.getFileNameWithoutExtension());
+        }
+        else if (kind == "loadTemplateFile")
+        {
+            if (! result.existsAsFile()) return;
+            eng.loadTemplateFile (result.withFileExtension ("alphaproj"));
+        }
+        else if (kind == "exportMidi")
+        {
+            if (result == File()) return;
+            const File f = result.withFileExtension ("mid");
+            const auto bytes = alpha::base64Decode (eng.exportMidiData (trackIndex).toStdString());
+            FileOutputStream os (f);
+            if (! os.openedOk() || ! os.write (bytes.data(), bytes.size()))
+                eng.setNativeStatus (TR ("Export MIDI impossible."));
+            else eng.setNativeStatus (TR ("Fichier MIDI exporté."));
+        }
+        else if (kind == "importMidi")
+        {
+            if (! result.existsAsFile()) return;
+            MemoryBlock mb;
+            if (! result.loadFileAsData (mb)) return;
+            const auto e = eng.importMidiData (mb.toBase64Encoding(), trackIndex, startBars);
+            if (e.isNotEmpty()) eng.setNativeStatus (e);
+        }
         else
         {
-            AlphaEngine::Track* target = nullptr;
-            for (auto& track : engine.tracks) if (track->arm) { target = track.get(); break; }
-            if (target == nullptr && ! engine.tracks.empty()) target = engine.tracks.front().get();
-            if (target == nullptr) target = engine.addTrack ("Audio 1");
-            const auto error = engine.startRecording (target);
-            if (error.isNotEmpty())
-                AlertWindow::showMessageBoxAsync (MessageBoxIconType::WarningIcon, "ALPHA Studio", error);
-        }
-    }
-    else if (command == "newProject") engine.newProject();
-    else if (command == "cycle")
-    {
-        const bool enabled = (bool) value ("enabled", ! engine.transport.looping.load());
-        engine.transport.looping.store (enabled);
-        if (engine.transport.loopEnd.load() <= engine.transport.loopStart.load())
-        {
-            engine.transport.loopStart.store (0);
-            engine.transport.loopEnd.store ((int64) barsToSamples (9.0, engine.transport.bpm.load(), engine.sr()));
-        }
-    }
-    else if (command == "metronome")
-        engine.transport.metronome.store ((bool) value ("enabled", ! engine.transport.metronome.load()));
-    else if (command == "seek")
-        engine.seek ((int64) barsToSamples ((double) value ("bars", 1.0), engine.transport.bpm.load(), engine.sr()));
-    else if (command == "tempo")
-        engine.transport.bpm.store (jlimit (20.0, 300.0, (double) value ("bpm", 120.0)));
-    else if (command == "setLoop")
-    {
-        const double bpm = engine.transport.bpm.load(), sr = engine.sr();
-        engine.transport.loopStart.store ((int64) barsToSamples ((double) value ("start", 1.0), bpm, sr));
-        engine.transport.loopEnd.store ((int64) barsToSamples ((double) value ("end", 9.0), bpm, sr));
-        engine.transport.looping.store (true);
-    }
-    else if (command == "addTrack")
-        engine.addTrack (value ("name", "Audio").toString());
-    else if (command == "importAudio") importAudio();
-    else if (command == "openProject") openProject();
-    else if (command == "saveProject") saveProject();
-    else if (command == "setTrack")
-    {
-        const int index = (int) value ("index", -1);
-        const auto field = value ("field").toString();
-        if (isPositiveAndBelow (index, (int) engine.tracks.size()))
-        {
-            auto* track = engine.tracks[(size_t) index].get();
-            const auto v = value ("value");
-            if (field == "mute") track->mute = (bool) v;
-            else if (field == "solo") track->solo = (bool) v;
-            else if (field == "arm") track->arm = (bool) v;
-            else if (field == "volumeDb") track->volDb = (float) jlimit (-60.0, 6.0, (double) v);
-            else if (field == "pan") track->pan = (float) jlimit (-1.0, 1.0, (double) v);
-            engine.refreshMix();
-        }
-    }
-
-    publishState();
-    complete (true);
-}
-
-void AlphaWebMainComponent::importAudio()
-{
-    chooser = std::make_unique<FileChooser> ("Importer des fichiers audio",
-        File::getSpecialLocation (File::userMusicDirectory), "*.wav;*.mp3;*.flac;*.ogg;*.aif;*.aiff");
-    Component::SafePointer<AlphaWebMainComponent> safe (this);
-    chooser->launchAsync (FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles
-                          | FileBrowserComponent::canSelectMultipleItems,
-        [safe] (const FileChooser& fc)
-        {
-            if (safe == nullptr) return;
-            for (const auto& file : fc.getResults())
+            for (const auto& file : results)
             {
-                auto* track = safe->engine.addTrack (file.getFileNameWithoutExtension());
-                String error;
-                if (! safe->engine.importAudio (track, file, safe->engine.transport.pos.load(), error))
+                if (! file.existsAsFile()) continue;
+                if (file.hasFileExtension (".mid") || file.hasFileExtension (".midi"))
                 {
-                    safe->engine.removeTrack (track);
-                    AlertWindow::showMessageBoxAsync (MessageBoxIconType::WarningIcon, "Import audio", error);
+                    MemoryBlock mb;
+                    if (file.loadFileAsData (mb)) eng.importMidiData (mb.toBase64Encoding(), trackIndex, startBars);
+                    continue;
                 }
+                if (file.hasFileExtension (".alphaproj") || file.hasFileExtension (".json"))
+                {
+                    MemoryBlock mb;
+                    if (file.loadFileAsData (mb)) eng.importProjectData (mb.toBase64Encoding());
+                    continue;
+                }
+                if (kind == "importOmf" || kind == "importAaf" || kind == "importXml" || kind == "importCd")
+                {
+                    eng.setNativeStatus (TR ("Format d'échange non pris en charge ; importer un WAV, MIDI ou .alphaproj."));
+                    continue;
+                }
+                MemoryBlock mb;
+                if (! file.loadFileAsData (mb)) continue;
+                eng.importAudioData (file.getFileName(), mb.toBase64Encoding(), startBars);
             }
-            safe->publishState();
-        });
+        }
+        safe->publishState();
+    });
 }
 
-void AlphaWebMainComponent::openProject()
+void AlphaWebMainComponent::exportWav (bool stems)
 {
-    chooser = std::make_unique<FileChooser> ("Ouvrir un projet",
-        File::getSpecialLocation (File::userDocumentsDirectory), "*.alpha");
+    if (exporting.exchange (true))
+    {
+        engine.setNativeStatus (TR ("Un export WAV est déjà en cours."));
+        publishState();
+        return;
+    }
+    exportDone->reset();
+    const auto title = stems ? "Choisir le dossier des stems" : "Exporter le mixage WAV 48 kHz / 24 bits";
+    const auto initial = File::getSpecialLocation (File::userDocumentsDirectory).getChildFile (stems ? "Stems" : "Mixage.wav");
+    chooser = std::make_unique<FileChooser> (title, initial, stems ? "" : "*.wav");
+    const int flags = stems ? (FileBrowserComponent::openMode | FileBrowserComponent::canSelectDirectories)
+                            : (FileBrowserComponent::saveMode | FileBrowserComponent::warnAboutOverwriting);
     Component::SafePointer<AlphaWebMainComponent> safe (this);
-    chooser->launchAsync (FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
-        [safe] (const FileChooser& fc)
+    auto* self = this;
+    auto aliveFlag = alive;
+    auto done = exportDone;
+
+    chooser->launchAsync (flags, [safe, self, aliveFlag, done, stems] (const FileChooser& fc)
+    {
+        const File target = fc.getResult();
+        if (safe == nullptr || target == File())
         {
-            if (safe == nullptr || ! fc.getResult().existsAsFile()) return;
-            const auto error = safe->engine.loadProject (fc.getResult());
-            if (error.isNotEmpty())
-                AlertWindow::showMessageBoxAsync (MessageBoxIconType::WarningIcon, "Ouvrir le projet", error);
-            safe->publishState();
+            if (safe != nullptr) safe->exporting.store (false);
+            done->signal();
+            return;
+        }
+        const bool launched = Thread::launch ([safe, self, aliveFlag, done, stems, target]
+        {
+            bool ok = false;
+            if (aliveFlag->load() && self != nullptr)
+            {
+                std::function<bool (double)> progress = [] (double) { return true; };
+                self->engine.beginOffline();
+                if (stems)
+                {
+                    target.createDirectory();
+                    ok = true;
+                    for (size_t i = 0; i < self->engine.tracks.size(); ++i)
+                    {
+                        const String name = self->engine.tracks[i]->name.removeCharacters ("\\/:*?\"<>|");
+                        const File f = target.getNonexistentChildFile (name.isEmpty() ? "Stem" : name, ".wav");
+                        ok = self->engine.renderOffline (f, 48000.0, 24, progress, (int) i) && ok;
+                    }
+                }
+                else
+                {
+                    ok = self->engine.renderOffline (target.withFileExtension ("wav"), 48000.0, 24, progress, -1);
+                }
+                self->engine.endOffline();
+                self->engine.setNativeStatus (ok ? TR ("Export WAV 48 kHz / 24 bits terminé.") : TR ("Export WAV interrompu."));
+            }
+            MessageManager::callAsync ([safe, done]
+            {
+                if (safe != nullptr) { safe->exporting.store (false); safe->publishState(); }
+            });
+            done->signal();
         });
+        if (! launched)
+        {
+            if (safe != nullptr) safe->exporting.store (false);
+            done->signal();
+        }
+    });
 }
 
-void AlphaWebMainComponent::saveProject()
+void AlphaWebMainComponent::timerCallback()
 {
-    chooser = std::make_unique<FileChooser> ("Enregistrer le projet",
-        File::getSpecialLocation (File::userDocumentsDirectory).getChildFile ("Projet.alpha"), "*.alpha");
-    Component::SafePointer<AlphaWebMainComponent> safe (this);
-    chooser->launchAsync (FileBrowserComponent::saveMode | FileBrowserComponent::warnAboutOverwriting,
-        [safe] (const FileChooser& fc)
-        {
-            if (safe == nullptr || fc.getResult() == File()) return;
-            if (! safe->engine.saveProject (fc.getResult().withFileExtension ("alpha")))
-                AlertWindow::showMessageBoxAsync (MessageBoxIconType::WarningIcon, "ALPHA Studio",
-                                                  "Impossible d'enregistrer le projet.");
-            safe->publishState();
-        });
+    engine.recordingTick();
+    engine.autosaveTick (false);
+    publishState();
 }
-
-void AlphaWebMainComponent::timerCallback() { publishState(); }
 
 class AlphaApp final : public JUCEApplication
 {
 public:
     const String getApplicationName() override { return "ALPHA Studio"; }
-    const String getApplicationVersion() override { return "0.3.0"; }
+    const String getApplicationVersion() override { return "0.4.0"; }
     bool moreThanOneInstanceAllowed() override { return true; }
     void initialise (const String&) override { window = std::make_unique<MainWindow>(); }
     void shutdown() override { window.reset(); }

@@ -2168,7 +2168,7 @@
             }));
           });
         }
-        bindRows(); 
+        bindRows();
         $('[data-lefoot]', body).textContent = st.rows.length + ' événements affichés / ' + st.rows.length;
 
         $$('[data-le]', body).forEach((b) => b.addEventListener('click', () => {

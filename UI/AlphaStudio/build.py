@@ -7,12 +7,16 @@ root = pathlib.Path(__file__).parent
 src = root / "src"
 
 css_names = ["style.css", "windows.css", "windows2.css", "windows3.css", "windows5.css"]
-js_names = ["app.js", "windows.js", "windows2.js", "windows3.js", "windows5.js"]
+# audio-core.js précède le pont natif ; audio.js est chargé après lui pour céder
+# la priorité au moteur JUCE quand WebView2 est présent.
+js_names = ["app.js", "windows.js", "windows2.js", "windows3.js", "windows5.js", "audio-core.js"]
+js_after_bridge = ["audio.js"]
 
 css = "\n".join((src / name).read_text(encoding="utf-8") for name in css_names)
 body = (src / "body.html").read_text(encoding="utf-8")
 js = "\n".join((src / name).read_text(encoding="utf-8") for name in js_names)
 js += "\n" + (root / "native-bridge.js").read_text(encoding="utf-8")
+js += "\n" + "\n".join((src / name).read_text(encoding="utf-8") for name in js_after_bridge)
 
 html = f"""<!DOCTYPE html>
 <html lang="fr">
@@ -33,6 +37,11 @@ html = f"""<!DOCTYPE html>
 </body>
 </html>
 """
+assert "class AlphaMixProcessor" in html, "worklet de mixage absent du livrable"
+assert "window.ALPHA_AUDIO" in html, "moteur J1 absent du livrable"
+assert "ALPHA_AUDIO_METERS" in html, "compteurs J1 absents du livrable"
+assert "<script src=" not in html, "dépendance externe interdite dans le livrable"
+
 out = root / "alpha-studio.html"
 out.write_text(html, encoding="utf-8")
 print(f"OK -> {out} : {os.path.getsize(out)} octets")

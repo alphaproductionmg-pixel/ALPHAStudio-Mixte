@@ -1,0 +1,59 @@
+# Constructions et dépendances générées
+/build/
+/out/
+/dist/
+/CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+JuceLibraryCode/
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.dir/
+*.o
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.dll
+*.exe
+*.tlog
+*.log
+*.tmp
+*.cache
+.vs/
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Node
+node_modules/
+.npm/
+.vite/
+.next/
+.nuxt/
+.parcel-cache/
+.turbo/
+
+# Système et bac à sable Arena
+.DS_Store
+Thumbs.db
+.arena/
+.playwright-cli/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.nox/
+.tox/
+coverage/
+
+# Fichiers non retenus par l'outil d'images
+Unselected files/

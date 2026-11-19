@@ -1,0 +1,72 @@
+name: Windows JUCE/WebView2 build
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "CMakeLists.txt"
+      - "Source/**"
+      - "Engines/ALPHA-Studio/Source/**"
+      - "UI/AlphaStudio/**"
+      - "tests/**"
+      - "ETAPES.md"
+      - "docs/**"
+      - ".github/workflows/windows-build.yml"
+      - ".github/workflows/j1-tests.yml"
+  pull_request:
+    paths:
+      - "CMakeLists.txt"
+      - "Source/**"
+      - "Engines/ALPHA-Studio/Source/**"
+      - "UI/AlphaStudio/**"
+      - "tests/**"
+      - "ETAPES.md"
+      - "docs/**"
+      - ".github/workflows/windows-build.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  internal-tests:
+    name: Tests internes C++17, J1 et pont J2-J6
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: En-têtes JUCE 8.0.4 pour la syntaxe C++
+        run: git clone --depth 1 --branch 8.0.4 https://github.com/juce-framework/JUCE.git "${RUNNER_TEMP}/JUCE"
+      - name: Lanceur sans npm
+        env:
+          JUCE_MODULES_DIR: ${{ runner.temp }}/JUCE
+        run: bash tests/run.sh
+
+  windows-build:
+    name: Compilation Windows / WebView2
+    needs: internal-tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Configurer CMake / Visual Studio 2022
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release
+      - name: Compiler ALPHA Studio
+        run: cmake --build build --config Release --parallel 4
+      - name: Publier l'exécutable et l'interface
+        uses: actions/upload-artifact@v4
+        with:
+          name: ALPHA-Studio-Windows
+          path: |
+            build/**/Release/*.exe
+            build/**/Release/UI/AlphaStudio/**
+          if-no-files-found: warn
