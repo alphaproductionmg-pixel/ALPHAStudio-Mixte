@@ -3304,6 +3304,44 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
   const $ = (s) => document.querySelector(s);
   const $$ = (s) => Array.prototype.slice.call(document.querySelectorAll(s));
 
+  /* AUDIT v6 : envoi VÉRIFIÉ au moteur — la réussite n'est annoncée que si le
+     moteur la confirme (commandResult {ok, error, detail}). Aucun succès n'est
+     affiché sans confirmation ; en cas d'échec, le message réel du moteur est
+     montré et rien n'est présenté comme accompli. */
+  function nativeChecked(command, data) {
+    const n = window.ALPHA_NATIVE;
+    if (!n || typeof n.sendChecked !== 'function')
+      return Promise.resolve({ ok: false, command: command, error: 'moteur natif hors ligne : aucune confirmation possible', detail: '' });
+    return n.sendChecked(command, data || {}).then((r) => r || { ok: false, command: command, error: 'réponse moteur absente', detail: '' });
+  }
+  function nativeCheckedSay(command, data, okMsg, ctx) {
+    return nativeChecked(command, data).then((r) => {
+      if (r.ok) toast(okMsg + (r.detail ? ' — ' + r.detail : ''), ctx);
+      else toast('Échec réel : ' + (r.error || 'raison inconnue') + ' — rien n’a été modifié ni annoncé comme accompli.', ctx);
+      return r;
+    });
+  }
+  /* Chaîne séquentielle vérifiée : chaque commande attend la confirmation du
+     moteur avant la suivante ; les échecs sont comptés et rapportés. */
+  function nativeChain(steps, ctx, okMsg) {
+    const rep = { ok: 0, ko: 0, errors: [] };
+    const run = (i) => {
+      if (i >= steps.length) {
+        if (rep.ko) toast(okMsg + ' — MAIS ' + rep.ko + ' échec(s) réel(s) : ' +
+          rep.errors.slice(0, 2).join(' | ') + (rep.errors.length > 2 ? ' | …' : '') +
+          ' (' + rep.ok + ' commande(s) confirmée(s)).', ctx);
+        else toast(okMsg + ' — ' + rep.ok + ' commande(s) confirmée(s) par le moteur.', ctx);
+        return Promise.resolve(rep);
+      }
+      return nativeChecked(steps[i][0], steps[i][1]).then((r) => {
+        if (r.ok) rep.ok++;
+        else { rep.ko++; rep.errors.push(steps[i][0] + ' : ' + (r.error || 'raison inconnue')); }
+        return run(i + 1);
+      });
+    };
+    return steps.length ? run(0) : Promise.resolve(rep);
+  }
+
   /* ------------------------------------------------------------------ ÉTAT */
   const state = {
     barW: 64,
@@ -5277,12 +5315,23 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
     gotoMarker: (bar) => { setPos(bar); $('#sbStatus').textContent = 'Aller au marqueur : ' + fmtPos(bar); },
     delMarker: (i) => {
       if (i < 0 || !MARKERS[i]) return;
-      const m = MARKERS.splice(i, 1)[0];
       const b = window.ALPHA_NATIVE;
       const st = (b && b.getState && b.getState()) || {};
-      if (b && b.send && (st.markers || []).length) b.send('removeMarker', { markerIndex: i });
+      const m = MARKERS[i];
+      if (!m) return;
+      if (b && b.sendChecked && (st.markers || []).length) {
+        /* suppression confirmée avant retrait de l'affichage */
+        nativeChecked('removeMarker', { markerIndex: i }).then((r) => {
+          if (!r.ok) { toast('Échec réel de la suppression : ' + (r.error || 'raison inconnue') + ' — marqueur conservé.', 'Marqueurs'); return; }
+          MARKERS.splice(i, 1);
+          renderRuler(); renderLanes(); renderOverview();
+          toast('Marqueur « ' + m[1] + ' » supprimé du projet natif (confirmé par le moteur, annulable).', 'Marqueurs');
+        });
+        return;
+      }
+      MARKERS.splice(i, 1);
       renderRuler(); renderLanes(); renderOverview();
-      toast('Marqueur « ' + m[1] + ' » supprimé' + ((st.markers || []).length ? ' du projet natif (annulable)' : '') + '.', 'Marqueurs');
+      toast('Marqueur « ' + m[1] + ' » supprimé de l’affichage (moteur natif hors ligne).', 'Marqueurs');
     },
     cycleFromMarker: (bar) => {
       state.cycleL = bar; state.cycleR = bar + 8; state.cycle = true;
@@ -5361,14 +5410,22 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
          C++ (transposeMidi) sur les notes MIDI de la piste sélectionnée, puis
          l'état natif est republié. L'aperçu local suit le moteur. */
       const bridge = window.ALPHA_NATIVE;
-      if (bridge && typeof bridge.send === 'function') {
+      if (bridge && typeof bridge.sendChecked === 'function') {
         const idx = Number((bridge.getState && bridge.getState() || {}).selectedTrack);
-        bridge.send('transposeMidi', { trackIndex: isFinite(idx) && idx >= 0 ? idx : 0, semitones: semitones });
-        $('#sbStatus').textContent = 'Transposition ' + (semitones > 0 ? '+' : '') + semitones +
-          ' demi-ton(s) appliquée par le moteur aux notes MIDI du projet';
+        /* l'aperçu local est restauré si le moteur refuse la transposition */
+        const undoPreview = () => list.forEach((p2) => { p2.transpose = (p2.transpose || 0) - semitones; });
+        nativeChecked('transposeMidi', { trackIndex: isFinite(idx) && idx >= 0 ? idx : 0, semitones: semitones }).then((r) => {
+          if (!r.ok) {
+            undoPreview(); renderLanes(); updateInfoLine();
+            $('#sbStatus').textContent = 'Transposition refusée par le moteur : ' + (r.error || 'raison inconnue') + ' — notes inchangées';
+            return;
+          }
+          $('#sbStatus').textContent = 'Transposition ' + (semitones > 0 ? '+' : '') + semitones +
+            ' demi-ton(s) appliquée par le moteur aux notes MIDI du projet (confirmée)';
+        });
         return;
       }
-      $('#sbStatus').textContent = 'Transposition ' + (semitones > 0 ? '+' : '') + semitones + ' sur ' + list.length + ' partie(s) MIDI';
+      $('#sbStatus').textContent = 'Transposition ' + (semitones > 0 ? '+' : '') + semitones + ' sur ' + list.length + ' partie(s) MIDI (aperçu local, moteur hors ligne)';
     },
     velocity: () => WIN('velocitydlg'),
     touchAssign: () => toast('Contrôleur tactile : choisissez le nombre de voies (8, 16 ou 24) dans Périphériques ▸ Périphériques Remote. L’affectation des 8 Quick Controls est envoyée au contrôleur.', 'Périphériques Remote'),
@@ -5404,38 +5461,61 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
       const at = Math.min.apply(null, state.clip.map((p) => p.start));
       const to = state.pos;
       const b = window.ALPHA_NATIVE;
-      let sent = false;
-      if (b && b.send) {
-        /* collage RÉEL multi-pistes : chaque événement retrouve sa piste et sa
-           position, écrit dans le projet natif (historisé, annulable). */
-        sent = b.send('pasteClips', { clips: state.clip.map((src, i) => ({
-          trackIndex: ACTIONS.nativeTrackIndexOf(src.track),
-          name: String(src.name || ('Événement ' + (i + 1))),
-          media: String(src.media || ''),
-          startBars: to + (src.start - at),
-          lenBars: Number(src.len) || 1
-        })) }) !== false;
-      }
-      state.clip.forEach((src) => {
-        ACTIONS._seq = (ACTIONS._seq || 0) + 1;
-        PARTS.push(Object.assign({}, src, { id: src.id + '-cp' + ACTIONS._seq, start: to + (src.start - at), sel: true }));
-      });
-      renderLanes(); renderOverview(); updateInfoLine();
       const nTracks = state.clip.map((x) => x.track).filter((v, i, a) => a.indexOf(v) === i).length;
-      toast(state.clip.length + ' événement(s) collé(s) à ' + fmtPos(to) + ' sur ' + nTracks +
-        ' piste(s)' + (sent ? ' — écrit réellement dans le projet natif (annulable).' : '.'), 'Coller');
+      const miroir = () => {
+        state.clip.forEach((src) => {
+          ACTIONS._seq = (ACTIONS._seq || 0) + 1;
+          PARTS.push(Object.assign({}, src, { id: src.id + '-cp' + ACTIONS._seq, start: to + (src.start - at), sel: true }));
+        });
+        renderLanes(); renderOverview(); updateInfoLine();
+      };
+      if (!b || !b.sendChecked) {
+        /* repli navigateur : collage local annoncé comme tel */
+        miroir();
+        toast(state.clip.length + ' événement(s) collé(s) à ' + fmtPos(to) + ' sur ' + nTracks +
+          ' piste(s) — moteur natif hors ligne, collage local uniquement.', 'Coller');
+        return;
+      }
+      /* collage RÉEL multi-pistes : écrit dans le projet natif, confirmé avant
+         toute mise à jour de l'affichage. */
+      nativeChecked('pasteClips', { clips: state.clip.map((src, i) => ({
+        trackIndex: ACTIONS.nativeTrackIndexOf(src.track),
+        name: String(src.name || ('Événement ' + (i + 1))),
+        media: String(src.media || ''),
+        startBars: to + (src.start - at),
+        lenBars: Number(src.len) || 1
+      })) }).then((r) => {
+        if (!r.ok) {
+          toast('Échec réel du collage : ' + (r.error || 'raison inconnue') +
+            ' — le projet est inchangé, aucun événement ajouté.', 'Coller');
+          return;
+        }
+        miroir();
+        toast(state.clip.length + ' événement(s) collé(s) à ' + fmtPos(to) + ' sur ' + nTracks +
+          ' piste(s) — écrit dans le projet natif et confirmé par le moteur (annulable).', 'Coller');
+      });
     },
     duplicate: () => {
       const ids = selPartIds();
       if (!ids.length) { toast('Sélectionnez d’abord des événements.', 'Dupliquer'); return; }
       const b = window.ALPHA_NATIVE;
-      ids.map((id) => PARTS.find((p) => p.id === id)).filter(Boolean).forEach((src) => {
-        ACTIONS._seq = (ACTIONS._seq || 0) + 1;
-        if (b && b.send) b.send('duplicateClip', { trackIndex: ACTIONS.nativeTrackIndexOf(src.track), clipIndex: 0 });
-        PARTS.push(Object.assign({}, src, { id: src.id + '-dup' + ACTIONS._seq, start: src.start + src.len, sel: false }));
-      });
-      renderLanes(); renderOverview(); updateInfoLine();
-      toast(ids.length + ' événement(s) dupliqué(s) à la suite' + (b && b.send ? ' dans le projet natif (annulable)' : '') + '.', 'Dupliquer');
+      const srcs = ids.map((id) => PARTS.find((p) => p.id === id)).filter(Boolean);
+      const miroir = () => {
+        srcs.forEach((src) => {
+          ACTIONS._seq = (ACTIONS._seq || 0) + 1;
+          PARTS.push(Object.assign({}, src, { id: src.id + '-dup' + ACTIONS._seq, start: src.start + src.len, sel: false }));
+        });
+        renderLanes(); renderOverview(); updateInfoLine();
+      };
+      if (!b || !b.sendChecked) {
+        miroir();
+        toast(srcs.length + ' événement(s) dupliqué(s) à la suite — moteur natif hors ligne, duplication locale uniquement.', 'Dupliquer');
+        return;
+      }
+      nativeChain(srcs.map((src) => ['duplicateClip', { trackIndex: ACTIONS.nativeTrackIndexOf(src.track), clipIndex: 0 }]),
+        'Dupliquer', srcs.length + ' événement(s) dupliqué(s) à la suite dans le projet natif').then((r) => {
+          if (r.ok) miroir();
+        });
     },
     undo: () => undoOnce(),
     splitAtCursor: () => {
@@ -5779,10 +5859,20 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
       const name = 'Marqueur ' + (MARKERS.length + 1);
       MARKERS.push([Math.round(state.pos), name]);
       renderLanes(); renderOverview(); updateStatus();
-      /* AUDIT v6 : le marqueur est réellement inscrit dans le projet natif. */
+      /* AUDIT v6 : le marqueur est inscrit dans le projet natif ; l'affichage
+         local est annulé si le moteur ne confirme pas. */
       const b = window.ALPHA_NATIVE;
-      if (b && b.send) b.send('addMarker', { bars: Number(state.pos) || 1, name: name });
-      toast('Marqueur « ' + name + ' » ajouté à ' + fmtPos(state.pos) + ' dans le projet.', 'Marqueurs');
+      if (b && b.sendChecked) {
+        nativeChecked('addMarker', { bars: Number(state.pos) || 1, name: name }).then((r) => {
+          if (r.ok) { toast('Marqueur « ' + name + ' » ajouté à ' + fmtPos(state.pos) + ' dans le projet (confirmé par le moteur).', 'Marqueurs'); return; }
+          const i2 = MARKERS.map((m) => m[1]).lastIndexOf(name);
+          if (i2 >= 0) MARKERS.splice(i2, 1);
+          renderLanes(); renderOverview(); updateStatus();
+          toast('Échec réel de l’ajout : ' + (r.error || 'raison inconnue') + ' — marqueur retiré de l’affichage.', 'Marqueurs');
+        });
+        return;
+      }
+      toast('Marqueur « ' + name + ' » ajouté à ' + fmtPos(state.pos) + ' (moteur natif hors ligne : affichage local).', 'Marqueurs');
     },
     setTimecode: () => {
       /* AUDIT v6 : le timecode de départ est réellement écrit dans les
@@ -5794,17 +5884,22 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
       const ss = Math.floor(seconds % 60), ff = Math.round((seconds - Math.floor(seconds)) * 25);
       const tc = [hh, mm, ss, ff].map((x) => String(x).padStart(2, '0')).join(':');
       const b = window.ALPHA_NATIVE;
-      if (b && b.send) b.send('setProjectInfo', { startTimecode: tc });
-      toast('Timecode de départ réglé sur ' + tc + ' (position du curseur, 25 i/s).', 'Timecode');
+      if (b && b.sendChecked)
+        nativeCheckedSay('setProjectInfo', { startTimecode: tc },
+          'Timecode de départ réglé sur ' + tc + ' (position du curseur, 25 i/s).', 'Timecode');
+      else toast('Timecode calculé ' + tc + ' — moteur natif hors ligne : valeur non écrite dans le projet.', 'Timecode');
     },
     quantize: () => {
-      state.quantize = true;
       const b = window.ALPHA_NATIVE;
-      if (b && b.send) {
+      if (b && b.sendChecked) {
         const st = (b.getState && b.getState()) || {};
-        b.send('quantizeMidi', { trackIndex: Number(st.selectedTrack) || 0, grid: String(state.grid || '1/16') });
+        nativeChecked('quantizeMidi', { trackIndex: Number(st.selectedTrack) || 0, grid: String(state.grid || '1/16') }).then((r) => {
+          if (r.ok) { state.quantize = true; toast('Quantification appliquée par le moteur aux notes MIDI (' + state.grid + ') — confirmée.', 'MIDI'); }
+          else toast('Échec réel de la quantification : ' + (r.error || 'raison inconnue') + ' — notes inchangées.', 'MIDI');
+        });
+        return;
       }
-      toast('Quantification appliquée par le moteur aux notes MIDI (' + state.grid + ').', 'MIDI');
+      toast('Quantification non appliquée : moteur natif hors ligne, aucune note modifiée.', 'MIDI');
     },
     quantizeSetup: () => { if (window.ALPHAWIN) window.ALPHAWIN.open('quantize'); },
     transpose: () => WIN('transpose'),
@@ -5816,65 +5911,66 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
     _sel: () => {
       const b = window.ALPHA_NATIVE;
       const st = (b && b.getState && b.getState()) || {};
-      return { b: b, st: st, ti: Number(st.selectedTrack) || 0, clips: ((st.tracks || [])[Number(st.selectedTrack) || 0] || {}).clips || [] };
+      const ti = Number(st.selectedTrack) || 0;
+      return { b: b, st: st, ti: ti, clips: ((st.tracks || [])[ti] || {}).clips || [] };
     },
+    /* Les actions ci-dessous n'annoncent une réussite que sur confirmation du
+       moteur (nativeChecked / nativeChain) et refusent d'agir sur un événement
+       inexistant. */
     delTime: () => {
-      /* Supprimer le temps : referme réellement 1 mesure au curseur — les
-         événements suivants sont décalés dans le projet natif (moveClip). */
       const { b, ti, clips } = ACTIONS._sel();
-      if (!b || !b.send) { toast('Supprimer le temps requiert le moteur natif.', 'Édition'); return; }
+      if (!b || !b.sendChecked) { toast('Supprimer le temps requiert le moteur natif.', 'Édition'); return; }
       const pos = Number(state.pos) || 1;
-      let n = 0;
+      const steps = [];
       clips.forEach((c, i) => {
         const sb = Number(c.startBars || 1);
-        if (sb >= pos + 0.5) { b.send('setClipStart', { trackIndex: ti, clipIndex: i, startBars: sb - 1 }); n++; }
+        if (sb >= pos + 0.5) steps.push(['setClipStart', { trackIndex: ti, clipIndex: i, startBars: sb - 1 }]);
       });
-      toast(n ? ('Supprimer le temps : 1 mesure réellement refermée — ' + n + ' événement(s) décalé(s) dans le projet.')
-              : 'Aucun événement après le curseur sur la piste sélectionnée.', 'Édition');
+      if (!steps.length) { toast('Aucun événement après le curseur sur la piste sélectionnée : rien à refermer.', 'Édition'); return; }
+      nativeChain(steps, 'Édition', 'Supprimer le temps : 1 mesure refermée, ' + steps.length + ' événement(s) décalé(s) dans le projet');
     },
     repeat: () => {
-      /* Répéter : copies RÉELLES de l'événement (duplicateClip du noyau). */
-      const { b, ti } = ACTIONS._sel();
-      if (!b || !b.send) { toast('Répéter requiert le moteur natif.', 'Édition'); return; }
-      b.send('duplicateClip', { trackIndex: ti, clipIndex: 0 });
-      b.send('duplicateClip', { trackIndex: ti, clipIndex: 1 });
-      toast('Répéter : 2 copies réelles de l’événement créées à la suite dans le projet.', 'Édition');
+      const { b, ti, clips } = ACTIONS._sel();
+      if (!b || !b.sendChecked) { toast('Répéter requiert le moteur natif.', 'Édition'); return; }
+      if (!clips.length) { toast('Répéter : aucun événement réel sur la piste ' + (ti + 1) + ' — rien à copier.', 'Édition'); return; }
+      nativeChain([
+        ['duplicateClip', { trackIndex: ti, clipIndex: 0 }],
+        ['duplicateClip', { trackIndex: ti, clipIndex: 0 }]
+      ], 'Édition', 'Répéter : 2 copies de l’événement créées à la suite dans le projet');
     },
     fillLoop: () => {
-      /* Remplir la boucle : duplication RÉELLE jusqu'à la fin du cycle. */
       const { b, ti, clips } = ACTIONS._sel();
-      if (!b || !b.send || !clips.length) { toast('Remplir la boucle : aucun événement sur la piste sélectionnée.', 'Édition'); return; }
+      if (!b || !b.sendChecked) { toast('Remplir la boucle requiert le moteur natif.', 'Édition'); return; }
+      if (!clips.length) { toast('Remplir la boucle : aucun événement réel sur la piste ' + (ti + 1) + '.', 'Édition'); return; }
       const c0 = clips[0];
       const len = Math.max(0.25, Number(c0.lenBars || 4));
       const need = Math.min(16, Math.max(0, Math.ceil(((Number(state.cycleR) || 0) - Number(c0.startBars || 1)) / len) - 1));
-      for (let i = 0; i < need; i++) b.send('duplicateClip', { trackIndex: ti, clipIndex: clips.length - 1 + i });
-      toast(need ? ('Remplir la boucle : ' + need + ' événement(s) réellement duppliqué(s) jusqu’à la fin du cycle.')
-                 : 'Le cycle est déjà rempli par les événements existants.', 'Édition');
+      if (!need) { toast('Le cycle est déjà rempli par les événements existants : aucune duplication envoyée.', 'Édition'); return; }
+      const steps = [];
+      for (let i = 0; i < need; i++) steps.push(['duplicateClip', { trackIndex: ti, clipIndex: clips.length - 1 + i }]);
+      nativeChain(steps, 'Édition', 'Remplir la boucle : ' + need + ' événement(s) dupliqué(s) jusqu’à la fin du cycle');
     },
     splitLoop: () => {
-      /* Diviser la boucle : coupe RÉELLE aux deux bords du cycle (splitClip). */
       const { b, ti, clips } = ACTIONS._sel();
-      if (!b || !b.send) { toast('Diviser la boucle requiert le moteur natif.', 'Édition'); return; }
+      if (!b || !b.sendChecked) { toast('Diviser la boucle requiert le moteur natif.', 'Édition'); return; }
       const L = Number(state.cycleL) || 1, R = Number(state.cycleR) || 9;
-      let n = 0;
+      const steps = [];
       [R, L].forEach((bar) => {
         clips.forEach((c, i) => {
           const sb = Number(c.startBars || 1), lb = Number(c.lenBars || 0);
-          if (bar > sb + 0.01 && bar < sb + lb - 0.01) { b.send('splitClip', { trackIndex: ti, clipIndex: i, atBars: bar }); n++; }
+          if (bar > sb + 0.01 && bar < sb + lb - 0.01) steps.push(['splitClip', { trackIndex: ti, clipIndex: i, atBars: bar }]);
         });
       });
-      toast(n ? ('Diviser la boucle : ' + n + ' coupe(s) réelle(s) aux bords du cycle.')
-              : 'Aucun événement à cheval sur les bords du cycle.', 'Édition');
+      if (!steps.length) { toast('Aucun événement à cheval sur les bords du cycle : aucune coupe envoyée.', 'Édition'); return; }
+      nativeChain(steps, 'Édition', 'Diviser la boucle : ' + steps.length + ' coupe(s) aux bords du cycle');
     },
     followSel: () => {
-      /* Suivre la sélection : défilement RÉEL de la vue vers la piste choisie. */
       const id = state.selectedTrack;
       const el = document.querySelector('[data-track="' + id + '"]') || document.querySelector('.track-row.sel');
-      if (el && el.scrollIntoView) { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); toast('Vue du projet réellement défilée vers la piste sélectionnée.', 'Affichage'); }
+      if (el && el.scrollIntoView) { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); toast('Vue du projet défilée vers la piste sélectionnée.', 'Affichage'); }
       else toast('Aucune piste sélectionnée à suivre.', 'Affichage');
     },
     arranger: () => {
-      /* Arrangeur : sélection réelle de la piste d'arrangeur du projet. */
       const t = TRACKS.find((x) => x.kind === 'arrange');
       if (t) { setTrackSel([t.id]); state.selectedTrack = t.id; renderTracks(); renderLanes(); renderOverview(); updateInspector(); updateStatus();
         const el = document.querySelector('[data-track="' + t.id + '"]'); if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
@@ -5882,24 +5978,24 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
       else toast('Ce projet ne contient pas de piste d’arrangeur (Projet ▸ Ajouter une piste ▸ Piste d’arrangeur).', 'Arrangeur');
     },
     trackTemplate: () => {
-      /* Modèle de piste : duplication RÉELLE de la piste sélectionnée. */
       const { b, ti } = ACTIONS._sel();
-      if (b && b.send) { b.send('duplicateTrack', { index: ti }); toast('Modèle de piste appliqué : la piste sélectionnée est réellement dupliquée avec ses réglages.', 'Piste'); }
-      else toast('Modèle de piste requiert le moteur natif.', 'Piste');
+      if (!b || !b.sendChecked) { toast('Modèle de piste requiert le moteur natif.', 'Piste'); return; }
+      nativeCheckedSay('duplicateTrack', { index: ti },
+        'Modèle de piste appliqué : la piste sélectionnée est dupliquée avec ses réglages.', 'Piste');
     },
-    snapEvents: () => { state.snap = true; state.snapMode = 'Événements'; updateStatus(); toast('Accrochage réel sur les bords d’événements activé.', 'Grille'); },
+    snapEvents: () => { state.snap = true; state.snapMode = 'Événements'; updateStatus(); toast('Accrochage sur les bords d’événements activé.', 'Grille'); },
     magneticGrid: () => { state.snap = true; state.snapMode = 'Grille'; updateStatus(); toast('Grille magnétique activée : le curseur s’accroche à ' + state.grid + '.', 'Grille'); },
     envShow: () => {
       TRACKS.forEach((t) => { if (isTrackSel(t.id) && t.autShown !== undefined) t.autShown = !t.autShown; });
-      renderTracks(); renderLanes(); toast('Affichage des enveloppes réellement basculé sur les pistes sélectionnées (voies d’automatisation).', 'Automation');
+      renderTracks(); renderLanes(); toast('Affichage des enveloppes basculé sur les pistes sélectionnées (voies d’automatisation).', 'Automation');
     },
     envVolume: () => {
       TRACKS.forEach((t) => { if (isTrackSel(t.id)) { t.autShown = true; t.autParam = 'Volume'; } });
-      renderTracks(); renderLanes(); toast('Enveloppe de volume réellement affichée sur les pistes sélectionnées.', 'Automation');
+      renderTracks(); renderLanes(); toast('Enveloppe de volume affichée sur les pistes sélectionnées.', 'Automation');
     },
     envPan: () => {
       TRACKS.forEach((t) => { if (isTrackSel(t.id)) { t.autShown = true; t.autParam = 'Pan'; } });
-      renderTracks(); renderLanes(); toast('Enveloppe de panoramique réellement affichée sur les pistes sélectionnées.', 'Automation');
+      renderTracks(); renderLanes(); toast('Enveloppe de panoramique affichée sur les pistes sélectionnées.', 'Automation');
     },
     envFade: () => WIN('fade'),
     envAuto: () => { ACTIONS.envShow(); },
@@ -5907,74 +6003,86 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
     batch: () => WIN('batch'),
     plugins: () => {
       const { b, ti } = ACTIONS._sel();
-      if (b && b.send) { b.send('pluginBrowser', { trackIndex: ti }); toast('Traitement par greffon : navigateur réel des modules analysés ouvert pour la piste.', 'Audio'); }
-      else toast('Traitement par greffon requiert le moteur natif.', 'Audio');
+      if (!b || !b.sendChecked) { toast('Traitement par greffon requiert le moteur natif.', 'Audio'); return; }
+      nativeCheckedSay('pluginBrowser', { trackIndex: ti },
+        'Traitement par greffon : navigateur des modules réellement analysés ouvert pour la piste ' + (ti + 1) + '.', 'Audio');
     },
     freeze: () => {
-      /* Freeze : rendu RÉEL de la piste en audio (équivalent fonctionnel). */
       const { b, ti } = ACTIONS._sel();
-      if (b && b.send) { b.send('exportTrack', { trackIndex: ti }); toast('Freeze : la piste est réellement rendue en fichier audio par le moteur (rendu hors ligne).', 'Audio'); }
-      else toast('Freeze requiert le moteur natif.', 'Audio');
+      if (!b || !b.sendChecked) { toast('Freeze requiert le moteur natif.', 'Audio'); return; }
+      nativeChecked('exportTrack', { trackIndex: ti }).then((r) => {
+        toast(r.ok
+          ? 'Freeze : rendu hors ligne de la piste ' + (ti + 1) + ' commandé au moteur — choisissez le fichier de destination ; l’écriture sera confirmée.'
+          : 'Échec réel : ' + (r.error || 'raison inconnue') + ' — aucun rendu lancé.', 'Audio');
+      });
     },
     updateOrigin: () => {
-      const { b, ti } = ACTIONS._sel();
-      if (b && b.send) { b.send('setClipStart', { trackIndex: ti, clipIndex: 0, startBars: Number(state.pos) || 1 }); toast('Origine réellement mise à jour : l’événement commence au curseur.', 'Édition'); }
-      else toast('Mettre à jour l’origine requiert le moteur natif.', 'Édition');
+      const { b, ti, clips } = ACTIONS._sel();
+      if (!b || !b.sendChecked) { toast('Mettre à jour l’origine requiert le moteur natif.', 'Édition'); return; }
+      if (!clips.length) { toast('Aucun événement réel sur la piste ' + (ti + 1) + ' : origine non modifiée.', 'Édition'); return; }
+      nativeCheckedSay('setClipStart', { trackIndex: ti, clipIndex: 0, startBars: Number(state.pos) || 1 },
+        'Origine mise à jour : l’événement commence au curseur.', 'Édition');
     },
     bounce: () => { ACTIONS.freeze(); },
     eventsToPart: () => { ACTIONS.freeze(); },
     closeGaps: () => {
-      /* Fermer les écarts : supprime RÉELLEMENT les événements silencieux. */
       const { b, ti } = ACTIONS._sel();
-      if (b && b.send) { b.send('closeGaps', { trackIndex: ti }); toast('Fermer les écarts : les silences sont réellement retirés et les événements suivants décalés.', 'Audio'); }
-      else toast('Fermer les écarts requiert le moteur natif.', 'Audio');
+      if (!b || !b.sendChecked) { toast('Fermer les écarts requiert le moteur natif.', 'Audio'); return; }
+      nativeCheckedSay('closeGaps', { trackIndex: ti },
+        'Fermer les écarts : silences retirés et événements suivants décalés.', 'Audio');
     },
     dissolvePart: () => {
-      /* Dissoudre : coupe RÉELLE de l'événement en morceaux d'une mesure. */
       const { b, ti, clips } = ACTIONS._sel();
-      if (!b || !b.send || !clips.length) { toast('Dissoudre la partie : aucun événement sur la piste sélectionnée.', 'Édition'); return; }
+      if (!b || !b.sendChecked) { toast('Dissoudre la partie requiert le moteur natif.', 'Édition'); return; }
+      if (!clips.length) { toast('Dissoudre la partie : aucun événement réel sur la piste ' + (ti + 1) + '.', 'Édition'); return; }
       const c = clips[0]; const sb = Number(c.startBars || 1), lb = Number(c.lenBars || 0);
-      let n = 0;
-      for (let bar = Math.ceil(sb); bar < sb + lb - 0.01 && n < 16; bar++) { b.send('splitClip', { trackIndex: ti, clipIndex: 0, atBars: bar }); n++; }
-      toast(n ? ('Partie réellement dissoute : ' + n + ' événement(s) d’une mesure.') : 'Événement trop court pour être dissous.', 'Édition');
+      const steps = [];
+      for (let bar = Math.ceil(sb); bar < sb + lb - 0.01 && steps.length < 16; bar++)
+        steps.push(['splitClip', { trackIndex: ti, clipIndex: 0, atBars: bar }]);
+      if (!steps.length) { toast('Événement trop court pour être dissous : aucune coupe envoyée.', 'Édition'); return; }
+      nativeChain(steps, 'Édition', 'Partie dissoute en ' + steps.length + ' événement(s) d’une mesure');
     },
     warp: () => {
-      /* Audio Warp : étirement RÉEL (varispeed) sur la longueur du cycle. */
-      const { b, ti } = ACTIONS._sel();
-      if (b && b.send) {
-        const target = Math.max(1, (Number(state.cycleR) || 9) - (Number(state.cycleL) || 1));
-        b.send('stretchClip', { trackIndex: ti, clipIndex: 0, targetBars: target });
-        toast('Audio Warp : l’événement est réellement rééchantillonné pour durer ' + target + ' mesure(s) (fichier réécrit).', 'Audio');
-      } else toast('Audio Warp requiert le moteur natif.', 'Audio');
+      const { b, ti, clips } = ACTIONS._sel();
+      if (!b || !b.sendChecked) { toast('Audio Warp requiert le moteur natif.', 'Audio'); return; }
+      if (!clips.length) { toast('Audio Warp : aucun événement réel sur la piste ' + (ti + 1) + ' — rien à étirer.', 'Audio'); return; }
+      const target = Math.max(1, (Number(state.cycleR) || 9) - (Number(state.cycleL) || 1));
+      nativeCheckedSay('stretchClip', { trackIndex: ti, clipIndex: 0, targetBars: target },
+        'Audio Warp : événement rééchantillonné pour durer ' + target + ' mesure(s), fichier réécrit et contrôlé.', 'Audio');
     },
     hitpoints: () => WIN('sample'),
     conform: () => {
-      const { b, ti } = ACTIONS._sel();
-      if (b && b.send) { b.send('processClip', { trackIndex: ti, clipIndex: 0, op: 'conform' }); toast('Conform Files : le fichier est réellement rééchantillonné au format du projet.', 'Pool'); }
-      else toast('Conform Files requiert le moteur natif.', 'Pool');
+      const { b, ti, clips } = ACTIONS._sel();
+      if (!b || !b.sendChecked) { toast('Conform Files requiert le moteur natif.', 'Pool'); return; }
+      if (!clips.length) { toast('Conform Files : aucun événement réel sur la piste ' + (ti + 1) + '.', 'Pool'); return; }
+      nativeCheckedSay('processClip', { trackIndex: ti, clipIndex: 0, op: 'conform' },
+        'Conform Files : fichier rééchantillonné au format du projet, réécrit et contrôlé.', 'Pool');
     },
     minimize: () => {
-      const { b, ti } = ACTIONS._sel();
-      if (b && b.send) { b.send('processClip', { trackIndex: ti, clipIndex: 0, op: 'bake' }); toast('Minimiser le fichier : réécriture réelle et compacte du WAV depuis le buffer traité.', 'Pool'); }
-      else toast('Minimiser le fichier requiert le moteur natif.', 'Pool');
+      const { b, ti, clips } = ACTIONS._sel();
+      if (!b || !b.sendChecked) { toast('Minimiser le fichier requiert le moteur natif.', 'Pool'); return; }
+      if (!clips.length) { toast('Minimiser le fichier : aucun événement réel sur la piste ' + (ti + 1) + '.', 'Pool'); return; }
+      nativeCheckedSay('processClip', { trackIndex: ti, clipIndex: 0, op: 'bake' },
+        'Fichier minimisé : réécriture compacte depuis le buffer traité, contrôlée par relecture.', 'Pool');
     },
     newVersion: () => {
-      const { b, ti } = ACTIONS._sel();
-      if (b && b.send) { b.send('processClip', { trackIndex: ti, clipIndex: 0, op: 'saveVersion' }); toast('Nouvelle version réelle du fichier créée (copie horodatée, original intact).', 'Pool'); }
-      else toast('Nouvelle version requiert le moteur natif.', 'Pool');
+      const { b, ti, clips } = ACTIONS._sel();
+      if (!b || !b.sendChecked) { toast('Nouvelle version requiert le moteur natif.', 'Pool'); return; }
+      if (!clips.length) { toast('Nouvelle version : aucun événement réel sur la piste ' + (ti + 1) + '.', 'Pool'); return; }
+      nativeCheckedSay('processClip', { trackIndex: ti, clipIndex: 0, op: 'saveVersion' },
+        'Nouvelle version du fichier créée (copie horodatée, original intact).', 'Pool');
     },
     prepareArchive: () => {
       const b = window.ALPHA_NATIVE;
-      if (b && b.send) { b.send('backupProject'); toast('Archive préparée : sauvegarde de secours réelle du projet et de ses médias.', 'Pool'); }
-      else toast('Préparer l’archive requiert le moteur natif.', 'Pool');
+      if (!b || !b.sendChecked) { toast('Préparer l’archive requiert le moteur natif.', 'Pool'); return; }
+      nativeCheckedSay('backupProject', {}, 'Archive préparée : sauvegarde de secours du projet et de ses médias.', 'Pool');
     },
     emptyTrash: () => {
       const b = window.ALPHA_NATIVE;
-      if (b && b.send) { b.send('emptyTrash'); toast('Corbeille Windows ouverte : les médias supprimés du Pool s’y trouvent réellement.', 'Pool'); }
-      else toast('Vider la corbeille requiert le moteur natif.', 'Pool');
+      if (!b || !b.sendChecked) { toast('Vider la corbeille requiert le moteur natif.', 'Pool'); return; }
+      nativeCheckedSay('emptyTrash', {}, 'Corbeille Windows ouverte : les médias supprimés du Pool s’y trouvent.', 'Pool');
     },
     selectInProject: () => {
-      /* Sélectionner dans le projet : retrouve la piste du dernier média. */
       const { st } = ACTIONS._sel();
       const media = (st.media || [])[ (st.media || []).length - 1 ];
       let found = null;
@@ -5984,27 +6092,29 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
       const t = rows[found];
       if (t) { setTrackSel([t.id]); state.selectedTrack = t.id; renderTracks(); renderLanes(); renderOverview(); updateInspector(); updateStatus();
         const el = document.querySelector('[data-track="' + t.id + '"]'); if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
-      toast('Média « ' + media + ' » réellement sélectionné dans le projet (piste ' + ((t && t.name) || (found + 1)) + ').', 'Pool');
+      toast('Média « ' + media + ' » sélectionné dans le projet (piste ' + ((t && t.name) || (found + 1)) + ').', 'Pool');
     },
     mediaMgmt: () => {
-      /* Gestion des médias : vérification RÉELLE des fichiers sur le disque. */
       const b = window.ALPHA_NATIVE;
-      if (!b || !b.send) { toast('Gestion des médias requiert le moteur natif.', 'Pool'); return; }
-      b.send('verifyMedia');
-      setTimeout(() => {
+      if (!b || !b.sendChecked) { toast('Gestion des médias requiert le moteur natif.', 'Pool'); return; }
+      nativeChecked('verifyMedia').then((r) => {
+        if (!r.ok) { toast('Vérification refusée par le moteur : ' + (r.error || 'raison inconnue') + '.', 'Pool'); return; }
         const st = (b.getState && b.getState()) || {};
-        const r = st.mediaIndex || {};
-        toast('Médias vérifiés sur le disque : ' + (r.found || 0) + '/' + (r.total || 0) + ' trouvé(s)' +
-          ((r.missing && r.missing.length) ? ' — manquants : ' + r.missing.slice(0, 3).join(', ') : ' — aucun manquant.') + '.', 'Pool');
-      }, 800);
+        const idx = st.mediaIndex || {};
+        toast('Médias vérifiés sur le disque : ' + (idx.found || 0) + '/' + (idx.total || 0) + ' trouvé(s)' +
+          ((idx.missing && idx.missing.length) ? ' — manquants : ' + idx.missing.slice(0, 3).join(', ') : ' — aucun manquant.') + '.', 'Pool');
+      });
     },
     remotes: () => WIN('devices'),
     quickControls: () => WIN('qcontrols'),
     report: () => {
-      /* Signaler un problème : export RÉEL du journal de diagnostic. */
       const b = window.ALPHA_NATIVE;
-      if (b && b.send) { b.send('exportPerf'); toast('Rapport : export réel du journal de diagnostic (version, périphériques, performances) — enregistrez-le où vous voulez.', 'Aide'); }
-      else toast('Rapport : version ' + (state.version || '0.5.0') + ' — le moteur natif est requis pour l’export du diagnostic.', 'Aide');
+      if (!b || !b.sendChecked) { toast('Rapport : version ' + (state.version || '0.5.0') + ' — le moteur natif est requis pour l’export du diagnostic.', 'Aide'); return; }
+      nativeChecked('exportPerf').then((r) => {
+        toast(r.ok
+          ? 'Rapport : export du journal de diagnostic commandé (version, périphériques, performances) — choisissez où l’enregistrer.'
+          : 'Échec réel : ' + (r.error || 'raison inconnue') + ' — aucun journal exporté.', 'Aide');
+      });
     }
   };
 
@@ -6770,9 +6880,18 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
        quand celui-ci contient des marqueurs (pas de fausse écriture sinon). */
     const b = window.ALPHA_NATIVE;
     const st = (b && b.getState && b.getState()) || {};
-    if (b && b.send && (st.markers || []).length)
-      b.send('renameMarker', { markerIndex: i, name: m[1], bars: m[0], endBars: m[3] || 0, cycle: m[2] === 'cycle' });
     renderRuler(); renderLanes(); renderOverview();
+    if (b && b.sendChecked && (st.markers || []).length) {
+      /* le renommage n'est confirmé dans le projet que sur réponse du moteur ;
+         en cas d'échec, l'affichage local est restauré. */
+      const avant = m[1];
+      nativeChecked('renameMarker', { markerIndex: i, name: m[1], bars: m[0], endBars: m[3] || 0, cycle: m[2] === 'cycle' }).then((r) => {
+        if (r.ok) { toast('Marqueur renommé dans le projet (confirmé par le moteur) : « ' + avant + ' ».', 'Marqueurs'); return; }
+        m[1] = avant;
+        renderRuler(); renderLanes(); renderOverview();
+        toast('Échec réel du renommage : ' + (r.error || 'raison inconnue') + ' — marqueur inchangé.', 'Marqueurs');
+      });
+    }
   }
 
   /* ------------------------------------------------ MENUS CONTEXTUELS */
@@ -7701,6 +7820,23 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
     const n = window.ALPHA_NATIVE;
     return (n && typeof n.getState === 'function' && n.getState()) || {};
   };
+  /* AUDIT v6 : envoi VÉRIFIÉ — la réussite n'est rapportée que si le moteur la
+     confirme (commandResult {ok, error, detail}). Aucun succès affiché sans
+     confirmation ; en cas d'échec, le message réel du moteur est montré et
+     rien n'est présenté comme accompli. */
+  const nativeChecked = (command, data) => {
+    const n = window.ALPHA_NATIVE;
+    if (!n || typeof n.sendChecked !== 'function')
+      return Promise.resolve({ ok: false, command: command, error: 'moteur natif hors ligne : aucune confirmation possible', detail: '' });
+    return n.sendChecked(command, data || {}).then((r) => r || { ok: false, command: command, error: 'réponse moteur absente', detail: '' });
+  };
+  const nativeCheckedSay = (command, data, okMsg, ctx) => nativeChecked(command, data).then((r) => {
+    if (ctx && A.showToast) {
+      if (r.ok) A.showToast(okMsg + (r.detail ? ' — ' + r.detail : ''), ctx);
+      else A.showToast('Échec réel : ' + (r.error || 'raison inconnue') + ' — rien n’a été modifié ni annoncé comme accompli.', ctx);
+    }
+    return r;
+  });
   const selectedNativeIndex = () => {
     const st = deviceState();
     const idx = Number(st.selectedTrack);
@@ -8433,10 +8569,11 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
               /* AUDIT v6 : les presets de mixage sont réellement persistés
                  dans le projet natif (instantanés — storeSnapshot/recall). */
               const label2 = ev.target.closest('[data-mctx]').textContent;
-              if (k === 'saveSel') nativeSend('storeSnapshot', { name: 'Mixer — sélection' });
-              else if (k === 'saveAll') nativeSend('storeSnapshot', { name: 'Mixer — tous canaux' });
-              else nativeSend('recallSnapshot', { name: 'Mixer — sélection' });
-              A.showToast('« ' + label2 + ' » : ' + (k === 'loadSel' ? 'preset réellement rappelé depuis le projet (niveaux, mutes, solos, EQ).' : 'preset réellement enregistré dans le projet (instantané natif).'), 'Mixer');
+              const cmd = k === 'loadSel' ? 'recallSnapshot' : 'storeSnapshot';
+              const nm = k === 'saveAll' ? 'Mixer — tous canaux' : 'Mixer — sélection';
+              nativeCheckedSay(cmd, { name: nm }, '« ' + label2 + ' » : ' +
+                (k === 'loadSel' ? 'preset rappelé depuis le projet (niveaux, mutes, solos, EQ) — confirmé par le moteur.'
+                                 : 'preset enregistré dans le projet (instantané natif) — confirmé par le moteur.'), 'Mixer');
             }
             else if (k === 'meter') { close(); return; }
             else if (['hold', 'forever', 'input', 'postfader', 'postpan', 'fast'].indexOf(k) >= 0) {
@@ -9394,21 +9531,38 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
               if (Math.abs(Number(clips[q].startBars || 0) - Number(part.start || 1)) < 0.02) return q;
             return 0;
           })();
-          const pc = (op, extra) => nativeSend('processClip', Object.assign({ trackIndex: ti, clipIndex: ci, op: op }, extra || {}));
+          const CTX = 'Éditeur d’échantillons';
+          const clipExiste = () => ((((deviceState().tracks || [])[ti] || {}).clips) || [])[ci];
+          /* Envoi vérifié : refuse d'agir sur un événement inexistant et
+             n'annonce la réussite que sur confirmation du moteur. */
+          const pc = (op, extra, okMsg) => {
+            if (!clipExiste()) {
+              A.showToast('Événement introuvable dans le projet (piste ' + (ti + 1) + ', index ' + ci +
+                ') : aucun traitement envoyé au moteur.', CTX);
+              return Promise.resolve({ ok: false, error: 'événement inexistant' });
+            }
+            return nativeCheckedSay('processClip', Object.assign({ trackIndex: ti, clipIndex: ci, op: op }, extra || {}), okMsg, CTX);
+          };
           if (k === 'rmhp') { const c = pane.querySelector('[data-hpcount]'); if (c) c.textContent = '0'; A.showToast('Hitpoints réinitialisés — relancez « Détecter » pour une nouvelle analyse réelle.', 'Éditeur d’échantillons'); return; }
           if (k === 'detect') {
-            nativeSend('detectTransients', { trackIndex: ti, clipIndex: ci, sensitivity: 62 });
-            let tries = 0;
-            const poll = setInterval(() => {
-              tries++;
-              const sil = deviceState().silence;
-              if (sil && sil.kind === 'transients') {
-                clearInterval(poll);
-                const c = pane.querySelector('[data-hpcount]');
-                if (c) c.textContent = String(sil.count || 0);
-                A.showToast((sil.count || 0) + ' hitpoint(s) réellement détecté(s) par analyse d’énergie (sensibilité 62 %).', 'Éditeur d’échantillons');
-              } else if (tries > 16) { clearInterval(poll); A.showToast('Aucun échantillon chargé sur cette piste : importez d’abord un événement audio.', 'Éditeur d’échantillons'); }
-            }, 250);
+            if (!clipExiste()) { A.showToast('Événement introuvable dans le projet : aucune analyse demandée au moteur.', CTX); return; }
+            nativeChecked('detectTransients', { trackIndex: ti, clipIndex: ci, sensitivity: 62 }).then((r) => {
+              if (!r.ok) { A.showToast('Analyse refusée par le moteur : ' + (r.error || 'raison inconnue') + '.', CTX); return; }
+              let tries = 0;
+              const poll = setInterval(() => {
+                tries++;
+                const sil = deviceState().silence;
+                if (sil && sil.kind === 'transients') {
+                  clearInterval(poll);
+                  const c = pane.querySelector('[data-hpcount]');
+                  if (c) c.textContent = String(sil.count || 0);
+                  A.showToast((sil.count || 0) + ' hitpoint(s) détecté(s) et confirmé(s) par le moteur (analyse d’énergie, sensibilité 62 %).', CTX);
+                } else if (tries > 16) {
+                  clearInterval(poll);
+                  A.showToast('Analyse commandée mais aucun résultat publié par le moteur : aucun hitpoint affiché.', CTX);
+                }
+              }, 250);
+            });
             return;
           }
           if (k === 'auto' || k === 'preview' || k === 'warp' || k === 'manual' || k === 'global') { b.classList.toggle('on'); }
@@ -9423,45 +9577,51 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
           };
           /* Opérations RÉELLES envoyées au moteur (échantillons modifiés,
              fichier réécrit, historique du projet mis à jour). */
-          if (k === 'flatten') { pc('bake'); A.showToast('Aplatir : le buffer traité est réellement réécrit dans le fichier (bake).', 'Éditeur d’échantillons'); return; }
-          if (k === 'slicenclose') { nativeSend('splitAtSilences', { trackIndex: ti, clipIndex: ci }); A.showToast('Découper & fermer : l’événement est réellement découpé aux silences détectés par le moteur.', 'Éditeur d’échantillons'); return; }
-          if (k === 'groove') {
-            nativeSend('detectTempo');
-            setTimeout(() => {
+          if (k === 'flatten') { pc('bake', null, 'Aplatir : buffer traité réécrit dans le fichier et contrôlé par relecture.'); return; }
+          if (k === 'slicenclose') {
+            if (!clipExiste()) { A.showToast('Événement introuvable : aucune découpe envoyée.', CTX); return; }
+            nativeCheckedSay('splitAtSilences', { trackIndex: ti, clipIndex: ci },
+              'Découper & fermer : événement découpé aux silences mesurés par le moteur.', CTX);
+            return;
+          }
+          if (k === 'groove' || k === 'auto') {
+            nativeChecked('detectTempo').then((r) => {
+              if (!r.ok) { A.showToast('Mesure de tempo refusée par le moteur : ' + (r.error || 'raison inconnue') + '.', CTX); return; }
               const bpm = Number(deviceState().lastDetectedBpm || 0);
-              A.showToast(bpm > 0 ? 'Groove créé : tempo réel détecté sur l’audio (' + bpm.toFixed(1) + ' BPM) et appliqué à la grille.' : 'Détection de tempo lancée — aucun tempo net détecté sur cet événement.', 'Éditeur d’échantillons');
-            }, 1200);
+              A.showToast(bpm > 0
+                ? (k === 'groove' ? 'Groove créé : tempo mesuré par le moteur (' : 'Auto Adjust : tempo mesuré par le moteur (') + bpm.toFixed(1) + ' BPM).'
+                : 'Mesure effectuée, aucun tempo net publié par le moteur : grille inchangée.', CTX);
+            });
+            if (k === 'auto') return;
             return;
           }
           if (k === 'mkmarks') {
-            nativeSend('detectSilence', { trackIndex: ti, clipIndex: ci, thresholdDb: -42, minCloseMs: 100, minOpenMs: 300 });
-            setTimeout(() => { nativeSend('markersFromSilences'); A.showToast('Marqueurs réellement créés dans le projet aux silences détectés.', 'Éditeur d’échantillons'); }, 900);
+            if (!clipExiste()) { A.showToast('Événement introuvable : aucune détection envoyée.', CTX); return; }
+            nativeChecked('detectSilence', { trackIndex: ti, clipIndex: ci, thresholdDb: -42, minCloseMs: 100, minOpenMs: 300 }).then((r) => {
+              if (!r.ok) { A.showToast('Détection des silences refusée : ' + (r.error || 'raison inconnue') + ' — aucun marqueur créé.', CTX); return; }
+              return nativeCheckedSay('markersFromSilences', {},
+                'Marqueurs créés dans le projet aux silences réellement mesurés.', CTX);
+            });
             return;
           }
           if (k === 'mkregions' || k === 'mkevents') {
-            nativeSend('splitAtSilences', { trackIndex: ti, clipIndex: ci });
-            A.showToast((k === 'mkregions' ? 'Régions' : 'Événements') + ' réellement créés : découpe du fichier aux silences détectés par le moteur.', 'Éditeur d’échantillons');
+            if (!clipExiste()) { A.showToast('Événement introuvable : aucune découpe envoyée.', CTX); return; }
+            nativeCheckedSay('splitAtSilences', { trackIndex: ti, clipIndex: ci },
+              (k === 'mkregions' ? 'Régions' : 'Événements') + ' créés : découpe du fichier aux silences mesurés par le moteur.', CTX);
             return;
           }
           if (k === 'gain') {
-            const v = window.prompt ? window.prompt('Gain en dB appliqué réellement au fichier :', '0') : '0';
-            if (v !== null) { pc('gain', { value: Number(String(v).replace(',', '.')) || 0 }); A.showToast('Gain de ' + v + ' dB réellement appliqué aux échantillons (fichier réécrit).', 'Éditeur d’échantillons'); }
+            const v = window.prompt ? window.prompt('Gain en dB appliqué au fichier :', '0') : '0';
+            if (v !== null) pc('gain', { value: Number(String(v).replace(',', '.')) || 0 }, 'Gain de ' + v + ' dB appliqué aux échantillons, fichier réécrit et contrôlé.');
             return;
           }
-          if (k === 'normalize') { pc('normalize', { value: -0.3 }); A.showToast('Normalisation réelle à −0,3 dB : crête mesurée puis fichier réécrit.', 'Éditeur d’échantillons'); return; }
-          if (k === 'fadein') { pc('fadeIn', { ms: 50 }); A.showToast('Fondu entrant réel de 50 ms appliqué aux échantillons (fichier réécrit).', 'Éditeur d’échantillons'); return; }
-          if (k === 'fadeout') { pc('fadeOut', { ms: 50 }); A.showToast('Fondu sortant réel de 50 ms appliqué aux échantillons (fichier réécrit).', 'Éditeur d’échantillons'); return; }
-          if (k === 'reverse') { pc('reverse'); A.showToast('Événement réellement inversé : échantillons retournés et fichier réécrit.', 'Éditeur d’échantillons'); return; }
-          if (k === 'silence') { pc('silence'); A.showToast('Silence réellement appliqué : échantillons mis à zéro et fichier réécrit.', 'Éditeur d’échantillons'); return; }
-          if (k === 'auto') {
-            nativeSend('detectTempo');
-            setTimeout(() => {
-              const bpm = Number(deviceState().lastDetectedBpm || 0);
-              A.showToast(bpm > 0 ? 'Auto Adjust : tempo et grille mesurés sur l’audio réel (' + bpm.toFixed(1) + ' BPM).' : 'Auto Adjust : mesure en cours — aucun tempo net sur cet événement.', 'Éditeur d’échantillons');
-            }, 1200);
-          }
+          if (k === 'normalize') { pc('normalize', { value: -0.3 }, 'Normalisation à −0,3 dB : crête mesurée, fichier réécrit et contrôlé.'); return; }
+          if (k === 'fadein') { pc('fadeIn', { ms: 50 }, 'Fondu entrant de 50 ms appliqué aux échantillons, fichier réécrit et contrôlé.'); return; }
+          if (k === 'fadeout') { pc('fadeOut', { ms: 50 }, 'Fondu sortant de 50 ms appliqué aux échantillons, fichier réécrit et contrôlé.'); return; }
+          if (k === 'reverse') { pc('reverse', null, 'Événement inversé : échantillons retournés, fichier réécrit et contrôlé.'); return; }
+          if (k === 'silence') { pc('silence', null, 'Silence appliqué : échantillons mis à zéro, fichier réécrit et contrôlé.'); return; }
           if (k === 'selall') apply(0, 1);
-          A.showToast(MSG[k] || ('« ' + b.textContent + ' »'), 'Éditeur d’échantillons');
+          A.showToast(MSG[k] || ('« ' + b.textContent + ' »'), CTX);
         });
         $('[data-seruler]', body).addEventListener('click', (e) => {
           const r = e.currentTarget.getBoundingClientRect();
@@ -10261,7 +10421,9 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
             if (!f) return;
             /* AUDIT v6 : l'état « utilisé » est réellement mesuré — références
                du projet comptées et présence sur disque vérifiée (verifyMedia). */
-            nativeSend('verifyMedia');
+            nativeChecked('verifyMedia').then((rv) => {
+              if (!rv.ok) { A.showToast('Vérification refusée par le moteur : ' + (rv.error || 'raison inconnue') + '.', 'Pool'); return; }
+            });
             let tries = 0;
             const t = setInterval(() => {
               tries++;
@@ -10289,23 +10451,23 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
             /* AUDIT v6 : « Redresser » mesure réellement le tempo du média puis
                l'étire au tempo du projet (stretchClip, fichier réécrit). */
             const ti = Number(deviceState().selectedTrack) || 0;
-            nativeSend('detectTempo');
-            setTimeout(() => {
+            const live = (((deviceState().tracks || [])[ti] || {}).clips) || [];
+            if (!live.length) { A.showToast('Aucun événement audio réel sur la piste ' + (ti + 1) + ' : redressement impossible.', 'Pool'); return; }
+            nativeChecked('detectTempo').then((r) => {
+              if (!r.ok) { A.showToast('Mesure de tempo refusée par le moteur : ' + (r.error || 'raison inconnue') + '.', 'Pool'); return; }
               const bpm = Number(deviceState().lastDetectedBpm || 0);
-              if (bpm > 0) {
-                const proj = Number((A.state && A.state.tempo) || 120) || 120;
-                const bars = Math.max(1, Math.round(4 * bpm / proj));
-                nativeSend('stretchClip', { trackIndex: ti, clipIndex: 0, targetBars: bars });
+              if (!(bpm > 0)) { redraw(); A.showToast('Mesure effectuée, aucun tempo net publié : événement inchangé.', 'Pool'); return; }
+              const proj = Number((A.state && A.state.tempo) || 120) || 120;
+              const bars = Math.max(1, Math.round(4 * bpm / proj));
+              return nativeChecked('stretchClip', { trackIndex: ti, clipIndex: 0, targetBars: bars }).then((r2) => {
+                if (!r2.ok) { A.showToast('Tempo mesuré (' + bpm.toFixed(1) + ' BPM) mais étirement refusé : ' + (r2.error || 'raison inconnue') + ' — fichier inchangé.', 'Pool'); return; }
                 f.tempo = bpm.toFixed(3).replace('.', ',');
                 c.classList.add('on');
                 redraw();
-                A.showToast('« ' + f.n + ' » redressé : tempo réel mesuré ' + f.tempo + ' BPM, événement réellement rééchantillonné sur ' +
-                  bars + ' mesure(s) au tempo du projet (' + proj + ' BPM).', 'Pool');
-              } else {
-                redraw();
-                A.showToast('Tempo non mesurable sur ce média : aucun signal rythmique net détecté par le moteur.', 'Pool');
-              }
-            }, 1200);
+                A.showToast('« ' + f.n + ' » redressé : tempo mesuré ' + f.tempo + ' BPM puis événement rééchantillonné sur ' + bars +
+                  ' mesure(s) au tempo du projet (' + proj + ' BPM) — confirmé par le moteur.' + (r2.detail ? ' (' + r2.detail + ')' : ''), 'Pool');
+              });
+            });
           }));
           $$('[data-pname]', B).forEach((sp) => sp.addEventListener('dblclick', (e) => {
             e.stopPropagation();
@@ -10332,9 +10494,16 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
                 if (f.real) {
                   const dir = String(f.real).replace(/[^\\/]*$/, '');
                   const ext = (/\.[^.]+$/.exec(String(f.real)) || [''])[0];
-                  nativeSend('renameMedia', { path: f.real, newName: dir + v + ext });
-                  f.n = v; f.real = dir + v + ext; f.path = dir;
-                  A.showToast('« ' + old + ' » réellement renommé en « ' + v + ext + ' » : fichier déplacé sur le disque, références du projet mises à jour.', 'Pool');
+                  /* la ligne n'est renommée QUE si le déplacement disque est confirmé */
+                  nativeChecked('renameMedia', { path: f.real, newName: dir + v + ext }).then((r) => {
+                    if (r.ok) {
+                      f.n = v; f.real = dir + v + ext; f.path = dir;
+                      A.showToast('« ' + old + ' » renommé en « ' + v + ext + ' » : fichier déplacé sur le disque et références du projet mises à jour — confirmé par le moteur.', 'Pool');
+                    } else {
+                      sp.textContent = old;
+                      A.showToast('Échec réel : ' + (r.error || 'raison inconnue') + ' — nom et références inchangés.', 'Pool');
+                    }
+                  });
                 } else {
                   f.n = v;
                   A.showToast('« ' + old + ' » renommé dans la liste : ce média de démonstration n’a pas de fichier sur disque.', 'Pool');
@@ -10425,21 +10594,26 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
             const ti = Number(deviceState().selectedTrack) || 0;
             const at = Number((A.state && A.state.pos) || 1);
             if (f && f.real) {
-              nativeSend('importMediaFile', { path: f.real, startBars: at, trackIndex: ti });
-              A.showToast('« ' + f.n + '.' + f.ext + ' » réellement importé depuis ' + f.real +
-                ' et inséré à la mesure ' + at + ' (piste ' + (ti + 1) + ').', 'Pool');
+              nativeCheckedSay('importMediaFile', { path: f.real, startBars: at, trackIndex: ti },
+                '« ' + f.n + '.' + f.ext + ' » importé depuis ' + f.real + ' et inséré à la mesure ' + at +
+                ' (piste ' + (ti + 1) + ') — confirmé par le moteur.', 'Pool');
             } else {
-              nativeSend('importAudio', { startBars: at, trackIndex: ti });
-              A.showToast('Sélecteur Windows ouvert : choisissez le fichier à insérer réellement à la mesure ' + at + '.', 'Pool');
+              nativeChecked('importAudio', { startBars: at, trackIndex: ti }).then((r) => {
+                A.showToast(r.ok
+                  ? 'Sélecteur Windows ouvert : le fichier choisi sera importé réellement à la mesure ' + at + '.'
+                  : 'Échec réel : ' + (r.error || 'raison inconnue') + ' — aucun sélecteur ouvert.', 'Pool');
+              });
             }
             return;
           }
           if (k === 'trash') {
             /* AUDIT v6 : ouvre la corbeille Windows réelle (les médias retirés
                du Pool y sont déplacés par moveToTrash, donc récupérables). */
-            nativeSend('emptyTrash');
-            TRS.length = 0; redraw();
-            A.showToast('Corbeille Windows ouverte : les médias retirés du Pool s’y trouvent réellement (rien n’est effacé sans votre action).', 'Pool');
+            nativeChecked('emptyTrash').then((r) => {
+              if (!r.ok) { A.showToast('Échec réel : ' + (r.error || 'raison inconnue') + ' — la corbeille n’a pas été ouverte, la liste locale est inchangée.', 'Pool'); return; }
+              TRS.length = 0; redraw();
+              A.showToast('Corbeille Windows ouverte : les médias retirés du Pool s’y trouvent réellement (rien n’est effacé sans votre action).', 'Pool');
+            });
             return;
           }
           if (k === 'erase') {
@@ -10448,60 +10622,77 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
             if (f.used) { A.showToast('« ' + f.n + ' » est utilisé par le projet : retirez-le d’abord des pistes.', 'Pool'); return; }
             /* AUDIT v6 (A121) : suppression RÉELLE — le fichier est déplacé
                vers la corbeille Windows par le moteur, puis retiré de l'index. */
-            if (f.real) nativeSend('removeMedia', { path: f.real });
-            TRS.push(f);
-            const g = st.sel.replace(/\d+$/, '');
-            GROUPS.filter((x) => x[0] === g)[0][2] = GROUPS.filter((x) => x[0] === g)[0][2].filter((x) => x !== f);
-            redraw();
-            A.showToast(f.real ? '« ' + f.n + '.' + f.ext + ' » réellement déplacé vers la corbeille Windows (récupérable) et retiré de l’index du projet.'
-              : '« ' + f.n + ' » retiré de la liste (média de démonstration, sans fichier sur disque).', 'Pool');
+            const retire = (msg) => {
+              TRS.push(f);
+              const g = st.sel.replace(/\d+$/, '');
+              GROUPS.filter((x) => x[0] === g)[0][2] = GROUPS.filter((x) => x[0] === g)[0][2].filter((x) => x !== f);
+              redraw();
+              A.showToast(msg, 'Pool');
+            };
+            if (f.real) {
+              /* la liste n'est modifiée QUE si le moteur confirme le déplacement */
+              nativeChecked('removeMedia', { path: f.real }).then((r) => {
+                if (r.ok) retire('« ' + f.n + '.' + f.ext + ' » déplacé vers la corbeille Windows (récupérable) et références du projet retirées — confirmé par le moteur.' + (r.detail ? ' (' + r.detail + ')' : ''));
+                else A.showToast('Échec réel : ' + (r.error || 'raison inconnue') + ' — le fichier reste sur disque et dans la liste, aucune référence perdue.', 'Pool');
+              });
+            } else retire('« ' + f.n + ' » retiré de la liste (média de démonstration, sans fichier sur disque).');
             return;
           }
           /* AUDIT v6 : chaque bouton du Pool appelle une commande réelle. */
           const f2 = name(st.sel);
           const ti2 = Number(deviceState().selectedTrack) || 0;
+          const liveClips = (((deviceState().tracks || [])[ti2] || {}).clips) || [];
+          const needClip = (what) => {
+            if (liveClips.length) return true;
+            A.showToast('Aucun événement audio réel sur la piste ' + (ti2 + 1) + ' : ' + what + ' impossible (aucune commande envoyée).', 'Pool');
+            return false;
+          };
           if (k === 'import') {
-            nativeSend('importAudio', { startBars: Number((A.state && A.state.pos) || 1), trackIndex: ti2 });
-            A.showToast('Sélecteur Windows ouvert : le fichier choisi est réellement lu, copié dans le dossier du projet et indexé.', 'Pool');
+            nativeChecked('importAudio', { startBars: Number((A.state && A.state.pos) || 1), trackIndex: ti2 }).then((r) => {
+              A.showToast(r.ok
+                ? 'Sélecteur Windows ouvert : le fichier choisi sera lu, copié dans le dossier du projet puis indexé.'
+                : 'Échec réel : ' + (r.error || 'raison inconnue') + ' — aucun sélecteur ouvert.', 'Pool');
+            });
             return;
           }
           if (k === 'convert') {
-            nativeSend('processClip', { trackIndex: ti2, clipIndex: 0, op: 'conform' });
-            A.showToast('Conversion réelle : le fichier est rééchantillonné au format du projet (fréquence et résolution cibles) puis réécrit.', 'Pool');
+            if (!needClip('conversion')) return;
+            nativeCheckedSay('processClip', { trackIndex: ti2, clipIndex: 0, op: 'conform' },
+              'Conversion effectuée : fichier rééchantillonné au format du projet, réécrit et contrôlé par relecture.', 'Pool');
             return;
           }
           if (k === 'minimize') {
-            nativeSend('processClip', { trackIndex: ti2, clipIndex: 0, op: 'bake' });
-            A.showToast('Fichier réellement minimisé : les portions inutilisées sont retirées et un fichier unique compact est réécrit.', 'Pool');
+            if (!needClip('minimisation')) return;
+            nativeCheckedSay('processClip', { trackIndex: ti2, clipIndex: 0, op: 'bake' },
+              'Fichier minimisé : portions inutilisées retirées, fichier unique compact réécrit et contrôlé.', 'Pool');
             return;
           }
           if (k === 'peaks') {
-            nativeSend('getPeaks', { trackIndex: ti2, clipIndex: 0, points: 700 });
-            let n = 0;
-            const t = setInterval(() => {
-              n++;
+            if (!needClip('recalcul des images')) return;
+            nativeChecked('getPeaks', { trackIndex: ti2, clipIndex: 0, points: 700 }).then((r) => {
+              if (!r.ok) { A.showToast('Recalcul refusé par le moteur : ' + (r.error || 'raison inconnue') + '.', 'Pool'); return; }
               const pk = deviceState().peaks;
-              if (pk && (pk.points || pk.error)) {
-                clearInterval(t);
-                A.showToast(pk.error ? 'Images (peaks) : ' + pk.error
-                  : 'Images réellement recalculées depuis les échantillons : ' + pk.points + ' points min/max par canal.', 'Pool');
-              } else if (n > 12) { clearInterval(t); A.showToast('Aucun échantillon chargé : importez d’abord un média pour recalculer ses images.', 'Pool'); }
-            }, 250);
+              A.showToast(pk && pk.error ? 'Images (peaks) : ' + pk.error
+                : 'Images recalculées depuis les échantillons et publiées : ' + ((pk && pk.points) || 0) + ' points min/max par canal.', 'Pool');
+            });
             return;
           }
           if (k === 'origin') {
-            nativeSend('setClipStart', { trackIndex: ti2, clipIndex: 0, startBars: Number((A.state && A.state.pos) || 1) });
-            A.showToast('Origine réellement mise à jour : l’événement commence à la position du curseur (' +
-              A.fmtPos(Number((A.state && A.state.pos) || 1)) + ').', 'Pool');
+            if (!needClip('mise à jour de l’origine')) return;
+            nativeCheckedSay('setClipStart', { trackIndex: ti2, clipIndex: 0, startBars: Number((A.state && A.state.pos) || 1) },
+              'Origine mise à jour : l’événement commence à la position du curseur (' +
+              A.fmtPos(Number((A.state && A.state.pos) || 1)) + ') — confirmé par le moteur.', 'Pool');
             return;
           }
           if (k === 'reveal') {
             if (f2 && f2.real) {
-              nativeSend('revealMedia', { path: f2.real });
-              A.showToast('« ' + f2.n + '.' + f2.ext + ' » réellement révélé dans l’explorateur Windows.', 'Pool');
+              nativeCheckedSay('revealMedia', { path: f2.real },
+                '« ' + f2.n + '.' + f2.ext + ' » révélé dans l’explorateur Windows.', 'Pool');
             } else {
-              nativeSend('chooseMediaFolder');
-              A.showToast('Aucun chemin disque pour ce média : sélectionnez le dossier de médias à indexer réellement.', 'Pool');
+              nativeChecked('chooseMediaFolder').then((r) => {
+                A.showToast(r.ok ? 'Sélecteur de dossier ouvert : ce média n’a pas de chemin disque, indexez un dossier réel.'
+                  : 'Échec réel : ' + (r.error || 'raison inconnue') + ' — aucun sélecteur ouvert.', 'Pool');
+              });
             }
             return;
           }
@@ -10511,17 +10702,17 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
             return;
           }
           if (k === 'prep') {
-            nativeSend('backupProject');
-            A.showToast('Archive réellement préparée : le projet et ses médias sont copiés dans un dossier de sauvegarde.', 'Pool');
+            nativeCheckedSay('backupProject', {},
+              'Archive préparée : projet et médias copiés dans un dossier de sauvegarde.', 'Pool');
             return;
           }
           if (k === 'verify') {
-            nativeSend('verifyMedia');
-            setTimeout(() => {
+            nativeChecked('verifyMedia').then((rv) => {
+              if (!rv.ok) { A.showToast('Vérification refusée par le moteur : ' + (rv.error || 'raison inconnue') + '.', 'Pool'); return; }
               const r = deviceState().mediaIndex || {};
-              A.showToast('Médias réellement vérifiés sur disque : ' + (r.found || 0) + '/' + (r.total || 0) + ' trouvé(s)' +
-                ((r.missing && r.missing.length) ? ' — manquants : ' + r.missing.slice(0, 3).join(', ') : '.'), 'Pool');
-            }, 800);
+              A.showToast('Médias vérifiés sur disque : ' + (r.found || 0) + '/' + (r.total || 0) + ' trouvé(s)' +
+                ((r.missing && r.missing.length) ? ' — manquants : ' + r.missing.slice(0, 3).join(', ') : ' — aucun manquant.') + '.', 'Pool');
+            });
             return;
           }
         }));
@@ -11682,6 +11873,23 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
     if (n && typeof n.send === 'function') { n.send(command, data || {}); return true; }
     return false;
   };
+  /* AUDIT v6 : envoi VÉRIFIÉ — la réussite n'est rapportée que si le moteur la
+     confirme (commandResult {ok, error, detail}). Aucun succès affiché sans
+     confirmation ; en cas d'échec, le message réel du moteur est montré et
+     rien n'est présenté comme accompli. */
+  const nativeChecked = (command, data) => {
+    const n = window.ALPHA_NATIVE;
+    if (!n || typeof n.sendChecked !== 'function')
+      return Promise.resolve({ ok: false, command: command, error: 'moteur natif hors ligne : aucune confirmation possible', detail: '' });
+    return n.sendChecked(command, data || {}).then((r) => r || { ok: false, command: command, error: 'réponse moteur absente', detail: '' });
+  };
+  const nativeCheckedSay = (command, data, okMsg, ctx) => nativeChecked(command, data).then((r) => {
+    if (ctx && A.showToast) {
+      if (r.ok) A.showToast(okMsg + (r.detail ? ' — ' + r.detail : ''), ctx);
+      else A.showToast('Échec réel : ' + (r.error || 'raison inconnue') + ' — rien n’a été modifié ni annoncé comme accompli.', ctx);
+    }
+    return r;
+  });
   const track = (id) => (A.trackById ? A.trackById(id) : null);
   const parts = () => (A.PARTS || []);
   const fmt = (p) => (A.fmtPos ? A.fmtPos(p) : String(p));
@@ -11774,7 +11982,9 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
           const ledD = $('[data-pfdiskled]', body); if (ledD) ledD.classList.toggle('on', disk > 84);
         }, 420);
         const rb = $('[data-pfreset]', body);
-        if (rb) rb.addEventListener('click', () => { nativeSend('resetPerformancePeaks'); A.showToast('Crêtes réinitialisées (mesures réelles).', 'Performances VST'); });
+        if (rb) rb.addEventListener('click', () => {
+          nativeCheckedSay('resetPerformancePeaks', {}, 'Crêtes de performance réinitialisées (mesures réelles).', 'Performances VST');
+        });
         $$('[data-pfshow]', body).forEach((b) => b.addEventListener('click', () => {
           const dot = b.querySelector('.pf-dot');
           dot.classList.toggle('on');
@@ -12040,8 +12250,8 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
         }));
         $$('[data-badd]', body).forEach((b) => b.addEventListener('click', () => {
           /* AUDIT v6 : ajout réel d'une piste dans le projet natif. */
-          nativeSend('addTrack', { name: 'Piste audio ' + (((deviceState().tracks || []).length) + 1), channelType: 'audio' });
-          A.showToast('Ajouter : piste réellement créée dans le projet par le moteur (elle apparaît en bas de la liste).', 'Navigateur de projet');
+          nativeCheckedSay('addTrack', { name: 'Piste audio ' + (((deviceState().tracks || []).length) + 1), channelType: 'audio' },
+            'Ajouter : piste créée dans le projet par le moteur (elle apparaît en bas de la liste).', 'Navigateur de projet');
         }));
         $$('[data-bexp]', body).forEach((b) => b.addEventListener('click', () => {
           const open = b.dataset.bexp === 'all';
@@ -12389,19 +12599,32 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
       });
     }
     function applyPrefs(body, note) {
-      const b = window.ALPHA_NATIVE;
-      if (b && b.send) b.send('setPreferences', {
+      /* AUDIT v6 : l'écriture des préférences est VÉRIFIÉE — l'interface n'est
+         modifiée et le message de réussite n'est affiché que si le moteur
+         confirme (commandResult). En cas d'échec, rien n'est appliqué. */
+      const payload = {
         autoSave: PREF.autoSave, theme: PREF.themeKey, largeText: PREF.largeText,
         highContrast: PREF.highContrast, latencyMs: PREF.latencyMs,
         precountBars: PREF.precountBars, autoSaveSeconds: 300
+      };
+      return nativeChecked('setPreferences', payload).then((r) => {
+        if (!r.ok) {
+          A.showToast('Échec réel : ' + (r.error || 'raison inconnue') +
+            ' — préférences non écrites dans le projet, interface inchangée.', 'Préférences');
+          return r;
+        }
+        applyPrefsUi(body, note);
+        return r;
       });
+    }
+    function applyPrefsUi(body, note) {
       const root = document.documentElement;
       root.classList.toggle('pf-large', !!PREF.largeText);
       root.classList.toggle('pf-contrast', !!PREF.highContrast);
       root.classList.toggle('pf-noshadow', PREF.shadows === false);
       if (A.state) A.state.trackColors = PREF.trackColors !== false;
       if (typeof A.renderTracksNow === 'function') { try { A.renderTracksNow(); } catch (e) { /* interface seule */ } }
-      A.showToast(note || ('Préférences réellement écrites dans le projet natif : latence ' +
+      A.showToast(note || ('Préférences écrites dans le projet natif (confirmé par le moteur) : latence ' +
         PREF.latencyMs.toFixed(1) + ' ms, précompte ' + PREF.precountBars + ' mesure(s), ' +
         'sauvegarde auto ' + (PREF.autoSave ? 'activée' : 'désactivée') + ', police ' +
         (PREF.largeText ? 'agrandie' : 'normale') + '.', 'Préférences'));
@@ -12454,9 +12677,11 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
           if (onlyMarked && !n) { A.showToast('Aucun réglage marqué : cochez les cases à droite des lignes à stocker.', 'Préférences'); return; }
           readPane(body);
           const nm = 'Préférences — ' + PREF.preset + (onlyMarked ? ' (' + n + ' réglages marqués)' : '');
-          const b = window.ALPHA_NATIVE;
-          if (b && b.send) b.send('storeWorkspace', { name: nm });
-          applyPrefs(body, 'Preset « ' + nm + ' » réellement stocké dans le projet natif (espace de travail restaurable).');
+          applyPrefs(body).then((r) => {
+            if (!r || !r.ok) return;
+            nativeCheckedSay('storeWorkspace', { name: nm },
+              'Preset « ' + nm + ' » stocké dans le projet natif (espace de travail restaurable).', 'Préférences');
+          });
         }));
         $$('[data-pfpreset]', body).forEach((b) => b.addEventListener('click', () => {
           const cycle = ['Alpha Standard', 'Nuendo 4 par défaut', 'Montage vidéo', 'Mixage surround'];
@@ -13309,13 +13534,19 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
               /* AUDIT v6 (A62) : « Abandonner » annule RÉELLEMENT le rendu —
                  le moteur casse la boucle d'écriture et supprime le fichier
                  partiel (cancelRender → renderOffline). */
-              nativeSend('cancelRender');
-              if (b.dataset.timer) clearInterval(Number(b.dataset.timer));
-              if (msg) msg.textContent = 'Rendu annulé — le fichier partiel est supprimé par le moteur.';
-              if (bar) bar.style.width = '0';
-              b.textContent = 'Exporter'; delete b.dataset.busy; delete b.dataset.timer;
-              prog.style.display = 'none';
-              A.showToast('Export annulé : le moteur a interrompu le rendu et supprimé le fichier partiel.', 'Export Audio Mixdown');
+              nativeChecked('cancelRender').then((r) => {
+                if (b.dataset.timer) clearInterval(Number(b.dataset.timer));
+                b.textContent = 'Exporter'; delete b.dataset.busy; delete b.dataset.timer;
+                if (!r.ok) {
+                  if (msg) msg.textContent = 'Annulation refusée : ' + (r.error || 'raison inconnue');
+                  A.showToast('Échec réel de l’annulation : ' + (r.error || 'raison inconnue') + ' — le rendu se poursuit.', 'Export Audio Mixdown');
+                  return;
+                }
+                if (msg) msg.textContent = 'Rendu annulé — le fichier partiel est supprimé par le moteur.';
+                if (bar) bar.style.width = '0';
+                prog.style.display = 'none';
+                A.showToast('Export annulé : le moteur a interrompu le rendu et supprimé le fichier partiel (confirmé).', 'Export Audio Mixdown');
+              });
               return;
             }
             /* AUDIT v6 (A118) : export RÉEL. Le moteur JUCE ouvre le sélecteur
@@ -13455,8 +13686,13 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
             /* AUDIT v6 (A116) : le fondu est réellement appliqué aux
                échantillons — rampe écrite dans le fichier par le moteur. */
             const ms = Math.round(parseFloat(String(st.len).replace(',', '.')) * 1000) || 500;
-            nativeSend('processClip', { trackIndex: Number(deviceState().selectedTrack) || 0, clipIndex: 0, op: 'fadeIn', ms: ms });
-            A.showToast('Fondu réellement appliqué (' + KINDS[st.kind][0] + ', ' + ms + ' ms) : rampe écrite dans les échantillons, fichier réécrit par le moteur.', 'Fondu');
+            const tiF = Number(deviceState().selectedTrack) || 0;
+            if (!((((deviceState().tracks || [])[tiF] || {}).clips) || [])[0]) {
+              A.showToast('Aucun événement audio réel sur la piste ' + (tiF + 1) + ' : fondu non appliqué (aucune commande envoyée).', 'Fondu');
+              return;
+            }
+            nativeCheckedSay('processClip', { trackIndex: tiF, clipIndex: 0, op: 'fadeIn', ms: ms },
+              'Fondu appliqué (' + KINDS[st.kind][0] + ', ' + ms + ' ms) : rampe écrite dans les échantillons, fichier réécrit et contrôlé.', 'Fondu');
           }
           if (k === 'ok' || k === 'cancel') W.close('fade');
         }));
@@ -13579,10 +13815,21 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
                événement, entrée du suivant, échantillons réécrits. */
             const ms = Math.round(parseFloat(String(st.len).replace(',', '.')) * 1000) || 1250;
             const ti = Number(deviceState().selectedTrack) || 0;
-            nativeSend('processClip', { trackIndex: ti, clipIndex: 0, op: 'fadeOut', ms: ms });
-            nativeSend('processClip', { trackIndex: ti, clipIndex: 1, op: 'fadeIn', ms: ms });
-            A.showToast('Fondu enchaîné réellement appliqué : ' + ms + ' ms, décalage ' + st.offset +
-              ' (' + (st.eqPower ? 'égal puissance' : 'courbes réglables') + (st.sym ? ', symétrique' : '') + ') — échantillons modifiés et fichiers réécrits.', 'Fondu enchaîné');
+            const clipsX = (((deviceState().tracks || [])[ti] || {}).clips) || [];
+            if (clipsX.length < 2) {
+              A.showToast('Fondu enchaîné impossible : la piste ' + (ti + 1) + ' contient ' + clipsX.length +
+                ' événement(s) réel(s), il en faut deux adjacents. Aucun traitement envoyé.', 'Fondu enchaîné');
+              return;
+            }
+            /* exécution séquentielle : la sortie doit être confirmée avant l'entrée */
+            nativeChecked('processClip', { trackIndex: ti, clipIndex: 0, op: 'fadeOut', ms: ms }).then((r1) => {
+              if (!r1.ok) { A.showToast('Échec réel sur le fondu sortant : ' + (r1.error || 'raison inconnue') + ' — fondu entrant non envoyé.', 'Fondu enchaîné'); return; }
+              return nativeChecked('processClip', { trackIndex: ti, clipIndex: 1, op: 'fadeIn', ms: ms }).then((r2) => {
+                if (!r2.ok) { A.showToast('Fondu sortant confirmé, mais échec réel du fondu entrant : ' + (r2.error || 'raison inconnue') + '.', 'Fondu enchaîné'); return; }
+                A.showToast('Fondu enchaîné appliqué et confirmé par le moteur : ' + ms + ' ms, décalage ' + st.offset +
+                  ' (' + (st.eqPower ? 'égal puissance' : 'courbes réglables') + (st.sym ? ', symétrique' : '') + ') — deux fichiers réécrits et contrôlés.', 'Fondu enchaîné');
+              });
+            });
           }
           if (k === 'ok' || k === 'cancel') W.close('crossfade');
         }));
@@ -13685,7 +13932,13 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
           const th = rowVal('Seuil d’ouverture') || rowVal('Seuil') || -42;
           const minOpen = (rowVal('Temps min. ouvert') || 0.3) * 1000;
           const minClose = (rowVal('Temps min. fermé') || 0.1) * 1000;
-          nativeSend('detectSilence', { trackIndex: ti(), clipIndex: 0, thresholdDb: th, minOpenMs: minOpen, minCloseMs: minClose });
+          if (!((((deviceState().tracks || [])[ti()] || {}).clips) || [])[0]) {
+            A.showToast('Aucun événement audio réel sur la piste ' + (ti() + 1) + ' : détection impossible (aucune commande envoyée).', 'Detect Silence');
+            return;
+          }
+          nativeChecked('detectSilence', { trackIndex: ti(), clipIndex: 0, thresholdDb: th, minOpenMs: minOpen, minCloseMs: minClose }).then((rc) => {
+            if (!rc.ok) A.showToast('Détection refusée par le moteur : ' + (rc.error || 'raison inconnue') + ' — aucune région affichée.', 'Detect Silence');
+          });
           let tries = 0;
           const poll = setInterval(() => {
             tries++;
@@ -13705,12 +13958,19 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
         $$('.dlg-foot .w-btn, [data-detcalc]', body).forEach((b) => b.addEventListener('click', () => {
           if (b.textContent === 'Traiter') {
             /* Traitement réel : découpe aux silences + marqueurs optionnels. */
+            const asRegions = $$('.dlg-check', body).some((c) => c.classList.contains('on') && /régions/i.test(c.textContent));
             runDetect(() => {
-              nativeSend('splitAtSilences', { trackIndex: ti(), clipIndex: 0 });
-              const asRegions = $$('.dlg-check', body).some((c) => c.classList.contains('on') && /régions/i.test(c.textContent));
-              if (asRegions) nativeSend('markersFromSilences');
-              A.showToast('Traitement réel : ' + det.length + ' silence(s) — événements découpés par le moteur' + (asRegions ? ' et marqueurs créés' : '') + '.', 'Detect Silence');
-              W.close('detect');
+              /* séquentiel et vérifié : la découpe doit être confirmée avant les marqueurs */
+              nativeChecked('splitAtSilences', { trackIndex: ti(), clipIndex: 0 }).then((r1) => {
+                if (!r1.ok) { A.showToast('Échec réel de la découpe : ' + (r1.error || 'raison inconnue') + ' — événements inchangés.', 'Detect Silence'); return; }
+                const suite = asRegions ? nativeCheckedSay('markersFromSilences', {}, 'Marqueurs créés aux silences mesurés.', 'Detect Silence')
+                                        : Promise.resolve({ ok: true });
+                suite.then((r2) => {
+                  if (asRegions && !r2.ok) { A.showToast('Découpe confirmée, mais échec réel des marqueurs : ' + (r2.error || 'raison inconnue') + '.', 'Detect Silence'); return; }
+                  A.showToast('Traitement confirmé par le moteur : ' + det.length + ' silence(s) — événements découpés' + (asRegions ? ' et marqueurs créés' : '') + '.', 'Detect Silence');
+                  W.close('detect');
+                });
+              });
             });
           }
           else if (b.textContent === 'Aperçu') { nativeSend('play'); A.showToast('Lecture réelle de l’événement : les passages sous le seuil sont les silences détectés.', 'Detect Silence'); }
@@ -14333,7 +14593,8 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
                     tr.addEventListener('dblclick', () => {
                       const path = tr.dataset.path;
                       if (path) {
-                        nativeSend('importMediaFile', { path: path, startBars: Number((A.state && A.state.pos) || 1), trackIndex: Number(deviceState().selectedTrack) || 0 });
+                        nativeCheckedSay('importMediaFile', { path: path, startBars: Number((A.state && A.state.pos) || 1), trackIndex: Number(deviceState().selectedTrack) || 0 },
+                          '« ' + String(path).replace(/^.*[\\/]/, '') + ' » importé et inséré dans le projet — confirmé par le moteur.', 'MediaBay');
                         A.showToast('« ' + tr.children[0].textContent + ' » réellement importé du dossier indexé vers la piste sélectionnée.', cfg.title);
                       }
                     });
@@ -14658,16 +14919,16 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
           } else if (t === 'Appliquer') {
             sync(); A.showToast('Configuration appliquée à la fenêtre de projet.', 'Setup'); return;
           } else if (t.indexOf('Enregistrer') === 0) {
-            nativeSend('storeWorkspace', { name: 'Configuration ' + NAME[cur] });
-            A.showToast('Preset réellement enregistré dans le projet : « Configuration ' + NAME[cur] + ' » (storeWorkspace).', 'Setup');
+            nativeCheckedSay('storeWorkspace', { name: 'Configuration ' + NAME[cur] },
+              'Preset enregistré dans le projet : « Configuration ' + NAME[cur] + ' ».', 'Setup');
           } else if (t === 'Supprimer') {
-            nativeSend('deleteWorkspace', { name: 'Configuration ' + NAME[cur] });
-            A.showToast('Preset réellement supprimé du projet : « Configuration ' + NAME[cur] + ' ».', 'Setup');
+            nativeCheckedSay('deleteWorkspace', { name: 'Configuration ' + NAME[cur] },
+              'Preset supprimé du projet : « Configuration ' + NAME[cur] + ' ».', 'Setup');
           } else {
             /* Preset rappelé depuis le projet : les espaces de travail sont
                réellement persistés (recallWorkspace). */
-            nativeSend('recallWorkspace', { name: 'Configuration ' + NAME[cur] });
-            A.showToast('« ' + t + ' » : preset de configuration rappelé depuis le projet (espace de travail réel).', 'Setup');
+            nativeCheckedSay('recallWorkspace', { name: 'Configuration ' + NAME[cur] },
+              '« ' + t + ' » : preset de configuration rappelé depuis le projet.', 'Setup');
           }
         });
         $('[data-laysel]', body).addEventListener('click', (e) => {
@@ -14778,14 +15039,13 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
               WS.list.push({ n: ++WS.seq, name: preset.name, id: preset.id, layout: preset.layout });
               W.persist();
               if (W.saveWorkspace && false) {}
-              nativeSend('storeWorkspace', {
+              nativeCheckedSay('storeWorkspace', {
                 name: preset.name,
                 positionBars: Number((A.state && A.state.pos) || 1),
                 panelState: JSON.stringify(preset.layout || {}),
                 windows: ((preset.layout && preset.layout.wins) || []).map((w) => String(w.id)),
                 toolbarItems: []
-              });
-              A.showToast('Preset « ' + preset.name + ' » instancié dans le projet (moteur réel).', 'Espaces de travail');
+              }, 'Preset « ' + preset.name + ' » instancié dans le projet (confirmé par le moteur).', 'Espaces de travail');
             }
             draw();
           }));
@@ -14906,6 +15166,21 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
     const n = window.ALPHA_NATIVE;
     return (n && typeof n.getState === 'function' && n.getState()) || {};
   };
+  /* AUDIT v6 : envoi VÉRIFIÉ — la réussite n'est rapportée que si le moteur la
+     confirme (commandResult {ok, error, detail}). Jamais de succès affiché sans
+     confirmation, jamais de modification annoncée en cas d'échec. */
+  const nativeChecked = (command, data) => {
+    const n = window.ALPHA_NATIVE;
+    if (!n || typeof n.sendChecked !== 'function')
+      return Promise.resolve({ ok: false, command: command, error: 'moteur natif hors ligne : aucune confirmation possible', detail: '' });
+    return n.sendChecked(command, data || {}).then((r) => r || { ok: false, command: command, error: 'réponse moteur absente', detail: '' });
+  };
+  const nativeCheckedSay = (command, data, okMsg, ctx) => nativeChecked(command, data).then((r) => {
+    if (!ctx || !A.showToast) return r;
+    if (r.ok) A.showToast(okMsg + (r.detail ? ' — ' + r.detail : ''), ctx);
+    else A.showToast('Échec réel : ' + (r.error || 'raison inconnue') + ' — rien n’a été modifié ni annoncé comme accompli.', ctx);
+    return r;
+  });
 
   /* racine des fenêtres du lot 3 : colonne qui remplit le corps de fenêtre */
   const ROOT = '.w3-pi,.w3-le,.w3-md,.w3-tp,.w3-qs,.w3-bc,.w3-im,.w3-omf,.w3-batch,.w3-sur,.w3-sync,.w3-mc,.w3-sl,.w3-rw';
@@ -15941,16 +16216,17 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
   function buildBatch() {
     /* AUDIT v6 (A80) : chaque opération est RÉELLEMENT exécutée par le
        moteur sur les échantillons — plus de chaîne de traitement fictive. */
+    /* Chaque opération renvoie une promesse de confirmation du moteur. */
     const OPS = {
-      'Découper aux silences': (ti, ci) => nativeSend('splitAtSilences', { trackIndex: ti, clipIndex: ci }),
-      'Normaliser (-0,3 dB)': (ti, ci) => nativeSend('processClip', { trackIndex: ti, clipIndex: ci, op: 'normalize', value: -0.3 }),
-      'Normaliser (-0,1 dB)': (ti, ci) => nativeSend('processClip', { trackIndex: ti, clipIndex: ci, op: 'normalize', value: -0.1 }),
-      'Compresseur de piste': (ti) => nativeSend('setFx', { trackIndex: ti, thresholdDb: -18, ratio: 3, attackMs: 10, releaseMs: 120, makeupDb: 3, dynamicsEnabled: true }),
-      'EQ de piste (4 bandes)': (ti) => nativeSend('setFx', { trackIndex: ti, eqEnabled: true }),
-      'Fondu entrant 50 ms': (ti, ci) => nativeSend('processClip', { trackIndex: ti, clipIndex: ci, op: 'fadeIn', ms: 50 }),
-      'Fondu sortant 50 ms': (ti, ci) => nativeSend('processClip', { trackIndex: ti, clipIndex: ci, op: 'fadeOut', ms: 50 }),
-      'Conformer au projet': (ti, ci) => nativeSend('processClip', { trackIndex: ti, clipIndex: ci, op: 'conform' }),
-      'Réécrire le fichier': (ti, ci) => nativeSend('processClip', { trackIndex: ti, clipIndex: ci, op: 'bake' })
+      'Découper aux silences': (ti, ci) => nativeChecked('splitAtSilences', { trackIndex: ti, clipIndex: ci }),
+      'Normaliser (-0,3 dB)': (ti, ci) => nativeChecked('processClip', { trackIndex: ti, clipIndex: ci, op: 'normalize', value: -0.3 }),
+      'Normaliser (-0,1 dB)': (ti, ci) => nativeChecked('processClip', { trackIndex: ti, clipIndex: ci, op: 'normalize', value: -0.1 }),
+      'Compresseur de piste': (ti) => nativeChecked('setFx', { trackIndex: ti, thresholdDb: -18, ratio: 3, attackMs: 10, releaseMs: 120, makeupDb: 3, dynamicsEnabled: true }),
+      'EQ de piste (4 bandes)': (ti) => nativeChecked('setFx', { trackIndex: ti, eqEnabled: true }),
+      'Fondu entrant 50 ms': (ti, ci) => nativeChecked('processClip', { trackIndex: ti, clipIndex: ci, op: 'fadeIn', ms: 50 }),
+      'Fondu sortant 50 ms': (ti, ci) => nativeChecked('processClip', { trackIndex: ti, clipIndex: ci, op: 'fadeOut', ms: 50 }),
+      'Conformer au projet': (ti, ci) => nativeChecked('processClip', { trackIndex: ti, clipIndex: ci, op: 'conform' }),
+      'Réécrire le fichier': (ti, ci) => nativeChecked('processClip', { trackIndex: ti, clipIndex: ci, op: 'bake' })
     };
     const st = { sel: 0, list: [
       { n: 'Voix — nettoyage', ops: ['Découper aux silences', 'Normaliser (-0,3 dB)', 'Compresseur de piste'] },
@@ -15979,7 +16255,7 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
       '<div class="bl"><h6>Traitements enregistrés</h6><div class="bilst" data-bilist>' + left() + '</div></div>' +
       '<div class="br" data-biright>' + right() + '</div>' +
       '</div>' +
-      '<div class="w3-foot"><span>Traiter la sélection : ' + (A.PARTS ? A.PARTS.length : 0) + ' événement(s) audio</span>' +
+      '<div class="w3-foot"><span data-batchfoot>Prêt : la chaîne sera exécutée opération par opération, puis confirmée par le moteur.</span>' +
       '<span style="flex:1"></span><button class="w-btn" data-bpa="close">Fermer</button>' +
       '<button class="w-btn on" data-bpa="apply">Traiter</button></div></div>';
     return {
@@ -15993,29 +16269,79 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
         function bind() {
           $$('[data-bi]', body).forEach((r) => r.addEventListener('click', () => { st.sel = +r.dataset.bi; redraw(); }));
         }
+        const setLine = (t) => { const l = $('[data-batchfoot]', body); if (l) l.textContent = t; };
+        /* AUDIT v6 : exécution RÉELLE, SÉQUENTIELLE et VÉRIFIÉE. Chaque
+           opération attend la confirmation du moteur avant la suivante ; un
+           échec arrête la chaîne de l'événement concerné et est rapporté. Les
+           événements inexistants ne sont jamais traités. */
+        async function runBatch(chain, ops, ti, count) {
+          const btn = $('[data-bpa="apply"]', body);
+          if (btn) { btn.disabled = true; btn.textContent = 'Traitement…'; }
+          const rep = { ok: 0, ko: 0, errors: [] };
+          for (let ci = 0; ci < count; ci++) {
+            const live = ((deviceState().tracks || [])[ti] || {}).clips || [];
+            if (!live[ci]) {
+              rep.errors.push('Événement ' + (ci + 1) + ' : introuvable dans le projet après modification — non traité');
+              setLine('Événement ' + (ci + 1) + ' introuvable : traitement arrêté pour éviter d’agir sur un événement inexistant.');
+              break;
+            }
+            for (let oi = 0; oi < ops.length; oi++) {
+              const opName = ops[oi];
+              setLine('Événement ' + (ci + 1) + '/' + count + ' — opération ' + (oi + 1) + '/' + ops.length + ' : ' + opName + ' (confirmation moteur attendue)…');
+              let r = null;
+              try { r = await OPS[opName](ti, ci); }
+              catch (e) { r = { ok: false, error: (e && e.message) || String(e) }; }
+              if (r && r.ok) { rep.ok++; continue; }
+              rep.ko++;
+              const why = (r && r.error) || 'confirmation moteur absente';
+              rep.errors.push('Événement ' + (ci + 1) + ' · ' + opName + ' : ' + why);
+              setLine('Échec réel — « ' + opName + ' » sur l’événement ' + (ci + 1) + ' : ' + why);
+              break;   // chaîne de cet événement interrompue : pas de traitement aveugle
+            }
+          }
+          if (btn) { btn.disabled = false; btn.textContent = 'Traiter'; }
+          const summary = rep.ok + ' opération(s) confirmée(s) par le moteur' +
+            (rep.errors.length ? ', ' + rep.errors.length + ' échec(s)' : '') +
+            ' sur ' + count + ' événement(s) réel(s).';
+          setLine(summary);
+          if (rep.ko || rep.errors.length)
+            A.showToast('Traitement « ' + chain.n + ' » NON entièrement exécuté : ' +
+              rep.errors.slice(0, 3).join(' | ') + (rep.errors.length > 3 ? ' | …' : '') + ' — ' + summary, 'Batch Processing');
+          else
+            A.showToast('Traitement « ' + chain.n + ' » réellement exécuté et confirmé par le moteur : ' + summary, 'Batch Processing');
+          return rep;
+        }
         bind();
         $$('[data-bpa]', body).forEach((b) => b.addEventListener('click', () => {
           const k = b.dataset.bpa;
           if (k === 'new') {
             st.list.push({ n: 'Traitement ' + (st.list.length + 1), ops: ['Normaliser (-0,3 dB)', 'Compresseur de piste'] });
             st.sel = st.list.length - 1; redraw();
-            A.showToast('Traitement créé avec des opérations réelles (normalisation mesurée + dynamique de piste) — complétez-le puis « Traiter ».', 'Batch Processing');
+            A.showToast('Traitement créé avec des opérations réelles (normalisation mesurée + dynamique de piste) — complétez-le puis « Traiter » : chaque opération sera confirmée par le moteur.', 'Batch Processing');
             return;
           }
           if (k === 'del') { const p = st.list.splice(st.sel, 1)[0] || { n: '—' }; st.sel = 0; redraw(); A.showToast('« ' + p.n + ' » supprimé de la liste des traitements.', 'Batch Processing'); return; }
           if (k === 'close') { W.close('batch'); return; }
           if (k === 'apply') {
-            /* Exécution RÉELLE de la chaîne sur chaque événement de la piste. */
             const b = st.list[st.sel] || { ops: [] };
-            const ti = Number(deviceState().selectedTrack) || 0;
-            const clips = ((deviceState().tracks || [])[ti] || {}).clips || [];
-            const n = Math.max(1, clips.length);
-            let sent = 0;
-            for (let ci = 0; ci < n; ci++)
-              b.ops.forEach((opName) => { const fn = OPS[opName]; if (fn) { fn(ti, ci); sent++; } });
-            A.showToast(sent > 0
-              ? 'Traitement « ' + b.n + ' » réellement exécuté : ' + sent + ' opération(s) sur ' + n + ' événement(s) — fichiers réécrits par le moteur.'
-              : 'Chaîne vide : ajoutez des opérations au traitement.', 'Batch Processing');
+            const ops = (b.ops || []).filter((o) => typeof OPS[o] === 'function');
+            const unknown = (b.ops || []).filter((o) => typeof OPS[o] !== 'function');
+            if (!ops.length) {
+              A.showToast('Chaîne vide ou opérations inconnues' + (unknown.length ? ' (' + unknown.join(', ') + ')' : '') +
+                ' : aucun traitement envoyé au moteur.', 'Batch Processing');
+              return;
+            }
+            const stt = deviceState();
+            const ti = Number(stt.selectedTrack) || 0;
+            const clips = ((stt.tracks || [])[ti] || {}).clips || [];
+            if (!clips.length) {
+              setLine('Aucun événement audio réel sur la piste ' + (ti + 1) + ' : rien à traiter.');
+              A.showToast('Aucun événement audio réel sur la piste ' + (ti + 1) + ' : rien à traiter. Importez d’abord un média (aucune commande envoyée).', 'Batch Processing');
+              return;
+            }
+            if (unknown.length)
+              setLine('Opérations non prises en charge ignorées : ' + unknown.join(', ') + '.');
+            runBatch(b, ops, ti, clips.length);
             return;
           }
           const MSG = {
@@ -17503,6 +17829,33 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
     });
   }
 
+  /* AUDIT v6 : envoi VÉRIFIÉ. Le moteur publie commandResult {seq, command, ok,
+     error, detail} après chaque commande : la réussite n'est rapportée que si
+     cette confirmation correspond à la commande envoyée. En cas d'échec, le
+     snapshot reste disponible pour diagnostic mais ok vaut false. */
+  function sendChecked(name, data) {
+    return nativeCall(name, data).then((result) => {
+      const snapshot = parseSnapshot(result);
+      if (snapshot && typeof snapshot === 'object') applyState(snapshot);
+      const cr = (snapshot && snapshot.commandResult) || null;
+      const confirmed = !!cr && String(cr.command) === String(name) && cr.ok === true;
+      return {
+        ok: confirmed,
+        command: String(name),
+        error: confirmed ? '' : String((cr && cr.error) || 'Commande non confirmée par le moteur'),
+        detail: (cr && cr.detail) ? String(cr.detail) : '',
+        status: (cr && cr.status) ? String(cr.status) : String((snapshot && snapshot.status) || ''),
+        seq: cr ? Number(cr.seq) || 0 : 0,
+        snapshot: snapshot
+      };
+    }).catch((error) => ({
+      ok: false,
+      command: String(name),
+      error: 'Pont natif en échec : ' + ((error && error.message) || String(error)),
+      detail: '', status: '', seq: 0, snapshot: null
+    }));
+  }
+
   function applyDisplayMetrics(snapshot) {
     const root = document.documentElement;
     if (!root || !root.style || typeof root.style.setProperty !== 'function') return;
@@ -17696,6 +18049,7 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
 
   window.ALPHA_NATIVE = Object.assign(window.ALPHA_NATIVE || {}, {
     send,
+    sendChecked,
     requestState: () => send('getState'),
     applyState,
     getState: () => lastSnapshot,

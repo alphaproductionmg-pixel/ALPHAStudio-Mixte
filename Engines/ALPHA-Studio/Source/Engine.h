@@ -829,7 +829,9 @@ public:
     float masterDb = 0.0f;
     std::function<void()> onChanged;
     std::function<void (AudioProcessorGraph::NodeID)> onInsertRemoved;
-    String audioError, lastStatus;
+    String audioError, lastStatus, commandDetail;
+    alpha::JsonValue commandResult;
+    int commandSeq = 0;
     StringArray audioDeviceTypes;
     bool asioAvailable = false;
 
@@ -2743,7 +2745,8 @@ public:
             }
             c.data = fresh;
             c.peaks = makePeaks (*c.data);
-            writeClipToDisk (c, rate);
+            const auto we = writeClipToDisk (c, rate);
+            if (we.isNotEmpty()) { lastStatus = we; return we; }
             return {};
         }
         else if (op == "saveVersion")
@@ -2761,34 +2764,148 @@ public:
         else return TR ("Opération inconnue : ") + alphaString (op);
 
         c.peaks = makePeaks (buf);
-        writeClipToDisk (c);
+        const auto we = writeClipToDisk (c);
+        if (we.isNotEmpty()) { lastStatus = we; return we; }
         return {};
     }
 
-    // Réécrit réellement le fichier WAV source depuis le buffer en mémoire.
-    void writeClipToDisk (const Clip& c, double forcedRate = 0.0)
+    // Écriture RÉELLE d'un buffer dans un fichier audio : encodeur choisi par
+    // l'extension (WAV, AIFF, FLAC, OGG), fichier temporaire puis déplacement,
+    // et contrôle par relecture (canaux + durée) avant de conclure. Renvoie
+    // vrai uniquement si le fichier écrit a pu être relu et vérifié.
+    bool writeAudioBuffer (const File& dest, const AudioBuffer<float>& buf, double rate,
+                           int bits, const String& ext, String& err)
     {
-        if (c.data == nullptr || ! c.file.existsAsFile() || ! c.file.hasFileExtension (".wav")) return;
-        auto& buf = *c.data;
-        std::unique_ptr<AudioFormatReader> r (basicFormats.createReaderFor (c.file));
-        const double fileRate = forcedRate > 0.0 ? forcedRate
-                              : (r != nullptr ? r->sampleRate : jmax (8000.0, sr()));
-        r.reset();
-        const File tmp = c.file.getSiblingFile (c.file.getFileNameWithoutExtension() + "-tmp.wav");
-        if (auto os = tmp.createOutputStream())
+        if (buf.getNumSamples() <= 0 || buf.getNumChannels() <= 0) { err = TR ("Buffer vide"); return false; }
+        if (rate < 8000.0 || rate > 384000.0) { err = TR ("Fréquence d'écriture invalide"); return false; }
+        const String wanted = ext.isEmpty() ? String (".wav") : ext;
+        AudioFormat* fmt = basicFormats.findFormatForFileExtension (wanted);
+        if (fmt == nullptr) { err = TR ("aucun encodeur pour ") + wanted; return false; }
+        const String tmpExt = wanted.startsWithChar ('.') ? wanted : ("." + wanted);
+        const File tmp = dest.getSiblingFile (dest.getFileNameWithoutExtension() + "-tmp" + tmpExt);
+        std::unique_ptr<FileOutputStream> os (tmp.createOutputStream());
+        if (os == nullptr) { err = TR ("fichier temporaire impossible"); return false; }
+        const int quality = jmax (0, fmt->getQualityOptions().size() / 2);   // Ogg : débit médian
+        std::unique_ptr<AudioFormatWriter> w (fmt->createWriterFor (os.get(), rate,
+                                                                    (uint32) buf.getNumChannels(),
+                                                                    jlimit (8, 32, bits), {}, quality));
+        if (w == nullptr) { tmp.deleteFile(); err = fmt->getFormatName() + TR (" : encodeur refusé"); return false; }
+        os.release();
+        const bool written = w->writeFromAudioSampleBuffer (buf, 0, buf.getNumSamples());
+        w->flush();
+        w.reset();
+        if (! written) { tmp.deleteFile(); err = TR ("écriture des échantillons interrompue"); return false; }
+        if (dest.exists() && ! dest.deleteFile())
+        { tmp.deleteFile(); err = TR ("fichier existant impossible à remplacer"); return false; }
+        if (! tmp.moveFileTo (dest)) { tmp.deleteFile(); err = TR ("déplacement du fichier temporaire impossible"); return false; }
+        std::unique_ptr<AudioFormatReader> r (basicFormats.createReaderFor (dest));
+        if (r == nullptr) { err = TR ("fichier écrit illisible"); return false; }
+        if ((int) r->numChannels != buf.getNumChannels() || r->lengthInSamples < buf.getNumSamples() - 32)
         {
-            WavAudioFormat wav;
-            std::unique_ptr<AudioFormatWriter> w (wav.createWriterFor (os.get(), fileRate,
-                                                                       buf.getNumChannels(), 24, {}, 0));
-            if (w != nullptr)
-            {
-                os.release();
-                w->writeFromAudioSampleBuffer (buf, 0, buf.getNumSamples());
-                w.reset();
-                c.file.deleteFile();
-                tmp.moveFileTo (c.file);
-            }
+            err = TR ("contrôle du fichier écrit échoué (") + String ((int) r->numChannels) + " ch / "
+                  + String ((int) r->lengthInSamples) + TR (" échantillons relus, attendus ")
+                  + String (buf.getNumChannels()) + " ch / " + String (buf.getNumSamples()) + ")";
+            return false;
         }
+        return true;
+    }
+
+    // Résout le chemin demandé par l'interface (absolu ou relatif au projet).
+    File mediaFileFromPath (const String& path) const
+    {
+        if (path.isEmpty()) return {};
+        File direct (path);
+        if (File::isAbsolutePath (path)) return direct;
+        const File inRoot = effectiveRoot().getChildFile (path);
+        if (inRoot.getFullPathName().isNotEmpty()) return inRoot;
+        return direct;
+    }
+    // Références du projet (telles que stockées) qui pointent vers ce fichier :
+    // sert à maintenir la cohérence disque/projet lors d'un renommage ou d'un
+    // retrait réel (le chemin affiché par l'interface peut être absolu alors
+    // que le projet stocke un chemin relatif).
+    std::vector<std::string> coreRefsForFile (const File& f) const
+    {
+        std::vector<std::string> out;
+        if (f == File()) return out;
+        const String full = f.getFullPathName();
+        const auto match = [&] (const std::string& m)
+        {
+            if (m.empty()) return false;
+            if (alphaString (m) == full) return true;
+            const File r = resolveMedia (alphaString (m), effectiveRoot());
+            return r != File() && r.getFullPathName() == full;
+        };
+        for (const auto& t : core.state.tracks)
+            for (const auto& cc : t.clips)
+                if (match (cc.media) && std::find (out.begin(), out.end(), cc.media) == out.end())
+                    out.push_back (cc.media);
+        for (const auto& m : core.state.media)
+            if (match (m) && std::find (out.begin(), out.end(), m) == out.end())
+                out.push_back (m);
+        return out;
+    }
+
+    // Met à jour les références du projet après un changement réel de fichier :
+    // le disque et le projet restent cohérents (aucune référence orpheline).
+    void updateCoreClipMedia (const String& oldMedia, const String& newMedia)
+    {
+        if (oldMedia.isEmpty() || oldMedia == newMedia) return;
+        const std::string oldS = oldMedia.toStdString(), newS = newMedia.toStdString();
+        for (auto& t : core.state.tracks)
+            for (auto& cc : t.clips) if (cc.media == oldS) cc.media = newS;
+        for (auto& m : core.state.media) if (m == oldS) m = newS;
+    }
+
+    // Réécrit réellement le fichier source depuis le buffer en mémoire.
+    // AUDIT v6 : WAV, AIFF, FLAC et OGG sont écrits dans leur format d'origine.
+    // Si l'encodeur du format d'origine échoue, une copie WAV fonctionnelle est
+    // produite ET les références (moteur + projet) sont mises à jour. Aucune
+    // réussite n'est renvoyée sans fichier écrit puis contrôlé par relecture.
+    String writeClipToDisk (Clip& c, double forcedRate = 0.0)
+    {
+        if (c.data == nullptr || c.data->getNumSamples() == 0) return TR ("Aucun échantillon à écrire");
+        if (c.file == File()) return TR ("Aucun fichier source associé à cet événement");
+        auto& buf = *c.data;
+        double fileRate = forcedRate;
+        int bits = 24;
+        {
+            std::unique_ptr<AudioFormatReader> r (basicFormats.createReaderFor (c.file));
+            if (r != nullptr)
+            {
+                if (fileRate <= 0.0) fileRate = r->sampleRate;
+                bits = jlimit (8, 32, (int) r->bitsPerSample);
+            }
+            else if (! c.file.existsAsFile())
+                return TR ("Fichier source introuvable : ") + c.file.getFileName();
+        }
+        if (fileRate <= 0.0) fileRate = jmax (8000.0, sr());
+        const String ext = c.file.getFileExtension();
+        String err;
+        if (writeAudioBuffer (c.file, buf, fileRate, bits, ext, err))
+        {
+            setCommandDetail (TR ("fichier réécrit et contrôlé par relecture : ") + c.file.getFileName()
+                              + " (" + String ((int) buf.getNumChannels()) + TR (" ch, ")
+                              + String ((int) buf.getNumSamples()) + TR (" échantillons, ")
+                              + String ((int) fileRate) + " Hz)");
+            return {};
+        }
+        // repli : copie WAV fonctionnelle, références moteur ET projet mises à jour
+        const File wav = c.file.getSiblingFile (c.file.getFileNameWithoutExtension() + ".wav");
+        String err2;
+        if (! writeAudioBuffer (wav, buf, fileRate, 24, String (".wav"), err2))
+            return TR ("Écriture impossible dans le format ") + (ext.isEmpty() ? String ("(sans extension)") : ext)
+                   + " (" + err + TR (") et repli WAV échoué (") + err2
+                   + TR (") : le fichier d'origine est inchangé.");
+        const String oldMedia = c.media;
+        c.file = wav;
+        c.media = relativeMedia (wav, effectiveRoot());
+        updateCoreClipMedia (oldMedia, c.media);
+        setCommandDetail (TR ("format ") + (ext.isEmpty() ? String ("sans extension") : ext)
+                          + TR (" non réécritable (") + err + TR (") : copie WAV fonctionnelle créée, ")
+                          + TR ("références du projet mises à jour vers ") + wav.getFileName());
+        lastStatus = TR ("Copie WAV créée et références mises à jour : ") + wav.getFileName();
+        return {};
     }
 
     // Étirement RÉEL (varispeed Lagrange) : le buffer est rééchantillonné pour
@@ -2816,7 +2933,14 @@ public:
         }
         c.data = fresh;
         c.peaks = makePeaks (*c.data);
-        writeClipToDisk (c);
+        const auto we = writeClipToDisk (c);
+        if (we.isNotEmpty())
+        {
+            // échec disque : le buffer étiré reste en mémoire, mais rien n'est
+            // annoncé comme écrit — l'événement conserve son fichier d'origine.
+            lastStatus = we;
+            return we;
+        }
         return {};
     }
 
@@ -3929,7 +4053,29 @@ public:
         return {};
     }
 
+    // AUDIT v6 : confirmation RÉELLE par commande. L'interface ne peut plus
+    // annoncer une réussite que le moteur n'a pas confirmée : chaque appel
+    // publie {seq, command, ok, error, detail, status} dans l'état
+    // (commandResult), lu par le pont WebView2 (sendChecked).
     String command (const String& name, const String& payloadText)
+    {
+        commandSeq++;
+        commandDetail = String();
+        const String error = dispatchCommand (name, payloadText);
+        alpha::JsonValue r (alpha::JsonValue::Type::Object);
+        r["seq"] = alpha::JsonValue ((double) commandSeq);
+        r["command"] = alpha::JsonValue (name.toStdString());
+        r["ok"] = alpha::JsonValue (error.isEmpty());
+        r["error"] = alpha::JsonValue (error.toStdString());
+        r["detail"] = alpha::JsonValue (commandDetail.toStdString());
+        r["status"] = alpha::JsonValue (lastStatus.toStdString());
+        commandResult = r;
+        return error;
+    }
+    // Détail vérifiable renvoyé avec la confirmation (chemin écrit, contrôles…).
+    void setCommandDetail (const String& d) { commandDetail = d; }
+
+    String dispatchCommand (const String& name, const String& payloadText)
     {
         std::string err;
         alpha::JsonValue p = alpha::JsonValue::parse (payloadText.toStdString(), err);
@@ -4346,16 +4492,108 @@ public:
         }
         if (cmd == "removeMedia")
         {
-            const File f = resolveMedia (alphaString (alpha::jString (p, "path")), effectiveRoot());
-            if (f.exists()) f.moveToTrash();     // suppression réelle mais récupérable
-            return dispatchCore ("removeMedia", p, true);
+            // AUDIT v6 (A121) : cohérence disque/projet garantie — le fichier
+            // n'est retiré des références QUE si le déplacement réel a réussi.
+            const auto path = alphaString (alpha::jString (p, "path"));
+            if (path.isEmpty()) { lastStatus = TR ("Chemin de média manquant"); return lastStatus; }
+            const File f = mediaFileFromPath (path);
+            const bool existed = f.exists();
+            if (existed && ! f.moveToTrash())
+            {
+                const String e = TR ("Déplacement vers la corbeille impossible : aucune référence du projet n'a été retirée (")
+                                 + f.getFileName() + ")";
+                lastStatus = e;
+                return e;
+            }
+            const auto refs = coreRefsForFile (f);
+            std::vector<std::string> targets = refs;
+            if (targets.empty()) targets.push_back (path.toStdString());
+            int removed = 0;
+            for (const auto& ref : targets)
+            {
+                alpha::JsonValue q (alpha::JsonValue::Type::Object);
+                q["path"] = alpha::JsonValue (ref);
+                if (dispatchCore ("removeMedia", q, true).isEmpty()) removed++;
+            }
+            syncClipsFromCore();
+            setCommandDetail (existed
+                ? TR ("fichier déplacé vers la corbeille Windows (récupérable) puis ")
+                  + String (removed) + TR (" référence(s) retirée(s) du projet")
+                : TR ("média hors ligne (aucun fichier sur disque) : ") + String (removed)
+                  + TR (" référence(s) retirée(s) du projet"));
+            lastStatus = TR ("Média retiré : ") + path;
+            return {};
         }
         if (cmd == "renameMedia")
         {
-            const File f = resolveMedia (alphaString (alpha::jString (p, "path")), effectiveRoot());
+            // AUDIT v6 (A121) : le renommage disque est vérifié AVANT toute
+            // modification des références — un échec laisse le projet intact.
+            const auto path = alphaString (alpha::jString (p, "path"));
             const auto nn = alphaString (alpha::jString (p, "newName"));
-            if (f.exists() && nn.isNotEmpty()) f.moveFileTo (f.getSiblingFile (nn));
-            return dispatchCore ("renameMedia", p, true);
+            if (path.isEmpty() || nn.isEmpty())
+            { lastStatus = TR ("Arguments de renommage invalides"); return lastStatus; }
+            const File src = mediaFileFromPath (path);
+            if (! src.existsAsFile())
+            {
+                const String e = TR ("Renommage refusé : fichier introuvable sur le disque, références du projet inchangées (")
+                                 + path + ")";
+                lastStatus = e;
+                return e;
+            }
+            File dest (nn);
+            if (! File::isAbsolutePath (nn)) dest = src.getSiblingFile (nn);
+            if (dest.getFullPathName() == src.getFullPathName())
+            {
+                setCommandDetail (TR ("renommage sans effet : même fichier"));
+                lastStatus = TR ("Renommage sans effet : ") + src.getFileName();
+                return {};
+            }
+            if (dest.exists())
+            {
+                const String e = TR ("Renommage refusé : un fichier porte déjà ce nom, rien n'a été déplacé (")
+                                 + dest.getFileName() + ")";
+                lastStatus = e;
+                return e;
+            }
+            if (! src.getParentDirectory().createDirectory().wasOk() && ! src.getParentDirectory().exists())
+            {
+                const String e = TR ("Dossier de destination impossible à créer : ") + src.getParentDirectory().getFullPathName();
+                lastStatus = e;
+                return e;
+            }
+            if (! src.moveFileTo (dest) || ! dest.existsAsFile())
+            {
+                const String e = TR ("Déplacement sur disque impossible : références du projet inchangées (")
+                                 + src.getFileName() + TR (" → ") + dest.getFileName() + ")";
+                lastStatus = e;
+                return e;
+            }
+            // le disque a suivi : les références peuvent être mises à jour
+            const auto refs = coreRefsForFile (dest);
+            std::vector<std::string> oldRefs = refs;
+            if (oldRefs.empty())
+            {
+                const File before = mediaFileFromPath (path);
+                oldRefs = coreRefsForFile (before);
+            }
+            if (oldRefs.empty()) oldRefs.push_back (path.toStdString());
+            int updated = 0;
+            for (const auto& ref : oldRefs)
+            {
+                const bool absolute = File::isAbsolutePath (alphaString (ref));
+                const std::string newRef = absolute ? dest.getFullPathName().toStdString()
+                                                    : relativeMedia (dest, effectiveRoot()).toStdString();
+                alpha::JsonValue q (alpha::JsonValue::Type::Object);
+                q["path"] = alpha::JsonValue (ref);
+                q["newName"] = alpha::JsonValue (newRef);
+                if (dispatchCore ("renameMedia", q, true).isEmpty()) updated++;
+            }
+            syncClipsFromCore();
+            setCommandDetail (TR ("fichier déplacé sur disque (") + src.getFileName() + TR (" → ")
+                              + dest.getFileName() + TR (") puis ") + String (updated)
+                              + TR (" référence(s) du projet mise(s) à jour"));
+            lastStatus = TR ("Média renommé réellement : ") + dest.getFileName();
+            return {};
         }
         if (cmd == "cancelRender")
         {
@@ -4614,6 +4852,7 @@ public:
         if (! silenceResult.isNull()) j["silence"] = silenceResult;
         if (! mediaIndexResult.isNull()) j["mediaIndex"] = mediaIndexResult;
         if (! peaksResult.isNull()) j["peaks"] = peaksResult;
+        if (! commandResult.isNull()) j["commandResult"] = commandResult;
         return j.dump();
     }
 

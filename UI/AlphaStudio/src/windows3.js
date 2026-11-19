@@ -31,6 +31,21 @@
     const n = window.ALPHA_NATIVE;
     return (n && typeof n.getState === 'function' && n.getState()) || {};
   };
+  /* AUDIT v6 : envoi VÉRIFIÉ — la réussite n'est rapportée que si le moteur la
+     confirme (commandResult {ok, error, detail}). Jamais de succès affiché sans
+     confirmation, jamais de modification annoncée en cas d'échec. */
+  const nativeChecked = (command, data) => {
+    const n = window.ALPHA_NATIVE;
+    if (!n || typeof n.sendChecked !== 'function')
+      return Promise.resolve({ ok: false, command: command, error: 'moteur natif hors ligne : aucune confirmation possible', detail: '' });
+    return n.sendChecked(command, data || {}).then((r) => r || { ok: false, command: command, error: 'réponse moteur absente', detail: '' });
+  };
+  const nativeCheckedSay = (command, data, okMsg, ctx) => nativeChecked(command, data).then((r) => {
+    if (!ctx || !A.showToast) return r;
+    if (r.ok) A.showToast(okMsg + (r.detail ? ' — ' + r.detail : ''), ctx);
+    else A.showToast('Échec réel : ' + (r.error || 'raison inconnue') + ' — rien n’a été modifié ni annoncé comme accompli.', ctx);
+    return r;
+  });
 
   /* racine des fenêtres du lot 3 : colonne qui remplit le corps de fenêtre */
   const ROOT = '.w3-pi,.w3-le,.w3-md,.w3-tp,.w3-qs,.w3-bc,.w3-im,.w3-omf,.w3-batch,.w3-sur,.w3-sync,.w3-mc,.w3-sl,.w3-rw';
@@ -1066,16 +1081,17 @@
   function buildBatch() {
     /* AUDIT v6 (A80) : chaque opération est RÉELLEMENT exécutée par le
        moteur sur les échantillons — plus de chaîne de traitement fictive. */
+    /* Chaque opération renvoie une promesse de confirmation du moteur. */
     const OPS = {
-      'Découper aux silences': (ti, ci) => nativeSend('splitAtSilences', { trackIndex: ti, clipIndex: ci }),
-      'Normaliser (-0,3 dB)': (ti, ci) => nativeSend('processClip', { trackIndex: ti, clipIndex: ci, op: 'normalize', value: -0.3 }),
-      'Normaliser (-0,1 dB)': (ti, ci) => nativeSend('processClip', { trackIndex: ti, clipIndex: ci, op: 'normalize', value: -0.1 }),
-      'Compresseur de piste': (ti) => nativeSend('setFx', { trackIndex: ti, thresholdDb: -18, ratio: 3, attackMs: 10, releaseMs: 120, makeupDb: 3, dynamicsEnabled: true }),
-      'EQ de piste (4 bandes)': (ti) => nativeSend('setFx', { trackIndex: ti, eqEnabled: true }),
-      'Fondu entrant 50 ms': (ti, ci) => nativeSend('processClip', { trackIndex: ti, clipIndex: ci, op: 'fadeIn', ms: 50 }),
-      'Fondu sortant 50 ms': (ti, ci) => nativeSend('processClip', { trackIndex: ti, clipIndex: ci, op: 'fadeOut', ms: 50 }),
-      'Conformer au projet': (ti, ci) => nativeSend('processClip', { trackIndex: ti, clipIndex: ci, op: 'conform' }),
-      'Réécrire le fichier': (ti, ci) => nativeSend('processClip', { trackIndex: ti, clipIndex: ci, op: 'bake' })
+      'Découper aux silences': (ti, ci) => nativeChecked('splitAtSilences', { trackIndex: ti, clipIndex: ci }),
+      'Normaliser (-0,3 dB)': (ti, ci) => nativeChecked('processClip', { trackIndex: ti, clipIndex: ci, op: 'normalize', value: -0.3 }),
+      'Normaliser (-0,1 dB)': (ti, ci) => nativeChecked('processClip', { trackIndex: ti, clipIndex: ci, op: 'normalize', value: -0.1 }),
+      'Compresseur de piste': (ti) => nativeChecked('setFx', { trackIndex: ti, thresholdDb: -18, ratio: 3, attackMs: 10, releaseMs: 120, makeupDb: 3, dynamicsEnabled: true }),
+      'EQ de piste (4 bandes)': (ti) => nativeChecked('setFx', { trackIndex: ti, eqEnabled: true }),
+      'Fondu entrant 50 ms': (ti, ci) => nativeChecked('processClip', { trackIndex: ti, clipIndex: ci, op: 'fadeIn', ms: 50 }),
+      'Fondu sortant 50 ms': (ti, ci) => nativeChecked('processClip', { trackIndex: ti, clipIndex: ci, op: 'fadeOut', ms: 50 }),
+      'Conformer au projet': (ti, ci) => nativeChecked('processClip', { trackIndex: ti, clipIndex: ci, op: 'conform' }),
+      'Réécrire le fichier': (ti, ci) => nativeChecked('processClip', { trackIndex: ti, clipIndex: ci, op: 'bake' })
     };
     const st = { sel: 0, list: [
       { n: 'Voix — nettoyage', ops: ['Découper aux silences', 'Normaliser (-0,3 dB)', 'Compresseur de piste'] },
@@ -1104,7 +1120,7 @@
       '<div class="bl"><h6>Traitements enregistrés</h6><div class="bilst" data-bilist>' + left() + '</div></div>' +
       '<div class="br" data-biright>' + right() + '</div>' +
       '</div>' +
-      '<div class="w3-foot"><span>Traiter la sélection : ' + (A.PARTS ? A.PARTS.length : 0) + ' événement(s) audio</span>' +
+      '<div class="w3-foot"><span data-batchfoot>Prêt : la chaîne sera exécutée opération par opération, puis confirmée par le moteur.</span>' +
       '<span style="flex:1"></span><button class="w-btn" data-bpa="close">Fermer</button>' +
       '<button class="w-btn on" data-bpa="apply">Traiter</button></div></div>';
     return {
@@ -1118,29 +1134,79 @@
         function bind() {
           $$('[data-bi]', body).forEach((r) => r.addEventListener('click', () => { st.sel = +r.dataset.bi; redraw(); }));
         }
+        const setLine = (t) => { const l = $('[data-batchfoot]', body); if (l) l.textContent = t; };
+        /* AUDIT v6 : exécution RÉELLE, SÉQUENTIELLE et VÉRIFIÉE. Chaque
+           opération attend la confirmation du moteur avant la suivante ; un
+           échec arrête la chaîne de l'événement concerné et est rapporté. Les
+           événements inexistants ne sont jamais traités. */
+        async function runBatch(chain, ops, ti, count) {
+          const btn = $('[data-bpa="apply"]', body);
+          if (btn) { btn.disabled = true; btn.textContent = 'Traitement…'; }
+          const rep = { ok: 0, ko: 0, errors: [] };
+          for (let ci = 0; ci < count; ci++) {
+            const live = ((deviceState().tracks || [])[ti] || {}).clips || [];
+            if (!live[ci]) {
+              rep.errors.push('Événement ' + (ci + 1) + ' : introuvable dans le projet après modification — non traité');
+              setLine('Événement ' + (ci + 1) + ' introuvable : traitement arrêté pour éviter d’agir sur un événement inexistant.');
+              break;
+            }
+            for (let oi = 0; oi < ops.length; oi++) {
+              const opName = ops[oi];
+              setLine('Événement ' + (ci + 1) + '/' + count + ' — opération ' + (oi + 1) + '/' + ops.length + ' : ' + opName + ' (confirmation moteur attendue)…');
+              let r = null;
+              try { r = await OPS[opName](ti, ci); }
+              catch (e) { r = { ok: false, error: (e && e.message) || String(e) }; }
+              if (r && r.ok) { rep.ok++; continue; }
+              rep.ko++;
+              const why = (r && r.error) || 'confirmation moteur absente';
+              rep.errors.push('Événement ' + (ci + 1) + ' · ' + opName + ' : ' + why);
+              setLine('Échec réel — « ' + opName + ' » sur l’événement ' + (ci + 1) + ' : ' + why);
+              break;   // chaîne de cet événement interrompue : pas de traitement aveugle
+            }
+          }
+          if (btn) { btn.disabled = false; btn.textContent = 'Traiter'; }
+          const summary = rep.ok + ' opération(s) confirmée(s) par le moteur' +
+            (rep.errors.length ? ', ' + rep.errors.length + ' échec(s)' : '') +
+            ' sur ' + count + ' événement(s) réel(s).';
+          setLine(summary);
+          if (rep.ko || rep.errors.length)
+            A.showToast('Traitement « ' + chain.n + ' » NON entièrement exécuté : ' +
+              rep.errors.slice(0, 3).join(' | ') + (rep.errors.length > 3 ? ' | …' : '') + ' — ' + summary, 'Batch Processing');
+          else
+            A.showToast('Traitement « ' + chain.n + ' » réellement exécuté et confirmé par le moteur : ' + summary, 'Batch Processing');
+          return rep;
+        }
         bind();
         $$('[data-bpa]', body).forEach((b) => b.addEventListener('click', () => {
           const k = b.dataset.bpa;
           if (k === 'new') {
             st.list.push({ n: 'Traitement ' + (st.list.length + 1), ops: ['Normaliser (-0,3 dB)', 'Compresseur de piste'] });
             st.sel = st.list.length - 1; redraw();
-            A.showToast('Traitement créé avec des opérations réelles (normalisation mesurée + dynamique de piste) — complétez-le puis « Traiter ».', 'Batch Processing');
+            A.showToast('Traitement créé avec des opérations réelles (normalisation mesurée + dynamique de piste) — complétez-le puis « Traiter » : chaque opération sera confirmée par le moteur.', 'Batch Processing');
             return;
           }
           if (k === 'del') { const p = st.list.splice(st.sel, 1)[0] || { n: '—' }; st.sel = 0; redraw(); A.showToast('« ' + p.n + ' » supprimé de la liste des traitements.', 'Batch Processing'); return; }
           if (k === 'close') { W.close('batch'); return; }
           if (k === 'apply') {
-            /* Exécution RÉELLE de la chaîne sur chaque événement de la piste. */
             const b = st.list[st.sel] || { ops: [] };
-            const ti = Number(deviceState().selectedTrack) || 0;
-            const clips = ((deviceState().tracks || [])[ti] || {}).clips || [];
-            const n = Math.max(1, clips.length);
-            let sent = 0;
-            for (let ci = 0; ci < n; ci++)
-              b.ops.forEach((opName) => { const fn = OPS[opName]; if (fn) { fn(ti, ci); sent++; } });
-            A.showToast(sent > 0
-              ? 'Traitement « ' + b.n + ' » réellement exécuté : ' + sent + ' opération(s) sur ' + n + ' événement(s) — fichiers réécrits par le moteur.'
-              : 'Chaîne vide : ajoutez des opérations au traitement.', 'Batch Processing');
+            const ops = (b.ops || []).filter((o) => typeof OPS[o] === 'function');
+            const unknown = (b.ops || []).filter((o) => typeof OPS[o] !== 'function');
+            if (!ops.length) {
+              A.showToast('Chaîne vide ou opérations inconnues' + (unknown.length ? ' (' + unknown.join(', ') + ')' : '') +
+                ' : aucun traitement envoyé au moteur.', 'Batch Processing');
+              return;
+            }
+            const stt = deviceState();
+            const ti = Number(stt.selectedTrack) || 0;
+            const clips = ((stt.tracks || [])[ti] || {}).clips || [];
+            if (!clips.length) {
+              setLine('Aucun événement audio réel sur la piste ' + (ti + 1) + ' : rien à traiter.');
+              A.showToast('Aucun événement audio réel sur la piste ' + (ti + 1) + ' : rien à traiter. Importez d’abord un média (aucune commande envoyée).', 'Batch Processing');
+              return;
+            }
+            if (unknown.length)
+              setLine('Opérations non prises en charge ignorées : ' + unknown.join(', ') + '.');
+            runBatch(b, ops, ti, clips.length);
             return;
           }
           const MSG = {

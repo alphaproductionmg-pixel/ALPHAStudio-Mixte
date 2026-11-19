@@ -298,7 +298,7 @@ test('audit v6 — plus aucune simulation dans les fenêtres d’analyse et MIDI
   assert.match(w2, /nativeSend\('getPerformance'\)/);
   assert.match(w2, /pf\.cpuPercent/);
   assert.match(w2, /pf\.diskMegaBytesPerSecond/);
-  assert.match(w2, /nativeSend\('resetPerformancePeaks'\)/);
+  assert.match(w2, /nativeCheckedSay\('resetPerformancePeaks'/);
   // Analyseur de spectre et statistiques : analyse réelle du moteur.
   assert.match(w2, /nativeSend\('getSpectrum'\)/);
   assert.match(w2, /n\.send\('getStatistics'/);
@@ -373,6 +373,16 @@ test('audit v6 — chaque fonction prévue est développée ou remplacée par un
   assert.match(w1, /setMidiNotes/);
   assert.match(w2, /setMidiNotes/);
   assert.match(w3, /splitAtSilences/);
+
+  /* équivalent réel VÉRIFIÉ : le livrable contient le protocole de
+     confirmation moteur (commandResult + sendChecked) et l'exécution
+     séquentielle du traitement par lot — vérifié fonctionnellement par
+     tests/verified-results.test.js (résultats, pas noms de commandes). */
+  ['sendChecked', 'commandResult', 'nativeChecked', 'runBatch', 'data-batchfoot'].forEach((m) => {
+    assert.ok(html.indexOf(m) >= 0, 'protocole de vérification absent du livrable : ' + m);
+  });
+  assert.match(eng, /commandResult/);
+  assert.match(eng, /String writeClipToDisk/);
 });
 
 test('audit v6 — matrice de triage par point, sans acceptation finale', () => {

@@ -11,6 +11,44 @@
   const $ = (s) => document.querySelector(s);
   const $$ = (s) => Array.prototype.slice.call(document.querySelectorAll(s));
 
+  /* AUDIT v6 : envoi VÉRIFIÉ au moteur — la réussite n'est annoncée que si le
+     moteur la confirme (commandResult {ok, error, detail}). Aucun succès n'est
+     affiché sans confirmation ; en cas d'échec, le message réel du moteur est
+     montré et rien n'est présenté comme accompli. */
+  function nativeChecked(command, data) {
+    const n = window.ALPHA_NATIVE;
+    if (!n || typeof n.sendChecked !== 'function')
+      return Promise.resolve({ ok: false, command: command, error: 'moteur natif hors ligne : aucune confirmation possible', detail: '' });
+    return n.sendChecked(command, data || {}).then((r) => r || { ok: false, command: command, error: 'réponse moteur absente', detail: '' });
+  }
+  function nativeCheckedSay(command, data, okMsg, ctx) {
+    return nativeChecked(command, data).then((r) => {
+      if (r.ok) toast(okMsg + (r.detail ? ' — ' + r.detail : ''), ctx);
+      else toast('Échec réel : ' + (r.error || 'raison inconnue') + ' — rien n’a été modifié ni annoncé comme accompli.', ctx);
+      return r;
+    });
+  }
+  /* Chaîne séquentielle vérifiée : chaque commande attend la confirmation du
+     moteur avant la suivante ; les échecs sont comptés et rapportés. */
+  function nativeChain(steps, ctx, okMsg) {
+    const rep = { ok: 0, ko: 0, errors: [] };
+    const run = (i) => {
+      if (i >= steps.length) {
+        if (rep.ko) toast(okMsg + ' — MAIS ' + rep.ko + ' échec(s) réel(s) : ' +
+          rep.errors.slice(0, 2).join(' | ') + (rep.errors.length > 2 ? ' | …' : '') +
+          ' (' + rep.ok + ' commande(s) confirmée(s)).', ctx);
+        else toast(okMsg + ' — ' + rep.ok + ' commande(s) confirmée(s) par le moteur.', ctx);
+        return Promise.resolve(rep);
+      }
+      return nativeChecked(steps[i][0], steps[i][1]).then((r) => {
+        if (r.ok) rep.ok++;
+        else { rep.ko++; rep.errors.push(steps[i][0] + ' : ' + (r.error || 'raison inconnue')); }
+        return run(i + 1);
+      });
+    };
+    return steps.length ? run(0) : Promise.resolve(rep);
+  }
+
   /* ------------------------------------------------------------------ ÉTAT */
   const state = {
     barW: 64,
@@ -1984,12 +2022,23 @@
     gotoMarker: (bar) => { setPos(bar); $('#sbStatus').textContent = 'Aller au marqueur : ' + fmtPos(bar); },
     delMarker: (i) => {
       if (i < 0 || !MARKERS[i]) return;
-      const m = MARKERS.splice(i, 1)[0];
       const b = window.ALPHA_NATIVE;
       const st = (b && b.getState && b.getState()) || {};
-      if (b && b.send && (st.markers || []).length) b.send('removeMarker', { markerIndex: i });
+      const m = MARKERS[i];
+      if (!m) return;
+      if (b && b.sendChecked && (st.markers || []).length) {
+        /* suppression confirmée avant retrait de l'affichage */
+        nativeChecked('removeMarker', { markerIndex: i }).then((r) => {
+          if (!r.ok) { toast('Échec réel de la suppression : ' + (r.error || 'raison inconnue') + ' — marqueur conservé.', 'Marqueurs'); return; }
+          MARKERS.splice(i, 1);
+          renderRuler(); renderLanes(); renderOverview();
+          toast('Marqueur « ' + m[1] + ' » supprimé du projet natif (confirmé par le moteur, annulable).', 'Marqueurs');
+        });
+        return;
+      }
+      MARKERS.splice(i, 1);
       renderRuler(); renderLanes(); renderOverview();
-      toast('Marqueur « ' + m[1] + ' » supprimé' + ((st.markers || []).length ? ' du projet natif (annulable)' : '') + '.', 'Marqueurs');
+      toast('Marqueur « ' + m[1] + ' » supprimé de l’affichage (moteur natif hors ligne).', 'Marqueurs');
     },
     cycleFromMarker: (bar) => {
       state.cycleL = bar; state.cycleR = bar + 8; state.cycle = true;
@@ -2068,14 +2117,22 @@
          C++ (transposeMidi) sur les notes MIDI de la piste sélectionnée, puis
          l'état natif est republié. L'aperçu local suit le moteur. */
       const bridge = window.ALPHA_NATIVE;
-      if (bridge && typeof bridge.send === 'function') {
+      if (bridge && typeof bridge.sendChecked === 'function') {
         const idx = Number((bridge.getState && bridge.getState() || {}).selectedTrack);
-        bridge.send('transposeMidi', { trackIndex: isFinite(idx) && idx >= 0 ? idx : 0, semitones: semitones });
-        $('#sbStatus').textContent = 'Transposition ' + (semitones > 0 ? '+' : '') + semitones +
-          ' demi-ton(s) appliquée par le moteur aux notes MIDI du projet';
+        /* l'aperçu local est restauré si le moteur refuse la transposition */
+        const undoPreview = () => list.forEach((p2) => { p2.transpose = (p2.transpose || 0) - semitones; });
+        nativeChecked('transposeMidi', { trackIndex: isFinite(idx) && idx >= 0 ? idx : 0, semitones: semitones }).then((r) => {
+          if (!r.ok) {
+            undoPreview(); renderLanes(); updateInfoLine();
+            $('#sbStatus').textContent = 'Transposition refusée par le moteur : ' + (r.error || 'raison inconnue') + ' — notes inchangées';
+            return;
+          }
+          $('#sbStatus').textContent = 'Transposition ' + (semitones > 0 ? '+' : '') + semitones +
+            ' demi-ton(s) appliquée par le moteur aux notes MIDI du projet (confirmée)';
+        });
         return;
       }
-      $('#sbStatus').textContent = 'Transposition ' + (semitones > 0 ? '+' : '') + semitones + ' sur ' + list.length + ' partie(s) MIDI';
+      $('#sbStatus').textContent = 'Transposition ' + (semitones > 0 ? '+' : '') + semitones + ' sur ' + list.length + ' partie(s) MIDI (aperçu local, moteur hors ligne)';
     },
     velocity: () => WIN('velocitydlg'),
     touchAssign: () => toast('Contrôleur tactile : choisissez le nombre de voies (8, 16 ou 24) dans Périphériques ▸ Périphériques Remote. L’affectation des 8 Quick Controls est envoyée au contrôleur.', 'Périphériques Remote'),
@@ -2111,38 +2168,61 @@
       const at = Math.min.apply(null, state.clip.map((p) => p.start));
       const to = state.pos;
       const b = window.ALPHA_NATIVE;
-      let sent = false;
-      if (b && b.send) {
-        /* collage RÉEL multi-pistes : chaque événement retrouve sa piste et sa
-           position, écrit dans le projet natif (historisé, annulable). */
-        sent = b.send('pasteClips', { clips: state.clip.map((src, i) => ({
-          trackIndex: ACTIONS.nativeTrackIndexOf(src.track),
-          name: String(src.name || ('Événement ' + (i + 1))),
-          media: String(src.media || ''),
-          startBars: to + (src.start - at),
-          lenBars: Number(src.len) || 1
-        })) }) !== false;
-      }
-      state.clip.forEach((src) => {
-        ACTIONS._seq = (ACTIONS._seq || 0) + 1;
-        PARTS.push(Object.assign({}, src, { id: src.id + '-cp' + ACTIONS._seq, start: to + (src.start - at), sel: true }));
-      });
-      renderLanes(); renderOverview(); updateInfoLine();
       const nTracks = state.clip.map((x) => x.track).filter((v, i, a) => a.indexOf(v) === i).length;
-      toast(state.clip.length + ' événement(s) collé(s) à ' + fmtPos(to) + ' sur ' + nTracks +
-        ' piste(s)' + (sent ? ' — écrit réellement dans le projet natif (annulable).' : '.'), 'Coller');
+      const miroir = () => {
+        state.clip.forEach((src) => {
+          ACTIONS._seq = (ACTIONS._seq || 0) + 1;
+          PARTS.push(Object.assign({}, src, { id: src.id + '-cp' + ACTIONS._seq, start: to + (src.start - at), sel: true }));
+        });
+        renderLanes(); renderOverview(); updateInfoLine();
+      };
+      if (!b || !b.sendChecked) {
+        /* repli navigateur : collage local annoncé comme tel */
+        miroir();
+        toast(state.clip.length + ' événement(s) collé(s) à ' + fmtPos(to) + ' sur ' + nTracks +
+          ' piste(s) — moteur natif hors ligne, collage local uniquement.', 'Coller');
+        return;
+      }
+      /* collage RÉEL multi-pistes : écrit dans le projet natif, confirmé avant
+         toute mise à jour de l'affichage. */
+      nativeChecked('pasteClips', { clips: state.clip.map((src, i) => ({
+        trackIndex: ACTIONS.nativeTrackIndexOf(src.track),
+        name: String(src.name || ('Événement ' + (i + 1))),
+        media: String(src.media || ''),
+        startBars: to + (src.start - at),
+        lenBars: Number(src.len) || 1
+      })) }).then((r) => {
+        if (!r.ok) {
+          toast('Échec réel du collage : ' + (r.error || 'raison inconnue') +
+            ' — le projet est inchangé, aucun événement ajouté.', 'Coller');
+          return;
+        }
+        miroir();
+        toast(state.clip.length + ' événement(s) collé(s) à ' + fmtPos(to) + ' sur ' + nTracks +
+          ' piste(s) — écrit dans le projet natif et confirmé par le moteur (annulable).', 'Coller');
+      });
     },
     duplicate: () => {
       const ids = selPartIds();
       if (!ids.length) { toast('Sélectionnez d’abord des événements.', 'Dupliquer'); return; }
       const b = window.ALPHA_NATIVE;
-      ids.map((id) => PARTS.find((p) => p.id === id)).filter(Boolean).forEach((src) => {
-        ACTIONS._seq = (ACTIONS._seq || 0) + 1;
-        if (b && b.send) b.send('duplicateClip', { trackIndex: ACTIONS.nativeTrackIndexOf(src.track), clipIndex: 0 });
-        PARTS.push(Object.assign({}, src, { id: src.id + '-dup' + ACTIONS._seq, start: src.start + src.len, sel: false }));
-      });
-      renderLanes(); renderOverview(); updateInfoLine();
-      toast(ids.length + ' événement(s) dupliqué(s) à la suite' + (b && b.send ? ' dans le projet natif (annulable)' : '') + '.', 'Dupliquer');
+      const srcs = ids.map((id) => PARTS.find((p) => p.id === id)).filter(Boolean);
+      const miroir = () => {
+        srcs.forEach((src) => {
+          ACTIONS._seq = (ACTIONS._seq || 0) + 1;
+          PARTS.push(Object.assign({}, src, { id: src.id + '-dup' + ACTIONS._seq, start: src.start + src.len, sel: false }));
+        });
+        renderLanes(); renderOverview(); updateInfoLine();
+      };
+      if (!b || !b.sendChecked) {
+        miroir();
+        toast(srcs.length + ' événement(s) dupliqué(s) à la suite — moteur natif hors ligne, duplication locale uniquement.', 'Dupliquer');
+        return;
+      }
+      nativeChain(srcs.map((src) => ['duplicateClip', { trackIndex: ACTIONS.nativeTrackIndexOf(src.track), clipIndex: 0 }]),
+        'Dupliquer', srcs.length + ' événement(s) dupliqué(s) à la suite dans le projet natif').then((r) => {
+          if (r.ok) miroir();
+        });
     },
     undo: () => undoOnce(),
     splitAtCursor: () => {
@@ -2486,10 +2566,20 @@
       const name = 'Marqueur ' + (MARKERS.length + 1);
       MARKERS.push([Math.round(state.pos), name]);
       renderLanes(); renderOverview(); updateStatus();
-      /* AUDIT v6 : le marqueur est réellement inscrit dans le projet natif. */
+      /* AUDIT v6 : le marqueur est inscrit dans le projet natif ; l'affichage
+         local est annulé si le moteur ne confirme pas. */
       const b = window.ALPHA_NATIVE;
-      if (b && b.send) b.send('addMarker', { bars: Number(state.pos) || 1, name: name });
-      toast('Marqueur « ' + name + ' » ajouté à ' + fmtPos(state.pos) + ' dans le projet.', 'Marqueurs');
+      if (b && b.sendChecked) {
+        nativeChecked('addMarker', { bars: Number(state.pos) || 1, name: name }).then((r) => {
+          if (r.ok) { toast('Marqueur « ' + name + ' » ajouté à ' + fmtPos(state.pos) + ' dans le projet (confirmé par le moteur).', 'Marqueurs'); return; }
+          const i2 = MARKERS.map((m) => m[1]).lastIndexOf(name);
+          if (i2 >= 0) MARKERS.splice(i2, 1);
+          renderLanes(); renderOverview(); updateStatus();
+          toast('Échec réel de l’ajout : ' + (r.error || 'raison inconnue') + ' — marqueur retiré de l’affichage.', 'Marqueurs');
+        });
+        return;
+      }
+      toast('Marqueur « ' + name + ' » ajouté à ' + fmtPos(state.pos) + ' (moteur natif hors ligne : affichage local).', 'Marqueurs');
     },
     setTimecode: () => {
       /* AUDIT v6 : le timecode de départ est réellement écrit dans les
@@ -2501,17 +2591,22 @@
       const ss = Math.floor(seconds % 60), ff = Math.round((seconds - Math.floor(seconds)) * 25);
       const tc = [hh, mm, ss, ff].map((x) => String(x).padStart(2, '0')).join(':');
       const b = window.ALPHA_NATIVE;
-      if (b && b.send) b.send('setProjectInfo', { startTimecode: tc });
-      toast('Timecode de départ réglé sur ' + tc + ' (position du curseur, 25 i/s).', 'Timecode');
+      if (b && b.sendChecked)
+        nativeCheckedSay('setProjectInfo', { startTimecode: tc },
+          'Timecode de départ réglé sur ' + tc + ' (position du curseur, 25 i/s).', 'Timecode');
+      else toast('Timecode calculé ' + tc + ' — moteur natif hors ligne : valeur non écrite dans le projet.', 'Timecode');
     },
     quantize: () => {
-      state.quantize = true;
       const b = window.ALPHA_NATIVE;
-      if (b && b.send) {
+      if (b && b.sendChecked) {
         const st = (b.getState && b.getState()) || {};
-        b.send('quantizeMidi', { trackIndex: Number(st.selectedTrack) || 0, grid: String(state.grid || '1/16') });
+        nativeChecked('quantizeMidi', { trackIndex: Number(st.selectedTrack) || 0, grid: String(state.grid || '1/16') }).then((r) => {
+          if (r.ok) { state.quantize = true; toast('Quantification appliquée par le moteur aux notes MIDI (' + state.grid + ') — confirmée.', 'MIDI'); }
+          else toast('Échec réel de la quantification : ' + (r.error || 'raison inconnue') + ' — notes inchangées.', 'MIDI');
+        });
+        return;
       }
-      toast('Quantification appliquée par le moteur aux notes MIDI (' + state.grid + ').', 'MIDI');
+      toast('Quantification non appliquée : moteur natif hors ligne, aucune note modifiée.', 'MIDI');
     },
     quantizeSetup: () => { if (window.ALPHAWIN) window.ALPHAWIN.open('quantize'); },
     transpose: () => WIN('transpose'),
@@ -2523,65 +2618,66 @@
     _sel: () => {
       const b = window.ALPHA_NATIVE;
       const st = (b && b.getState && b.getState()) || {};
-      return { b: b, st: st, ti: Number(st.selectedTrack) || 0, clips: ((st.tracks || [])[Number(st.selectedTrack) || 0] || {}).clips || [] };
+      const ti = Number(st.selectedTrack) || 0;
+      return { b: b, st: st, ti: ti, clips: ((st.tracks || [])[ti] || {}).clips || [] };
     },
+    /* Les actions ci-dessous n'annoncent une réussite que sur confirmation du
+       moteur (nativeChecked / nativeChain) et refusent d'agir sur un événement
+       inexistant. */
     delTime: () => {
-      /* Supprimer le temps : referme réellement 1 mesure au curseur — les
-         événements suivants sont décalés dans le projet natif (moveClip). */
       const { b, ti, clips } = ACTIONS._sel();
-      if (!b || !b.send) { toast('Supprimer le temps requiert le moteur natif.', 'Édition'); return; }
+      if (!b || !b.sendChecked) { toast('Supprimer le temps requiert le moteur natif.', 'Édition'); return; }
       const pos = Number(state.pos) || 1;
-      let n = 0;
+      const steps = [];
       clips.forEach((c, i) => {
         const sb = Number(c.startBars || 1);
-        if (sb >= pos + 0.5) { b.send('setClipStart', { trackIndex: ti, clipIndex: i, startBars: sb - 1 }); n++; }
+        if (sb >= pos + 0.5) steps.push(['setClipStart', { trackIndex: ti, clipIndex: i, startBars: sb - 1 }]);
       });
-      toast(n ? ('Supprimer le temps : 1 mesure réellement refermée — ' + n + ' événement(s) décalé(s) dans le projet.')
-              : 'Aucun événement après le curseur sur la piste sélectionnée.', 'Édition');
+      if (!steps.length) { toast('Aucun événement après le curseur sur la piste sélectionnée : rien à refermer.', 'Édition'); return; }
+      nativeChain(steps, 'Édition', 'Supprimer le temps : 1 mesure refermée, ' + steps.length + ' événement(s) décalé(s) dans le projet');
     },
     repeat: () => {
-      /* Répéter : copies RÉELLES de l'événement (duplicateClip du noyau). */
-      const { b, ti } = ACTIONS._sel();
-      if (!b || !b.send) { toast('Répéter requiert le moteur natif.', 'Édition'); return; }
-      b.send('duplicateClip', { trackIndex: ti, clipIndex: 0 });
-      b.send('duplicateClip', { trackIndex: ti, clipIndex: 1 });
-      toast('Répéter : 2 copies réelles de l’événement créées à la suite dans le projet.', 'Édition');
+      const { b, ti, clips } = ACTIONS._sel();
+      if (!b || !b.sendChecked) { toast('Répéter requiert le moteur natif.', 'Édition'); return; }
+      if (!clips.length) { toast('Répéter : aucun événement réel sur la piste ' + (ti + 1) + ' — rien à copier.', 'Édition'); return; }
+      nativeChain([
+        ['duplicateClip', { trackIndex: ti, clipIndex: 0 }],
+        ['duplicateClip', { trackIndex: ti, clipIndex: 0 }]
+      ], 'Édition', 'Répéter : 2 copies de l’événement créées à la suite dans le projet');
     },
     fillLoop: () => {
-      /* Remplir la boucle : duplication RÉELLE jusqu'à la fin du cycle. */
       const { b, ti, clips } = ACTIONS._sel();
-      if (!b || !b.send || !clips.length) { toast('Remplir la boucle : aucun événement sur la piste sélectionnée.', 'Édition'); return; }
+      if (!b || !b.sendChecked) { toast('Remplir la boucle requiert le moteur natif.', 'Édition'); return; }
+      if (!clips.length) { toast('Remplir la boucle : aucun événement réel sur la piste ' + (ti + 1) + '.', 'Édition'); return; }
       const c0 = clips[0];
       const len = Math.max(0.25, Number(c0.lenBars || 4));
       const need = Math.min(16, Math.max(0, Math.ceil(((Number(state.cycleR) || 0) - Number(c0.startBars || 1)) / len) - 1));
-      for (let i = 0; i < need; i++) b.send('duplicateClip', { trackIndex: ti, clipIndex: clips.length - 1 + i });
-      toast(need ? ('Remplir la boucle : ' + need + ' événement(s) réellement duppliqué(s) jusqu’à la fin du cycle.')
-                 : 'Le cycle est déjà rempli par les événements existants.', 'Édition');
+      if (!need) { toast('Le cycle est déjà rempli par les événements existants : aucune duplication envoyée.', 'Édition'); return; }
+      const steps = [];
+      for (let i = 0; i < need; i++) steps.push(['duplicateClip', { trackIndex: ti, clipIndex: clips.length - 1 + i }]);
+      nativeChain(steps, 'Édition', 'Remplir la boucle : ' + need + ' événement(s) dupliqué(s) jusqu’à la fin du cycle');
     },
     splitLoop: () => {
-      /* Diviser la boucle : coupe RÉELLE aux deux bords du cycle (splitClip). */
       const { b, ti, clips } = ACTIONS._sel();
-      if (!b || !b.send) { toast('Diviser la boucle requiert le moteur natif.', 'Édition'); return; }
+      if (!b || !b.sendChecked) { toast('Diviser la boucle requiert le moteur natif.', 'Édition'); return; }
       const L = Number(state.cycleL) || 1, R = Number(state.cycleR) || 9;
-      let n = 0;
+      const steps = [];
       [R, L].forEach((bar) => {
         clips.forEach((c, i) => {
           const sb = Number(c.startBars || 1), lb = Number(c.lenBars || 0);
-          if (bar > sb + 0.01 && bar < sb + lb - 0.01) { b.send('splitClip', { trackIndex: ti, clipIndex: i, atBars: bar }); n++; }
+          if (bar > sb + 0.01 && bar < sb + lb - 0.01) steps.push(['splitClip', { trackIndex: ti, clipIndex: i, atBars: bar }]);
         });
       });
-      toast(n ? ('Diviser la boucle : ' + n + ' coupe(s) réelle(s) aux bords du cycle.')
-              : 'Aucun événement à cheval sur les bords du cycle.', 'Édition');
+      if (!steps.length) { toast('Aucun événement à cheval sur les bords du cycle : aucune coupe envoyée.', 'Édition'); return; }
+      nativeChain(steps, 'Édition', 'Diviser la boucle : ' + steps.length + ' coupe(s) aux bords du cycle');
     },
     followSel: () => {
-      /* Suivre la sélection : défilement RÉEL de la vue vers la piste choisie. */
       const id = state.selectedTrack;
       const el = document.querySelector('[data-track="' + id + '"]') || document.querySelector('.track-row.sel');
-      if (el && el.scrollIntoView) { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); toast('Vue du projet réellement défilée vers la piste sélectionnée.', 'Affichage'); }
+      if (el && el.scrollIntoView) { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); toast('Vue du projet défilée vers la piste sélectionnée.', 'Affichage'); }
       else toast('Aucune piste sélectionnée à suivre.', 'Affichage');
     },
     arranger: () => {
-      /* Arrangeur : sélection réelle de la piste d'arrangeur du projet. */
       const t = TRACKS.find((x) => x.kind === 'arrange');
       if (t) { setTrackSel([t.id]); state.selectedTrack = t.id; renderTracks(); renderLanes(); renderOverview(); updateInspector(); updateStatus();
         const el = document.querySelector('[data-track="' + t.id + '"]'); if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
@@ -2589,24 +2685,24 @@
       else toast('Ce projet ne contient pas de piste d’arrangeur (Projet ▸ Ajouter une piste ▸ Piste d’arrangeur).', 'Arrangeur');
     },
     trackTemplate: () => {
-      /* Modèle de piste : duplication RÉELLE de la piste sélectionnée. */
       const { b, ti } = ACTIONS._sel();
-      if (b && b.send) { b.send('duplicateTrack', { index: ti }); toast('Modèle de piste appliqué : la piste sélectionnée est réellement dupliquée avec ses réglages.', 'Piste'); }
-      else toast('Modèle de piste requiert le moteur natif.', 'Piste');
+      if (!b || !b.sendChecked) { toast('Modèle de piste requiert le moteur natif.', 'Piste'); return; }
+      nativeCheckedSay('duplicateTrack', { index: ti },
+        'Modèle de piste appliqué : la piste sélectionnée est dupliquée avec ses réglages.', 'Piste');
     },
-    snapEvents: () => { state.snap = true; state.snapMode = 'Événements'; updateStatus(); toast('Accrochage réel sur les bords d’événements activé.', 'Grille'); },
+    snapEvents: () => { state.snap = true; state.snapMode = 'Événements'; updateStatus(); toast('Accrochage sur les bords d’événements activé.', 'Grille'); },
     magneticGrid: () => { state.snap = true; state.snapMode = 'Grille'; updateStatus(); toast('Grille magnétique activée : le curseur s’accroche à ' + state.grid + '.', 'Grille'); },
     envShow: () => {
       TRACKS.forEach((t) => { if (isTrackSel(t.id) && t.autShown !== undefined) t.autShown = !t.autShown; });
-      renderTracks(); renderLanes(); toast('Affichage des enveloppes réellement basculé sur les pistes sélectionnées (voies d’automatisation).', 'Automation');
+      renderTracks(); renderLanes(); toast('Affichage des enveloppes basculé sur les pistes sélectionnées (voies d’automatisation).', 'Automation');
     },
     envVolume: () => {
       TRACKS.forEach((t) => { if (isTrackSel(t.id)) { t.autShown = true; t.autParam = 'Volume'; } });
-      renderTracks(); renderLanes(); toast('Enveloppe de volume réellement affichée sur les pistes sélectionnées.', 'Automation');
+      renderTracks(); renderLanes(); toast('Enveloppe de volume affichée sur les pistes sélectionnées.', 'Automation');
     },
     envPan: () => {
       TRACKS.forEach((t) => { if (isTrackSel(t.id)) { t.autShown = true; t.autParam = 'Pan'; } });
-      renderTracks(); renderLanes(); toast('Enveloppe de panoramique réellement affichée sur les pistes sélectionnées.', 'Automation');
+      renderTracks(); renderLanes(); toast('Enveloppe de panoramique affichée sur les pistes sélectionnées.', 'Automation');
     },
     envFade: () => WIN('fade'),
     envAuto: () => { ACTIONS.envShow(); },
@@ -2614,74 +2710,86 @@
     batch: () => WIN('batch'),
     plugins: () => {
       const { b, ti } = ACTIONS._sel();
-      if (b && b.send) { b.send('pluginBrowser', { trackIndex: ti }); toast('Traitement par greffon : navigateur réel des modules analysés ouvert pour la piste.', 'Audio'); }
-      else toast('Traitement par greffon requiert le moteur natif.', 'Audio');
+      if (!b || !b.sendChecked) { toast('Traitement par greffon requiert le moteur natif.', 'Audio'); return; }
+      nativeCheckedSay('pluginBrowser', { trackIndex: ti },
+        'Traitement par greffon : navigateur des modules réellement analysés ouvert pour la piste ' + (ti + 1) + '.', 'Audio');
     },
     freeze: () => {
-      /* Freeze : rendu RÉEL de la piste en audio (équivalent fonctionnel). */
       const { b, ti } = ACTIONS._sel();
-      if (b && b.send) { b.send('exportTrack', { trackIndex: ti }); toast('Freeze : la piste est réellement rendue en fichier audio par le moteur (rendu hors ligne).', 'Audio'); }
-      else toast('Freeze requiert le moteur natif.', 'Audio');
+      if (!b || !b.sendChecked) { toast('Freeze requiert le moteur natif.', 'Audio'); return; }
+      nativeChecked('exportTrack', { trackIndex: ti }).then((r) => {
+        toast(r.ok
+          ? 'Freeze : rendu hors ligne de la piste ' + (ti + 1) + ' commandé au moteur — choisissez le fichier de destination ; l’écriture sera confirmée.'
+          : 'Échec réel : ' + (r.error || 'raison inconnue') + ' — aucun rendu lancé.', 'Audio');
+      });
     },
     updateOrigin: () => {
-      const { b, ti } = ACTIONS._sel();
-      if (b && b.send) { b.send('setClipStart', { trackIndex: ti, clipIndex: 0, startBars: Number(state.pos) || 1 }); toast('Origine réellement mise à jour : l’événement commence au curseur.', 'Édition'); }
-      else toast('Mettre à jour l’origine requiert le moteur natif.', 'Édition');
+      const { b, ti, clips } = ACTIONS._sel();
+      if (!b || !b.sendChecked) { toast('Mettre à jour l’origine requiert le moteur natif.', 'Édition'); return; }
+      if (!clips.length) { toast('Aucun événement réel sur la piste ' + (ti + 1) + ' : origine non modifiée.', 'Édition'); return; }
+      nativeCheckedSay('setClipStart', { trackIndex: ti, clipIndex: 0, startBars: Number(state.pos) || 1 },
+        'Origine mise à jour : l’événement commence au curseur.', 'Édition');
     },
     bounce: () => { ACTIONS.freeze(); },
     eventsToPart: () => { ACTIONS.freeze(); },
     closeGaps: () => {
-      /* Fermer les écarts : supprime RÉELLEMENT les événements silencieux. */
       const { b, ti } = ACTIONS._sel();
-      if (b && b.send) { b.send('closeGaps', { trackIndex: ti }); toast('Fermer les écarts : les silences sont réellement retirés et les événements suivants décalés.', 'Audio'); }
-      else toast('Fermer les écarts requiert le moteur natif.', 'Audio');
+      if (!b || !b.sendChecked) { toast('Fermer les écarts requiert le moteur natif.', 'Audio'); return; }
+      nativeCheckedSay('closeGaps', { trackIndex: ti },
+        'Fermer les écarts : silences retirés et événements suivants décalés.', 'Audio');
     },
     dissolvePart: () => {
-      /* Dissoudre : coupe RÉELLE de l'événement en morceaux d'une mesure. */
       const { b, ti, clips } = ACTIONS._sel();
-      if (!b || !b.send || !clips.length) { toast('Dissoudre la partie : aucun événement sur la piste sélectionnée.', 'Édition'); return; }
+      if (!b || !b.sendChecked) { toast('Dissoudre la partie requiert le moteur natif.', 'Édition'); return; }
+      if (!clips.length) { toast('Dissoudre la partie : aucun événement réel sur la piste ' + (ti + 1) + '.', 'Édition'); return; }
       const c = clips[0]; const sb = Number(c.startBars || 1), lb = Number(c.lenBars || 0);
-      let n = 0;
-      for (let bar = Math.ceil(sb); bar < sb + lb - 0.01 && n < 16; bar++) { b.send('splitClip', { trackIndex: ti, clipIndex: 0, atBars: bar }); n++; }
-      toast(n ? ('Partie réellement dissoute : ' + n + ' événement(s) d’une mesure.') : 'Événement trop court pour être dissous.', 'Édition');
+      const steps = [];
+      for (let bar = Math.ceil(sb); bar < sb + lb - 0.01 && steps.length < 16; bar++)
+        steps.push(['splitClip', { trackIndex: ti, clipIndex: 0, atBars: bar }]);
+      if (!steps.length) { toast('Événement trop court pour être dissous : aucune coupe envoyée.', 'Édition'); return; }
+      nativeChain(steps, 'Édition', 'Partie dissoute en ' + steps.length + ' événement(s) d’une mesure');
     },
     warp: () => {
-      /* Audio Warp : étirement RÉEL (varispeed) sur la longueur du cycle. */
-      const { b, ti } = ACTIONS._sel();
-      if (b && b.send) {
-        const target = Math.max(1, (Number(state.cycleR) || 9) - (Number(state.cycleL) || 1));
-        b.send('stretchClip', { trackIndex: ti, clipIndex: 0, targetBars: target });
-        toast('Audio Warp : l’événement est réellement rééchantillonné pour durer ' + target + ' mesure(s) (fichier réécrit).', 'Audio');
-      } else toast('Audio Warp requiert le moteur natif.', 'Audio');
+      const { b, ti, clips } = ACTIONS._sel();
+      if (!b || !b.sendChecked) { toast('Audio Warp requiert le moteur natif.', 'Audio'); return; }
+      if (!clips.length) { toast('Audio Warp : aucun événement réel sur la piste ' + (ti + 1) + ' — rien à étirer.', 'Audio'); return; }
+      const target = Math.max(1, (Number(state.cycleR) || 9) - (Number(state.cycleL) || 1));
+      nativeCheckedSay('stretchClip', { trackIndex: ti, clipIndex: 0, targetBars: target },
+        'Audio Warp : événement rééchantillonné pour durer ' + target + ' mesure(s), fichier réécrit et contrôlé.', 'Audio');
     },
     hitpoints: () => WIN('sample'),
     conform: () => {
-      const { b, ti } = ACTIONS._sel();
-      if (b && b.send) { b.send('processClip', { trackIndex: ti, clipIndex: 0, op: 'conform' }); toast('Conform Files : le fichier est réellement rééchantillonné au format du projet.', 'Pool'); }
-      else toast('Conform Files requiert le moteur natif.', 'Pool');
+      const { b, ti, clips } = ACTIONS._sel();
+      if (!b || !b.sendChecked) { toast('Conform Files requiert le moteur natif.', 'Pool'); return; }
+      if (!clips.length) { toast('Conform Files : aucun événement réel sur la piste ' + (ti + 1) + '.', 'Pool'); return; }
+      nativeCheckedSay('processClip', { trackIndex: ti, clipIndex: 0, op: 'conform' },
+        'Conform Files : fichier rééchantillonné au format du projet, réécrit et contrôlé.', 'Pool');
     },
     minimize: () => {
-      const { b, ti } = ACTIONS._sel();
-      if (b && b.send) { b.send('processClip', { trackIndex: ti, clipIndex: 0, op: 'bake' }); toast('Minimiser le fichier : réécriture réelle et compacte du WAV depuis le buffer traité.', 'Pool'); }
-      else toast('Minimiser le fichier requiert le moteur natif.', 'Pool');
+      const { b, ti, clips } = ACTIONS._sel();
+      if (!b || !b.sendChecked) { toast('Minimiser le fichier requiert le moteur natif.', 'Pool'); return; }
+      if (!clips.length) { toast('Minimiser le fichier : aucun événement réel sur la piste ' + (ti + 1) + '.', 'Pool'); return; }
+      nativeCheckedSay('processClip', { trackIndex: ti, clipIndex: 0, op: 'bake' },
+        'Fichier minimisé : réécriture compacte depuis le buffer traité, contrôlée par relecture.', 'Pool');
     },
     newVersion: () => {
-      const { b, ti } = ACTIONS._sel();
-      if (b && b.send) { b.send('processClip', { trackIndex: ti, clipIndex: 0, op: 'saveVersion' }); toast('Nouvelle version réelle du fichier créée (copie horodatée, original intact).', 'Pool'); }
-      else toast('Nouvelle version requiert le moteur natif.', 'Pool');
+      const { b, ti, clips } = ACTIONS._sel();
+      if (!b || !b.sendChecked) { toast('Nouvelle version requiert le moteur natif.', 'Pool'); return; }
+      if (!clips.length) { toast('Nouvelle version : aucun événement réel sur la piste ' + (ti + 1) + '.', 'Pool'); return; }
+      nativeCheckedSay('processClip', { trackIndex: ti, clipIndex: 0, op: 'saveVersion' },
+        'Nouvelle version du fichier créée (copie horodatée, original intact).', 'Pool');
     },
     prepareArchive: () => {
       const b = window.ALPHA_NATIVE;
-      if (b && b.send) { b.send('backupProject'); toast('Archive préparée : sauvegarde de secours réelle du projet et de ses médias.', 'Pool'); }
-      else toast('Préparer l’archive requiert le moteur natif.', 'Pool');
+      if (!b || !b.sendChecked) { toast('Préparer l’archive requiert le moteur natif.', 'Pool'); return; }
+      nativeCheckedSay('backupProject', {}, 'Archive préparée : sauvegarde de secours du projet et de ses médias.', 'Pool');
     },
     emptyTrash: () => {
       const b = window.ALPHA_NATIVE;
-      if (b && b.send) { b.send('emptyTrash'); toast('Corbeille Windows ouverte : les médias supprimés du Pool s’y trouvent réellement.', 'Pool'); }
-      else toast('Vider la corbeille requiert le moteur natif.', 'Pool');
+      if (!b || !b.sendChecked) { toast('Vider la corbeille requiert le moteur natif.', 'Pool'); return; }
+      nativeCheckedSay('emptyTrash', {}, 'Corbeille Windows ouverte : les médias supprimés du Pool s’y trouvent.', 'Pool');
     },
     selectInProject: () => {
-      /* Sélectionner dans le projet : retrouve la piste du dernier média. */
       const { st } = ACTIONS._sel();
       const media = (st.media || [])[ (st.media || []).length - 1 ];
       let found = null;
@@ -2691,27 +2799,29 @@
       const t = rows[found];
       if (t) { setTrackSel([t.id]); state.selectedTrack = t.id; renderTracks(); renderLanes(); renderOverview(); updateInspector(); updateStatus();
         const el = document.querySelector('[data-track="' + t.id + '"]'); if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
-      toast('Média « ' + media + ' » réellement sélectionné dans le projet (piste ' + ((t && t.name) || (found + 1)) + ').', 'Pool');
+      toast('Média « ' + media + ' » sélectionné dans le projet (piste ' + ((t && t.name) || (found + 1)) + ').', 'Pool');
     },
     mediaMgmt: () => {
-      /* Gestion des médias : vérification RÉELLE des fichiers sur le disque. */
       const b = window.ALPHA_NATIVE;
-      if (!b || !b.send) { toast('Gestion des médias requiert le moteur natif.', 'Pool'); return; }
-      b.send('verifyMedia');
-      setTimeout(() => {
+      if (!b || !b.sendChecked) { toast('Gestion des médias requiert le moteur natif.', 'Pool'); return; }
+      nativeChecked('verifyMedia').then((r) => {
+        if (!r.ok) { toast('Vérification refusée par le moteur : ' + (r.error || 'raison inconnue') + '.', 'Pool'); return; }
         const st = (b.getState && b.getState()) || {};
-        const r = st.mediaIndex || {};
-        toast('Médias vérifiés sur le disque : ' + (r.found || 0) + '/' + (r.total || 0) + ' trouvé(s)' +
-          ((r.missing && r.missing.length) ? ' — manquants : ' + r.missing.slice(0, 3).join(', ') : ' — aucun manquant.') + '.', 'Pool');
-      }, 800);
+        const idx = st.mediaIndex || {};
+        toast('Médias vérifiés sur le disque : ' + (idx.found || 0) + '/' + (idx.total || 0) + ' trouvé(s)' +
+          ((idx.missing && idx.missing.length) ? ' — manquants : ' + idx.missing.slice(0, 3).join(', ') : ' — aucun manquant.') + '.', 'Pool');
+      });
     },
     remotes: () => WIN('devices'),
     quickControls: () => WIN('qcontrols'),
     report: () => {
-      /* Signaler un problème : export RÉEL du journal de diagnostic. */
       const b = window.ALPHA_NATIVE;
-      if (b && b.send) { b.send('exportPerf'); toast('Rapport : export réel du journal de diagnostic (version, périphériques, performances) — enregistrez-le où vous voulez.', 'Aide'); }
-      else toast('Rapport : version ' + (state.version || '0.5.0') + ' — le moteur natif est requis pour l’export du diagnostic.', 'Aide');
+      if (!b || !b.sendChecked) { toast('Rapport : version ' + (state.version || '0.5.0') + ' — le moteur natif est requis pour l’export du diagnostic.', 'Aide'); return; }
+      nativeChecked('exportPerf').then((r) => {
+        toast(r.ok
+          ? 'Rapport : export du journal de diagnostic commandé (version, périphériques, performances) — choisissez où l’enregistrer.'
+          : 'Échec réel : ' + (r.error || 'raison inconnue') + ' — aucun journal exporté.', 'Aide');
+      });
     }
   };
 
@@ -3477,9 +3587,18 @@
        quand celui-ci contient des marqueurs (pas de fausse écriture sinon). */
     const b = window.ALPHA_NATIVE;
     const st = (b && b.getState && b.getState()) || {};
-    if (b && b.send && (st.markers || []).length)
-      b.send('renameMarker', { markerIndex: i, name: m[1], bars: m[0], endBars: m[3] || 0, cycle: m[2] === 'cycle' });
     renderRuler(); renderLanes(); renderOverview();
+    if (b && b.sendChecked && (st.markers || []).length) {
+      /* le renommage n'est confirmé dans le projet que sur réponse du moteur ;
+         en cas d'échec, l'affichage local est restauré. */
+      const avant = m[1];
+      nativeChecked('renameMarker', { markerIndex: i, name: m[1], bars: m[0], endBars: m[3] || 0, cycle: m[2] === 'cycle' }).then((r) => {
+        if (r.ok) { toast('Marqueur renommé dans le projet (confirmé par le moteur) : « ' + avant + ' ».', 'Marqueurs'); return; }
+        m[1] = avant;
+        renderRuler(); renderLanes(); renderOverview();
+        toast('Échec réel du renommage : ' + (r.error || 'raison inconnue') + ' — marqueur inchangé.', 'Marqueurs');
+      });
+    }
   }
 
   /* ------------------------------------------------ MENUS CONTEXTUELS */

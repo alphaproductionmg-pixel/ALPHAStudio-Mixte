@@ -22,7 +22,8 @@ for f in \
   tests/j1-runtime.test.js \
   tests/j1-static.test.js \
   tests/j2-j6-native.test.js \
-  tests/repair-0.5.test.js; do
+  tests/repair-0.5.test.js \
+  tests/verified-results.test.js; do
   node --check "$f"
 done
 
@@ -31,7 +32,7 @@ g++ -std=c++17 -Wall -Wextra -O1 -o /tmp/alpha-core-tests tests/alpha-core.test.
 /tmp/alpha-core-tests
 
 echo "== 4/5 : tests J1, livraison et pont WebView2 J2 → J6 =="
-node --test tests/j1-core.test.js tests/j1-runtime.test.js tests/j1-static.test.js tests/j2-j6-native.test.js tests/repair-0.5.test.js
+node --test tests/j1-core.test.js tests/j1-runtime.test.js tests/j1-static.test.js tests/j2-j6-native.test.js tests/repair-0.5.test.js tests/verified-results.test.js
 
 echo "== 5/5 : syntaxe C++17/JUCE, propreté et grep de contrôle =="
 python3 - <<'PY'

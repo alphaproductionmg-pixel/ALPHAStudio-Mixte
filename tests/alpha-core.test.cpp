@@ -694,6 +694,17 @@ static void testAuditV6ExtendedModel()
     assert (med.command ("undo", commandPayload ({})));
     assert (med.state.tracks[0].clips.size() == 1);   // suppression annulable
     assert (! med.command ("removeMedia", commandPayload ({})));   // chemin requis
+    // --- échecs : aucune référence du projet ne doit être modifiée ---
+    assert (! med.command ("renameMedia", commandPayload ({ { "path", JsonValue ("Media/Prise-v2.wav") },
+                                                             { "newName", JsonValue ("") } })));   // newName requis
+    assert (med.state.tracks[0].clips[0].media == "Media/Prise-v2.wav");   // référence intacte après échec
+    assert (! med.command ("renameMedia", commandPayload ({ { "path", JsonValue ("") },
+                                                             { "newName", JsonValue ("x.wav") } })));
+    assert (med.state.tracks[0].clips[0].media == "Media/Prise-v2.wav");
+    // removeMedia d'un chemin inconnu : les références existantes restent intactes
+    assert (med.command ("removeMedia", commandPayload ({ { "path", JsonValue ("Media/Autre.wav") } })));
+    assert (med.state.tracks[0].clips.size() == 1);
+    assert (med.state.tracks[0].clips[0].media == "Media/Prise-v2.wav");
 
     std::cout << "audit v6 modèle étendu (canaux, routage, départs, inserts, Quick Controls, marqueurs,\n"
                  "  tempo, mesures, infos, espaces, instantanés, récents, raccourcis, logique MIDI,\n"

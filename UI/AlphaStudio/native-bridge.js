@@ -239,6 +239,33 @@
     });
   }
 
+  /* AUDIT v6 : envoi VÉRIFIÉ. Le moteur publie commandResult {seq, command, ok,
+     error, detail} après chaque commande : la réussite n'est rapportée que si
+     cette confirmation correspond à la commande envoyée. En cas d'échec, le
+     snapshot reste disponible pour diagnostic mais ok vaut false. */
+  function sendChecked(name, data) {
+    return nativeCall(name, data).then((result) => {
+      const snapshot = parseSnapshot(result);
+      if (snapshot && typeof snapshot === 'object') applyState(snapshot);
+      const cr = (snapshot && snapshot.commandResult) || null;
+      const confirmed = !!cr && String(cr.command) === String(name) && cr.ok === true;
+      return {
+        ok: confirmed,
+        command: String(name),
+        error: confirmed ? '' : String((cr && cr.error) || 'Commande non confirmée par le moteur'),
+        detail: (cr && cr.detail) ? String(cr.detail) : '',
+        status: (cr && cr.status) ? String(cr.status) : String((snapshot && snapshot.status) || ''),
+        seq: cr ? Number(cr.seq) || 0 : 0,
+        snapshot: snapshot
+      };
+    }).catch((error) => ({
+      ok: false,
+      command: String(name),
+      error: 'Pont natif en échec : ' + ((error && error.message) || String(error)),
+      detail: '', status: '', seq: 0, snapshot: null
+    }));
+  }
+
   function applyDisplayMetrics(snapshot) {
     const root = document.documentElement;
     if (!root || !root.style || typeof root.style.setProperty !== 'function') return;
@@ -432,6 +459,7 @@
 
   window.ALPHA_NATIVE = Object.assign(window.ALPHA_NATIVE || {}, {
     send,
+    sendChecked,
     requestState: () => send('getState'),
     applyState,
     getState: () => lastSnapshot,

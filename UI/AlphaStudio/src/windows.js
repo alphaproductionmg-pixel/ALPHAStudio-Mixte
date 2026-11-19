@@ -26,6 +26,23 @@
     const n = window.ALPHA_NATIVE;
     return (n && typeof n.getState === 'function' && n.getState()) || {};
   };
+  /* AUDIT v6 : envoi VÉRIFIÉ — la réussite n'est rapportée que si le moteur la
+     confirme (commandResult {ok, error, detail}). Aucun succès affiché sans
+     confirmation ; en cas d'échec, le message réel du moteur est montré et
+     rien n'est présenté comme accompli. */
+  const nativeChecked = (command, data) => {
+    const n = window.ALPHA_NATIVE;
+    if (!n || typeof n.sendChecked !== 'function')
+      return Promise.resolve({ ok: false, command: command, error: 'moteur natif hors ligne : aucune confirmation possible', detail: '' });
+    return n.sendChecked(command, data || {}).then((r) => r || { ok: false, command: command, error: 'réponse moteur absente', detail: '' });
+  };
+  const nativeCheckedSay = (command, data, okMsg, ctx) => nativeChecked(command, data).then((r) => {
+    if (ctx && A.showToast) {
+      if (r.ok) A.showToast(okMsg + (r.detail ? ' — ' + r.detail : ''), ctx);
+      else A.showToast('Échec réel : ' + (r.error || 'raison inconnue') + ' — rien n’a été modifié ni annoncé comme accompli.', ctx);
+    }
+    return r;
+  });
   const selectedNativeIndex = () => {
     const st = deviceState();
     const idx = Number(st.selectedTrack);
@@ -758,10 +775,11 @@
               /* AUDIT v6 : les presets de mixage sont réellement persistés
                  dans le projet natif (instantanés — storeSnapshot/recall). */
               const label2 = ev.target.closest('[data-mctx]').textContent;
-              if (k === 'saveSel') nativeSend('storeSnapshot', { name: 'Mixer — sélection' });
-              else if (k === 'saveAll') nativeSend('storeSnapshot', { name: 'Mixer — tous canaux' });
-              else nativeSend('recallSnapshot', { name: 'Mixer — sélection' });
-              A.showToast('« ' + label2 + ' » : ' + (k === 'loadSel' ? 'preset réellement rappelé depuis le projet (niveaux, mutes, solos, EQ).' : 'preset réellement enregistré dans le projet (instantané natif).'), 'Mixer');
+              const cmd = k === 'loadSel' ? 'recallSnapshot' : 'storeSnapshot';
+              const nm = k === 'saveAll' ? 'Mixer — tous canaux' : 'Mixer — sélection';
+              nativeCheckedSay(cmd, { name: nm }, '« ' + label2 + ' » : ' +
+                (k === 'loadSel' ? 'preset rappelé depuis le projet (niveaux, mutes, solos, EQ) — confirmé par le moteur.'
+                                 : 'preset enregistré dans le projet (instantané natif) — confirmé par le moteur.'), 'Mixer');
             }
             else if (k === 'meter') { close(); return; }
             else if (['hold', 'forever', 'input', 'postfader', 'postpan', 'fast'].indexOf(k) >= 0) {
@@ -1719,21 +1737,38 @@
               if (Math.abs(Number(clips[q].startBars || 0) - Number(part.start || 1)) < 0.02) return q;
             return 0;
           })();
-          const pc = (op, extra) => nativeSend('processClip', Object.assign({ trackIndex: ti, clipIndex: ci, op: op }, extra || {}));
+          const CTX = 'Éditeur d’échantillons';
+          const clipExiste = () => ((((deviceState().tracks || [])[ti] || {}).clips) || [])[ci];
+          /* Envoi vérifié : refuse d'agir sur un événement inexistant et
+             n'annonce la réussite que sur confirmation du moteur. */
+          const pc = (op, extra, okMsg) => {
+            if (!clipExiste()) {
+              A.showToast('Événement introuvable dans le projet (piste ' + (ti + 1) + ', index ' + ci +
+                ') : aucun traitement envoyé au moteur.', CTX);
+              return Promise.resolve({ ok: false, error: 'événement inexistant' });
+            }
+            return nativeCheckedSay('processClip', Object.assign({ trackIndex: ti, clipIndex: ci, op: op }, extra || {}), okMsg, CTX);
+          };
           if (k === 'rmhp') { const c = pane.querySelector('[data-hpcount]'); if (c) c.textContent = '0'; A.showToast('Hitpoints réinitialisés — relancez « Détecter » pour une nouvelle analyse réelle.', 'Éditeur d’échantillons'); return; }
           if (k === 'detect') {
-            nativeSend('detectTransients', { trackIndex: ti, clipIndex: ci, sensitivity: 62 });
-            let tries = 0;
-            const poll = setInterval(() => {
-              tries++;
-              const sil = deviceState().silence;
-              if (sil && sil.kind === 'transients') {
-                clearInterval(poll);
-                const c = pane.querySelector('[data-hpcount]');
-                if (c) c.textContent = String(sil.count || 0);
-                A.showToast((sil.count || 0) + ' hitpoint(s) réellement détecté(s) par analyse d’énergie (sensibilité 62 %).', 'Éditeur d’échantillons');
-              } else if (tries > 16) { clearInterval(poll); A.showToast('Aucun échantillon chargé sur cette piste : importez d’abord un événement audio.', 'Éditeur d’échantillons'); }
-            }, 250);
+            if (!clipExiste()) { A.showToast('Événement introuvable dans le projet : aucune analyse demandée au moteur.', CTX); return; }
+            nativeChecked('detectTransients', { trackIndex: ti, clipIndex: ci, sensitivity: 62 }).then((r) => {
+              if (!r.ok) { A.showToast('Analyse refusée par le moteur : ' + (r.error || 'raison inconnue') + '.', CTX); return; }
+              let tries = 0;
+              const poll = setInterval(() => {
+                tries++;
+                const sil = deviceState().silence;
+                if (sil && sil.kind === 'transients') {
+                  clearInterval(poll);
+                  const c = pane.querySelector('[data-hpcount]');
+                  if (c) c.textContent = String(sil.count || 0);
+                  A.showToast((sil.count || 0) + ' hitpoint(s) détecté(s) et confirmé(s) par le moteur (analyse d’énergie, sensibilité 62 %).', CTX);
+                } else if (tries > 16) {
+                  clearInterval(poll);
+                  A.showToast('Analyse commandée mais aucun résultat publié par le moteur : aucun hitpoint affiché.', CTX);
+                }
+              }, 250);
+            });
             return;
           }
           if (k === 'auto' || k === 'preview' || k === 'warp' || k === 'manual' || k === 'global') { b.classList.toggle('on'); }
@@ -1748,45 +1783,51 @@
           };
           /* Opérations RÉELLES envoyées au moteur (échantillons modifiés,
              fichier réécrit, historique du projet mis à jour). */
-          if (k === 'flatten') { pc('bake'); A.showToast('Aplatir : le buffer traité est réellement réécrit dans le fichier (bake).', 'Éditeur d’échantillons'); return; }
-          if (k === 'slicenclose') { nativeSend('splitAtSilences', { trackIndex: ti, clipIndex: ci }); A.showToast('Découper & fermer : l’événement est réellement découpé aux silences détectés par le moteur.', 'Éditeur d’échantillons'); return; }
-          if (k === 'groove') {
-            nativeSend('detectTempo');
-            setTimeout(() => {
+          if (k === 'flatten') { pc('bake', null, 'Aplatir : buffer traité réécrit dans le fichier et contrôlé par relecture.'); return; }
+          if (k === 'slicenclose') {
+            if (!clipExiste()) { A.showToast('Événement introuvable : aucune découpe envoyée.', CTX); return; }
+            nativeCheckedSay('splitAtSilences', { trackIndex: ti, clipIndex: ci },
+              'Découper & fermer : événement découpé aux silences mesurés par le moteur.', CTX);
+            return;
+          }
+          if (k === 'groove' || k === 'auto') {
+            nativeChecked('detectTempo').then((r) => {
+              if (!r.ok) { A.showToast('Mesure de tempo refusée par le moteur : ' + (r.error || 'raison inconnue') + '.', CTX); return; }
               const bpm = Number(deviceState().lastDetectedBpm || 0);
-              A.showToast(bpm > 0 ? 'Groove créé : tempo réel détecté sur l’audio (' + bpm.toFixed(1) + ' BPM) et appliqué à la grille.' : 'Détection de tempo lancée — aucun tempo net détecté sur cet événement.', 'Éditeur d’échantillons');
-            }, 1200);
+              A.showToast(bpm > 0
+                ? (k === 'groove' ? 'Groove créé : tempo mesuré par le moteur (' : 'Auto Adjust : tempo mesuré par le moteur (') + bpm.toFixed(1) + ' BPM).'
+                : 'Mesure effectuée, aucun tempo net publié par le moteur : grille inchangée.', CTX);
+            });
+            if (k === 'auto') return;
             return;
           }
           if (k === 'mkmarks') {
-            nativeSend('detectSilence', { trackIndex: ti, clipIndex: ci, thresholdDb: -42, minCloseMs: 100, minOpenMs: 300 });
-            setTimeout(() => { nativeSend('markersFromSilences'); A.showToast('Marqueurs réellement créés dans le projet aux silences détectés.', 'Éditeur d’échantillons'); }, 900);
+            if (!clipExiste()) { A.showToast('Événement introuvable : aucune détection envoyée.', CTX); return; }
+            nativeChecked('detectSilence', { trackIndex: ti, clipIndex: ci, thresholdDb: -42, minCloseMs: 100, minOpenMs: 300 }).then((r) => {
+              if (!r.ok) { A.showToast('Détection des silences refusée : ' + (r.error || 'raison inconnue') + ' — aucun marqueur créé.', CTX); return; }
+              return nativeCheckedSay('markersFromSilences', {},
+                'Marqueurs créés dans le projet aux silences réellement mesurés.', CTX);
+            });
             return;
           }
           if (k === 'mkregions' || k === 'mkevents') {
-            nativeSend('splitAtSilences', { trackIndex: ti, clipIndex: ci });
-            A.showToast((k === 'mkregions' ? 'Régions' : 'Événements') + ' réellement créés : découpe du fichier aux silences détectés par le moteur.', 'Éditeur d’échantillons');
+            if (!clipExiste()) { A.showToast('Événement introuvable : aucune découpe envoyée.', CTX); return; }
+            nativeCheckedSay('splitAtSilences', { trackIndex: ti, clipIndex: ci },
+              (k === 'mkregions' ? 'Régions' : 'Événements') + ' créés : découpe du fichier aux silences mesurés par le moteur.', CTX);
             return;
           }
           if (k === 'gain') {
-            const v = window.prompt ? window.prompt('Gain en dB appliqué réellement au fichier :', '0') : '0';
-            if (v !== null) { pc('gain', { value: Number(String(v).replace(',', '.')) || 0 }); A.showToast('Gain de ' + v + ' dB réellement appliqué aux échantillons (fichier réécrit).', 'Éditeur d’échantillons'); }
+            const v = window.prompt ? window.prompt('Gain en dB appliqué au fichier :', '0') : '0';
+            if (v !== null) pc('gain', { value: Number(String(v).replace(',', '.')) || 0 }, 'Gain de ' + v + ' dB appliqué aux échantillons, fichier réécrit et contrôlé.');
             return;
           }
-          if (k === 'normalize') { pc('normalize', { value: -0.3 }); A.showToast('Normalisation réelle à −0,3 dB : crête mesurée puis fichier réécrit.', 'Éditeur d’échantillons'); return; }
-          if (k === 'fadein') { pc('fadeIn', { ms: 50 }); A.showToast('Fondu entrant réel de 50 ms appliqué aux échantillons (fichier réécrit).', 'Éditeur d’échantillons'); return; }
-          if (k === 'fadeout') { pc('fadeOut', { ms: 50 }); A.showToast('Fondu sortant réel de 50 ms appliqué aux échantillons (fichier réécrit).', 'Éditeur d’échantillons'); return; }
-          if (k === 'reverse') { pc('reverse'); A.showToast('Événement réellement inversé : échantillons retournés et fichier réécrit.', 'Éditeur d’échantillons'); return; }
-          if (k === 'silence') { pc('silence'); A.showToast('Silence réellement appliqué : échantillons mis à zéro et fichier réécrit.', 'Éditeur d’échantillons'); return; }
-          if (k === 'auto') {
-            nativeSend('detectTempo');
-            setTimeout(() => {
-              const bpm = Number(deviceState().lastDetectedBpm || 0);
-              A.showToast(bpm > 0 ? 'Auto Adjust : tempo et grille mesurés sur l’audio réel (' + bpm.toFixed(1) + ' BPM).' : 'Auto Adjust : mesure en cours — aucun tempo net sur cet événement.', 'Éditeur d’échantillons');
-            }, 1200);
-          }
+          if (k === 'normalize') { pc('normalize', { value: -0.3 }, 'Normalisation à −0,3 dB : crête mesurée, fichier réécrit et contrôlé.'); return; }
+          if (k === 'fadein') { pc('fadeIn', { ms: 50 }, 'Fondu entrant de 50 ms appliqué aux échantillons, fichier réécrit et contrôlé.'); return; }
+          if (k === 'fadeout') { pc('fadeOut', { ms: 50 }, 'Fondu sortant de 50 ms appliqué aux échantillons, fichier réécrit et contrôlé.'); return; }
+          if (k === 'reverse') { pc('reverse', null, 'Événement inversé : échantillons retournés, fichier réécrit et contrôlé.'); return; }
+          if (k === 'silence') { pc('silence', null, 'Silence appliqué : échantillons mis à zéro, fichier réécrit et contrôlé.'); return; }
           if (k === 'selall') apply(0, 1);
-          A.showToast(MSG[k] || ('« ' + b.textContent + ' »'), 'Éditeur d’échantillons');
+          A.showToast(MSG[k] || ('« ' + b.textContent + ' »'), CTX);
         });
         $('[data-seruler]', body).addEventListener('click', (e) => {
           const r = e.currentTarget.getBoundingClientRect();
@@ -2586,7 +2627,9 @@
             if (!f) return;
             /* AUDIT v6 : l'état « utilisé » est réellement mesuré — références
                du projet comptées et présence sur disque vérifiée (verifyMedia). */
-            nativeSend('verifyMedia');
+            nativeChecked('verifyMedia').then((rv) => {
+              if (!rv.ok) { A.showToast('Vérification refusée par le moteur : ' + (rv.error || 'raison inconnue') + '.', 'Pool'); return; }
+            });
             let tries = 0;
             const t = setInterval(() => {
               tries++;
@@ -2614,23 +2657,23 @@
             /* AUDIT v6 : « Redresser » mesure réellement le tempo du média puis
                l'étire au tempo du projet (stretchClip, fichier réécrit). */
             const ti = Number(deviceState().selectedTrack) || 0;
-            nativeSend('detectTempo');
-            setTimeout(() => {
+            const live = (((deviceState().tracks || [])[ti] || {}).clips) || [];
+            if (!live.length) { A.showToast('Aucun événement audio réel sur la piste ' + (ti + 1) + ' : redressement impossible.', 'Pool'); return; }
+            nativeChecked('detectTempo').then((r) => {
+              if (!r.ok) { A.showToast('Mesure de tempo refusée par le moteur : ' + (r.error || 'raison inconnue') + '.', 'Pool'); return; }
               const bpm = Number(deviceState().lastDetectedBpm || 0);
-              if (bpm > 0) {
-                const proj = Number((A.state && A.state.tempo) || 120) || 120;
-                const bars = Math.max(1, Math.round(4 * bpm / proj));
-                nativeSend('stretchClip', { trackIndex: ti, clipIndex: 0, targetBars: bars });
+              if (!(bpm > 0)) { redraw(); A.showToast('Mesure effectuée, aucun tempo net publié : événement inchangé.', 'Pool'); return; }
+              const proj = Number((A.state && A.state.tempo) || 120) || 120;
+              const bars = Math.max(1, Math.round(4 * bpm / proj));
+              return nativeChecked('stretchClip', { trackIndex: ti, clipIndex: 0, targetBars: bars }).then((r2) => {
+                if (!r2.ok) { A.showToast('Tempo mesuré (' + bpm.toFixed(1) + ' BPM) mais étirement refusé : ' + (r2.error || 'raison inconnue') + ' — fichier inchangé.', 'Pool'); return; }
                 f.tempo = bpm.toFixed(3).replace('.', ',');
                 c.classList.add('on');
                 redraw();
-                A.showToast('« ' + f.n + ' » redressé : tempo réel mesuré ' + f.tempo + ' BPM, événement réellement rééchantillonné sur ' +
-                  bars + ' mesure(s) au tempo du projet (' + proj + ' BPM).', 'Pool');
-              } else {
-                redraw();
-                A.showToast('Tempo non mesurable sur ce média : aucun signal rythmique net détecté par le moteur.', 'Pool');
-              }
-            }, 1200);
+                A.showToast('« ' + f.n + ' » redressé : tempo mesuré ' + f.tempo + ' BPM puis événement rééchantillonné sur ' + bars +
+                  ' mesure(s) au tempo du projet (' + proj + ' BPM) — confirmé par le moteur.' + (r2.detail ? ' (' + r2.detail + ')' : ''), 'Pool');
+              });
+            });
           }));
           $$('[data-pname]', B).forEach((sp) => sp.addEventListener('dblclick', (e) => {
             e.stopPropagation();
@@ -2657,9 +2700,16 @@
                 if (f.real) {
                   const dir = String(f.real).replace(/[^\\/]*$/, '');
                   const ext = (/\.[^.]+$/.exec(String(f.real)) || [''])[0];
-                  nativeSend('renameMedia', { path: f.real, newName: dir + v + ext });
-                  f.n = v; f.real = dir + v + ext; f.path = dir;
-                  A.showToast('« ' + old + ' » réellement renommé en « ' + v + ext + ' » : fichier déplacé sur le disque, références du projet mises à jour.', 'Pool');
+                  /* la ligne n'est renommée QUE si le déplacement disque est confirmé */
+                  nativeChecked('renameMedia', { path: f.real, newName: dir + v + ext }).then((r) => {
+                    if (r.ok) {
+                      f.n = v; f.real = dir + v + ext; f.path = dir;
+                      A.showToast('« ' + old + ' » renommé en « ' + v + ext + ' » : fichier déplacé sur le disque et références du projet mises à jour — confirmé par le moteur.', 'Pool');
+                    } else {
+                      sp.textContent = old;
+                      A.showToast('Échec réel : ' + (r.error || 'raison inconnue') + ' — nom et références inchangés.', 'Pool');
+                    }
+                  });
                 } else {
                   f.n = v;
                   A.showToast('« ' + old + ' » renommé dans la liste : ce média de démonstration n’a pas de fichier sur disque.', 'Pool');
@@ -2750,21 +2800,26 @@
             const ti = Number(deviceState().selectedTrack) || 0;
             const at = Number((A.state && A.state.pos) || 1);
             if (f && f.real) {
-              nativeSend('importMediaFile', { path: f.real, startBars: at, trackIndex: ti });
-              A.showToast('« ' + f.n + '.' + f.ext + ' » réellement importé depuis ' + f.real +
-                ' et inséré à la mesure ' + at + ' (piste ' + (ti + 1) + ').', 'Pool');
+              nativeCheckedSay('importMediaFile', { path: f.real, startBars: at, trackIndex: ti },
+                '« ' + f.n + '.' + f.ext + ' » importé depuis ' + f.real + ' et inséré à la mesure ' + at +
+                ' (piste ' + (ti + 1) + ') — confirmé par le moteur.', 'Pool');
             } else {
-              nativeSend('importAudio', { startBars: at, trackIndex: ti });
-              A.showToast('Sélecteur Windows ouvert : choisissez le fichier à insérer réellement à la mesure ' + at + '.', 'Pool');
+              nativeChecked('importAudio', { startBars: at, trackIndex: ti }).then((r) => {
+                A.showToast(r.ok
+                  ? 'Sélecteur Windows ouvert : le fichier choisi sera importé réellement à la mesure ' + at + '.'
+                  : 'Échec réel : ' + (r.error || 'raison inconnue') + ' — aucun sélecteur ouvert.', 'Pool');
+              });
             }
             return;
           }
           if (k === 'trash') {
             /* AUDIT v6 : ouvre la corbeille Windows réelle (les médias retirés
                du Pool y sont déplacés par moveToTrash, donc récupérables). */
-            nativeSend('emptyTrash');
-            TRS.length = 0; redraw();
-            A.showToast('Corbeille Windows ouverte : les médias retirés du Pool s’y trouvent réellement (rien n’est effacé sans votre action).', 'Pool');
+            nativeChecked('emptyTrash').then((r) => {
+              if (!r.ok) { A.showToast('Échec réel : ' + (r.error || 'raison inconnue') + ' — la corbeille n’a pas été ouverte, la liste locale est inchangée.', 'Pool'); return; }
+              TRS.length = 0; redraw();
+              A.showToast('Corbeille Windows ouverte : les médias retirés du Pool s’y trouvent réellement (rien n’est effacé sans votre action).', 'Pool');
+            });
             return;
           }
           if (k === 'erase') {
@@ -2773,60 +2828,77 @@
             if (f.used) { A.showToast('« ' + f.n + ' » est utilisé par le projet : retirez-le d’abord des pistes.', 'Pool'); return; }
             /* AUDIT v6 (A121) : suppression RÉELLE — le fichier est déplacé
                vers la corbeille Windows par le moteur, puis retiré de l'index. */
-            if (f.real) nativeSend('removeMedia', { path: f.real });
-            TRS.push(f);
-            const g = st.sel.replace(/\d+$/, '');
-            GROUPS.filter((x) => x[0] === g)[0][2] = GROUPS.filter((x) => x[0] === g)[0][2].filter((x) => x !== f);
-            redraw();
-            A.showToast(f.real ? '« ' + f.n + '.' + f.ext + ' » réellement déplacé vers la corbeille Windows (récupérable) et retiré de l’index du projet.'
-              : '« ' + f.n + ' » retiré de la liste (média de démonstration, sans fichier sur disque).', 'Pool');
+            const retire = (msg) => {
+              TRS.push(f);
+              const g = st.sel.replace(/\d+$/, '');
+              GROUPS.filter((x) => x[0] === g)[0][2] = GROUPS.filter((x) => x[0] === g)[0][2].filter((x) => x !== f);
+              redraw();
+              A.showToast(msg, 'Pool');
+            };
+            if (f.real) {
+              /* la liste n'est modifiée QUE si le moteur confirme le déplacement */
+              nativeChecked('removeMedia', { path: f.real }).then((r) => {
+                if (r.ok) retire('« ' + f.n + '.' + f.ext + ' » déplacé vers la corbeille Windows (récupérable) et références du projet retirées — confirmé par le moteur.' + (r.detail ? ' (' + r.detail + ')' : ''));
+                else A.showToast('Échec réel : ' + (r.error || 'raison inconnue') + ' — le fichier reste sur disque et dans la liste, aucune référence perdue.', 'Pool');
+              });
+            } else retire('« ' + f.n + ' » retiré de la liste (média de démonstration, sans fichier sur disque).');
             return;
           }
           /* AUDIT v6 : chaque bouton du Pool appelle une commande réelle. */
           const f2 = name(st.sel);
           const ti2 = Number(deviceState().selectedTrack) || 0;
+          const liveClips = (((deviceState().tracks || [])[ti2] || {}).clips) || [];
+          const needClip = (what) => {
+            if (liveClips.length) return true;
+            A.showToast('Aucun événement audio réel sur la piste ' + (ti2 + 1) + ' : ' + what + ' impossible (aucune commande envoyée).', 'Pool');
+            return false;
+          };
           if (k === 'import') {
-            nativeSend('importAudio', { startBars: Number((A.state && A.state.pos) || 1), trackIndex: ti2 });
-            A.showToast('Sélecteur Windows ouvert : le fichier choisi est réellement lu, copié dans le dossier du projet et indexé.', 'Pool');
+            nativeChecked('importAudio', { startBars: Number((A.state && A.state.pos) || 1), trackIndex: ti2 }).then((r) => {
+              A.showToast(r.ok
+                ? 'Sélecteur Windows ouvert : le fichier choisi sera lu, copié dans le dossier du projet puis indexé.'
+                : 'Échec réel : ' + (r.error || 'raison inconnue') + ' — aucun sélecteur ouvert.', 'Pool');
+            });
             return;
           }
           if (k === 'convert') {
-            nativeSend('processClip', { trackIndex: ti2, clipIndex: 0, op: 'conform' });
-            A.showToast('Conversion réelle : le fichier est rééchantillonné au format du projet (fréquence et résolution cibles) puis réécrit.', 'Pool');
+            if (!needClip('conversion')) return;
+            nativeCheckedSay('processClip', { trackIndex: ti2, clipIndex: 0, op: 'conform' },
+              'Conversion effectuée : fichier rééchantillonné au format du projet, réécrit et contrôlé par relecture.', 'Pool');
             return;
           }
           if (k === 'minimize') {
-            nativeSend('processClip', { trackIndex: ti2, clipIndex: 0, op: 'bake' });
-            A.showToast('Fichier réellement minimisé : les portions inutilisées sont retirées et un fichier unique compact est réécrit.', 'Pool');
+            if (!needClip('minimisation')) return;
+            nativeCheckedSay('processClip', { trackIndex: ti2, clipIndex: 0, op: 'bake' },
+              'Fichier minimisé : portions inutilisées retirées, fichier unique compact réécrit et contrôlé.', 'Pool');
             return;
           }
           if (k === 'peaks') {
-            nativeSend('getPeaks', { trackIndex: ti2, clipIndex: 0, points: 700 });
-            let n = 0;
-            const t = setInterval(() => {
-              n++;
+            if (!needClip('recalcul des images')) return;
+            nativeChecked('getPeaks', { trackIndex: ti2, clipIndex: 0, points: 700 }).then((r) => {
+              if (!r.ok) { A.showToast('Recalcul refusé par le moteur : ' + (r.error || 'raison inconnue') + '.', 'Pool'); return; }
               const pk = deviceState().peaks;
-              if (pk && (pk.points || pk.error)) {
-                clearInterval(t);
-                A.showToast(pk.error ? 'Images (peaks) : ' + pk.error
-                  : 'Images réellement recalculées depuis les échantillons : ' + pk.points + ' points min/max par canal.', 'Pool');
-              } else if (n > 12) { clearInterval(t); A.showToast('Aucun échantillon chargé : importez d’abord un média pour recalculer ses images.', 'Pool'); }
-            }, 250);
+              A.showToast(pk && pk.error ? 'Images (peaks) : ' + pk.error
+                : 'Images recalculées depuis les échantillons et publiées : ' + ((pk && pk.points) || 0) + ' points min/max par canal.', 'Pool');
+            });
             return;
           }
           if (k === 'origin') {
-            nativeSend('setClipStart', { trackIndex: ti2, clipIndex: 0, startBars: Number((A.state && A.state.pos) || 1) });
-            A.showToast('Origine réellement mise à jour : l’événement commence à la position du curseur (' +
-              A.fmtPos(Number((A.state && A.state.pos) || 1)) + ').', 'Pool');
+            if (!needClip('mise à jour de l’origine')) return;
+            nativeCheckedSay('setClipStart', { trackIndex: ti2, clipIndex: 0, startBars: Number((A.state && A.state.pos) || 1) },
+              'Origine mise à jour : l’événement commence à la position du curseur (' +
+              A.fmtPos(Number((A.state && A.state.pos) || 1)) + ') — confirmé par le moteur.', 'Pool');
             return;
           }
           if (k === 'reveal') {
             if (f2 && f2.real) {
-              nativeSend('revealMedia', { path: f2.real });
-              A.showToast('« ' + f2.n + '.' + f2.ext + ' » réellement révélé dans l’explorateur Windows.', 'Pool');
+              nativeCheckedSay('revealMedia', { path: f2.real },
+                '« ' + f2.n + '.' + f2.ext + ' » révélé dans l’explorateur Windows.', 'Pool');
             } else {
-              nativeSend('chooseMediaFolder');
-              A.showToast('Aucun chemin disque pour ce média : sélectionnez le dossier de médias à indexer réellement.', 'Pool');
+              nativeChecked('chooseMediaFolder').then((r) => {
+                A.showToast(r.ok ? 'Sélecteur de dossier ouvert : ce média n’a pas de chemin disque, indexez un dossier réel.'
+                  : 'Échec réel : ' + (r.error || 'raison inconnue') + ' — aucun sélecteur ouvert.', 'Pool');
+              });
             }
             return;
           }
@@ -2836,17 +2908,17 @@
             return;
           }
           if (k === 'prep') {
-            nativeSend('backupProject');
-            A.showToast('Archive réellement préparée : le projet et ses médias sont copiés dans un dossier de sauvegarde.', 'Pool');
+            nativeCheckedSay('backupProject', {},
+              'Archive préparée : projet et médias copiés dans un dossier de sauvegarde.', 'Pool');
             return;
           }
           if (k === 'verify') {
-            nativeSend('verifyMedia');
-            setTimeout(() => {
+            nativeChecked('verifyMedia').then((rv) => {
+              if (!rv.ok) { A.showToast('Vérification refusée par le moteur : ' + (rv.error || 'raison inconnue') + '.', 'Pool'); return; }
               const r = deviceState().mediaIndex || {};
-              A.showToast('Médias réellement vérifiés sur disque : ' + (r.found || 0) + '/' + (r.total || 0) + ' trouvé(s)' +
-                ((r.missing && r.missing.length) ? ' — manquants : ' + r.missing.slice(0, 3).join(', ') : '.'), 'Pool');
-            }, 800);
+              A.showToast('Médias vérifiés sur disque : ' + (r.found || 0) + '/' + (r.total || 0) + ' trouvé(s)' +
+                ((r.missing && r.missing.length) ? ' — manquants : ' + r.missing.slice(0, 3).join(', ') : ' — aucun manquant.') + '.', 'Pool');
+            });
             return;
           }
         }));

@@ -39,6 +39,23 @@
     if (n && typeof n.send === 'function') { n.send(command, data || {}); return true; }
     return false;
   };
+  /* AUDIT v6 : envoi VÉRIFIÉ — la réussite n'est rapportée que si le moteur la
+     confirme (commandResult {ok, error, detail}). Aucun succès affiché sans
+     confirmation ; en cas d'échec, le message réel du moteur est montré et
+     rien n'est présenté comme accompli. */
+  const nativeChecked = (command, data) => {
+    const n = window.ALPHA_NATIVE;
+    if (!n || typeof n.sendChecked !== 'function')
+      return Promise.resolve({ ok: false, command: command, error: 'moteur natif hors ligne : aucune confirmation possible', detail: '' });
+    return n.sendChecked(command, data || {}).then((r) => r || { ok: false, command: command, error: 'réponse moteur absente', detail: '' });
+  };
+  const nativeCheckedSay = (command, data, okMsg, ctx) => nativeChecked(command, data).then((r) => {
+    if (ctx && A.showToast) {
+      if (r.ok) A.showToast(okMsg + (r.detail ? ' — ' + r.detail : ''), ctx);
+      else A.showToast('Échec réel : ' + (r.error || 'raison inconnue') + ' — rien n’a été modifié ni annoncé comme accompli.', ctx);
+    }
+    return r;
+  });
   const track = (id) => (A.trackById ? A.trackById(id) : null);
   const parts = () => (A.PARTS || []);
   const fmt = (p) => (A.fmtPos ? A.fmtPos(p) : String(p));
@@ -131,7 +148,9 @@
           const ledD = $('[data-pfdiskled]', body); if (ledD) ledD.classList.toggle('on', disk > 84);
         }, 420);
         const rb = $('[data-pfreset]', body);
-        if (rb) rb.addEventListener('click', () => { nativeSend('resetPerformancePeaks'); A.showToast('Crêtes réinitialisées (mesures réelles).', 'Performances VST'); });
+        if (rb) rb.addEventListener('click', () => {
+          nativeCheckedSay('resetPerformancePeaks', {}, 'Crêtes de performance réinitialisées (mesures réelles).', 'Performances VST');
+        });
         $$('[data-pfshow]', body).forEach((b) => b.addEventListener('click', () => {
           const dot = b.querySelector('.pf-dot');
           dot.classList.toggle('on');
@@ -397,8 +416,8 @@
         }));
         $$('[data-badd]', body).forEach((b) => b.addEventListener('click', () => {
           /* AUDIT v6 : ajout réel d'une piste dans le projet natif. */
-          nativeSend('addTrack', { name: 'Piste audio ' + (((deviceState().tracks || []).length) + 1), channelType: 'audio' });
-          A.showToast('Ajouter : piste réellement créée dans le projet par le moteur (elle apparaît en bas de la liste).', 'Navigateur de projet');
+          nativeCheckedSay('addTrack', { name: 'Piste audio ' + (((deviceState().tracks || []).length) + 1), channelType: 'audio' },
+            'Ajouter : piste créée dans le projet par le moteur (elle apparaît en bas de la liste).', 'Navigateur de projet');
         }));
         $$('[data-bexp]', body).forEach((b) => b.addEventListener('click', () => {
           const open = b.dataset.bexp === 'all';
@@ -746,19 +765,32 @@
       });
     }
     function applyPrefs(body, note) {
-      const b = window.ALPHA_NATIVE;
-      if (b && b.send) b.send('setPreferences', {
+      /* AUDIT v6 : l'écriture des préférences est VÉRIFIÉE — l'interface n'est
+         modifiée et le message de réussite n'est affiché que si le moteur
+         confirme (commandResult). En cas d'échec, rien n'est appliqué. */
+      const payload = {
         autoSave: PREF.autoSave, theme: PREF.themeKey, largeText: PREF.largeText,
         highContrast: PREF.highContrast, latencyMs: PREF.latencyMs,
         precountBars: PREF.precountBars, autoSaveSeconds: 300
+      };
+      return nativeChecked('setPreferences', payload).then((r) => {
+        if (!r.ok) {
+          A.showToast('Échec réel : ' + (r.error || 'raison inconnue') +
+            ' — préférences non écrites dans le projet, interface inchangée.', 'Préférences');
+          return r;
+        }
+        applyPrefsUi(body, note);
+        return r;
       });
+    }
+    function applyPrefsUi(body, note) {
       const root = document.documentElement;
       root.classList.toggle('pf-large', !!PREF.largeText);
       root.classList.toggle('pf-contrast', !!PREF.highContrast);
       root.classList.toggle('pf-noshadow', PREF.shadows === false);
       if (A.state) A.state.trackColors = PREF.trackColors !== false;
       if (typeof A.renderTracksNow === 'function') { try { A.renderTracksNow(); } catch (e) { /* interface seule */ } }
-      A.showToast(note || ('Préférences réellement écrites dans le projet natif : latence ' +
+      A.showToast(note || ('Préférences écrites dans le projet natif (confirmé par le moteur) : latence ' +
         PREF.latencyMs.toFixed(1) + ' ms, précompte ' + PREF.precountBars + ' mesure(s), ' +
         'sauvegarde auto ' + (PREF.autoSave ? 'activée' : 'désactivée') + ', police ' +
         (PREF.largeText ? 'agrandie' : 'normale') + '.', 'Préférences'));
@@ -811,9 +843,11 @@
           if (onlyMarked && !n) { A.showToast('Aucun réglage marqué : cochez les cases à droite des lignes à stocker.', 'Préférences'); return; }
           readPane(body);
           const nm = 'Préférences — ' + PREF.preset + (onlyMarked ? ' (' + n + ' réglages marqués)' : '');
-          const b = window.ALPHA_NATIVE;
-          if (b && b.send) b.send('storeWorkspace', { name: nm });
-          applyPrefs(body, 'Preset « ' + nm + ' » réellement stocké dans le projet natif (espace de travail restaurable).');
+          applyPrefs(body).then((r) => {
+            if (!r || !r.ok) return;
+            nativeCheckedSay('storeWorkspace', { name: nm },
+              'Preset « ' + nm + ' » stocké dans le projet natif (espace de travail restaurable).', 'Préférences');
+          });
         }));
         $$('[data-pfpreset]', body).forEach((b) => b.addEventListener('click', () => {
           const cycle = ['Alpha Standard', 'Nuendo 4 par défaut', 'Montage vidéo', 'Mixage surround'];
@@ -1666,13 +1700,19 @@
               /* AUDIT v6 (A62) : « Abandonner » annule RÉELLEMENT le rendu —
                  le moteur casse la boucle d'écriture et supprime le fichier
                  partiel (cancelRender → renderOffline). */
-              nativeSend('cancelRender');
-              if (b.dataset.timer) clearInterval(Number(b.dataset.timer));
-              if (msg) msg.textContent = 'Rendu annulé — le fichier partiel est supprimé par le moteur.';
-              if (bar) bar.style.width = '0';
-              b.textContent = 'Exporter'; delete b.dataset.busy; delete b.dataset.timer;
-              prog.style.display = 'none';
-              A.showToast('Export annulé : le moteur a interrompu le rendu et supprimé le fichier partiel.', 'Export Audio Mixdown');
+              nativeChecked('cancelRender').then((r) => {
+                if (b.dataset.timer) clearInterval(Number(b.dataset.timer));
+                b.textContent = 'Exporter'; delete b.dataset.busy; delete b.dataset.timer;
+                if (!r.ok) {
+                  if (msg) msg.textContent = 'Annulation refusée : ' + (r.error || 'raison inconnue');
+                  A.showToast('Échec réel de l’annulation : ' + (r.error || 'raison inconnue') + ' — le rendu se poursuit.', 'Export Audio Mixdown');
+                  return;
+                }
+                if (msg) msg.textContent = 'Rendu annulé — le fichier partiel est supprimé par le moteur.';
+                if (bar) bar.style.width = '0';
+                prog.style.display = 'none';
+                A.showToast('Export annulé : le moteur a interrompu le rendu et supprimé le fichier partiel (confirmé).', 'Export Audio Mixdown');
+              });
               return;
             }
             /* AUDIT v6 (A118) : export RÉEL. Le moteur JUCE ouvre le sélecteur
@@ -1812,8 +1852,13 @@
             /* AUDIT v6 (A116) : le fondu est réellement appliqué aux
                échantillons — rampe écrite dans le fichier par le moteur. */
             const ms = Math.round(parseFloat(String(st.len).replace(',', '.')) * 1000) || 500;
-            nativeSend('processClip', { trackIndex: Number(deviceState().selectedTrack) || 0, clipIndex: 0, op: 'fadeIn', ms: ms });
-            A.showToast('Fondu réellement appliqué (' + KINDS[st.kind][0] + ', ' + ms + ' ms) : rampe écrite dans les échantillons, fichier réécrit par le moteur.', 'Fondu');
+            const tiF = Number(deviceState().selectedTrack) || 0;
+            if (!((((deviceState().tracks || [])[tiF] || {}).clips) || [])[0]) {
+              A.showToast('Aucun événement audio réel sur la piste ' + (tiF + 1) + ' : fondu non appliqué (aucune commande envoyée).', 'Fondu');
+              return;
+            }
+            nativeCheckedSay('processClip', { trackIndex: tiF, clipIndex: 0, op: 'fadeIn', ms: ms },
+              'Fondu appliqué (' + KINDS[st.kind][0] + ', ' + ms + ' ms) : rampe écrite dans les échantillons, fichier réécrit et contrôlé.', 'Fondu');
           }
           if (k === 'ok' || k === 'cancel') W.close('fade');
         }));
@@ -1936,10 +1981,21 @@
                événement, entrée du suivant, échantillons réécrits. */
             const ms = Math.round(parseFloat(String(st.len).replace(',', '.')) * 1000) || 1250;
             const ti = Number(deviceState().selectedTrack) || 0;
-            nativeSend('processClip', { trackIndex: ti, clipIndex: 0, op: 'fadeOut', ms: ms });
-            nativeSend('processClip', { trackIndex: ti, clipIndex: 1, op: 'fadeIn', ms: ms });
-            A.showToast('Fondu enchaîné réellement appliqué : ' + ms + ' ms, décalage ' + st.offset +
-              ' (' + (st.eqPower ? 'égal puissance' : 'courbes réglables') + (st.sym ? ', symétrique' : '') + ') — échantillons modifiés et fichiers réécrits.', 'Fondu enchaîné');
+            const clipsX = (((deviceState().tracks || [])[ti] || {}).clips) || [];
+            if (clipsX.length < 2) {
+              A.showToast('Fondu enchaîné impossible : la piste ' + (ti + 1) + ' contient ' + clipsX.length +
+                ' événement(s) réel(s), il en faut deux adjacents. Aucun traitement envoyé.', 'Fondu enchaîné');
+              return;
+            }
+            /* exécution séquentielle : la sortie doit être confirmée avant l'entrée */
+            nativeChecked('processClip', { trackIndex: ti, clipIndex: 0, op: 'fadeOut', ms: ms }).then((r1) => {
+              if (!r1.ok) { A.showToast('Échec réel sur le fondu sortant : ' + (r1.error || 'raison inconnue') + ' — fondu entrant non envoyé.', 'Fondu enchaîné'); return; }
+              return nativeChecked('processClip', { trackIndex: ti, clipIndex: 1, op: 'fadeIn', ms: ms }).then((r2) => {
+                if (!r2.ok) { A.showToast('Fondu sortant confirmé, mais échec réel du fondu entrant : ' + (r2.error || 'raison inconnue') + '.', 'Fondu enchaîné'); return; }
+                A.showToast('Fondu enchaîné appliqué et confirmé par le moteur : ' + ms + ' ms, décalage ' + st.offset +
+                  ' (' + (st.eqPower ? 'égal puissance' : 'courbes réglables') + (st.sym ? ', symétrique' : '') + ') — deux fichiers réécrits et contrôlés.', 'Fondu enchaîné');
+              });
+            });
           }
           if (k === 'ok' || k === 'cancel') W.close('crossfade');
         }));
@@ -2042,7 +2098,13 @@
           const th = rowVal('Seuil d’ouverture') || rowVal('Seuil') || -42;
           const minOpen = (rowVal('Temps min. ouvert') || 0.3) * 1000;
           const minClose = (rowVal('Temps min. fermé') || 0.1) * 1000;
-          nativeSend('detectSilence', { trackIndex: ti(), clipIndex: 0, thresholdDb: th, minOpenMs: minOpen, minCloseMs: minClose });
+          if (!((((deviceState().tracks || [])[ti()] || {}).clips) || [])[0]) {
+            A.showToast('Aucun événement audio réel sur la piste ' + (ti() + 1) + ' : détection impossible (aucune commande envoyée).', 'Detect Silence');
+            return;
+          }
+          nativeChecked('detectSilence', { trackIndex: ti(), clipIndex: 0, thresholdDb: th, minOpenMs: minOpen, minCloseMs: minClose }).then((rc) => {
+            if (!rc.ok) A.showToast('Détection refusée par le moteur : ' + (rc.error || 'raison inconnue') + ' — aucune région affichée.', 'Detect Silence');
+          });
           let tries = 0;
           const poll = setInterval(() => {
             tries++;
@@ -2062,12 +2124,19 @@
         $$('.dlg-foot .w-btn, [data-detcalc]', body).forEach((b) => b.addEventListener('click', () => {
           if (b.textContent === 'Traiter') {
             /* Traitement réel : découpe aux silences + marqueurs optionnels. */
+            const asRegions = $$('.dlg-check', body).some((c) => c.classList.contains('on') && /régions/i.test(c.textContent));
             runDetect(() => {
-              nativeSend('splitAtSilences', { trackIndex: ti(), clipIndex: 0 });
-              const asRegions = $$('.dlg-check', body).some((c) => c.classList.contains('on') && /régions/i.test(c.textContent));
-              if (asRegions) nativeSend('markersFromSilences');
-              A.showToast('Traitement réel : ' + det.length + ' silence(s) — événements découpés par le moteur' + (asRegions ? ' et marqueurs créés' : '') + '.', 'Detect Silence');
-              W.close('detect');
+              /* séquentiel et vérifié : la découpe doit être confirmée avant les marqueurs */
+              nativeChecked('splitAtSilences', { trackIndex: ti(), clipIndex: 0 }).then((r1) => {
+                if (!r1.ok) { A.showToast('Échec réel de la découpe : ' + (r1.error || 'raison inconnue') + ' — événements inchangés.', 'Detect Silence'); return; }
+                const suite = asRegions ? nativeCheckedSay('markersFromSilences', {}, 'Marqueurs créés aux silences mesurés.', 'Detect Silence')
+                                        : Promise.resolve({ ok: true });
+                suite.then((r2) => {
+                  if (asRegions && !r2.ok) { A.showToast('Découpe confirmée, mais échec réel des marqueurs : ' + (r2.error || 'raison inconnue') + '.', 'Detect Silence'); return; }
+                  A.showToast('Traitement confirmé par le moteur : ' + det.length + ' silence(s) — événements découpés' + (asRegions ? ' et marqueurs créés' : '') + '.', 'Detect Silence');
+                  W.close('detect');
+                });
+              });
             });
           }
           else if (b.textContent === 'Aperçu') { nativeSend('play'); A.showToast('Lecture réelle de l’événement : les passages sous le seuil sont les silences détectés.', 'Detect Silence'); }
@@ -2690,7 +2759,8 @@
                     tr.addEventListener('dblclick', () => {
                       const path = tr.dataset.path;
                       if (path) {
-                        nativeSend('importMediaFile', { path: path, startBars: Number((A.state && A.state.pos) || 1), trackIndex: Number(deviceState().selectedTrack) || 0 });
+                        nativeCheckedSay('importMediaFile', { path: path, startBars: Number((A.state && A.state.pos) || 1), trackIndex: Number(deviceState().selectedTrack) || 0 },
+                          '« ' + String(path).replace(/^.*[\\/]/, '') + ' » importé et inséré dans le projet — confirmé par le moteur.', 'MediaBay');
                         A.showToast('« ' + tr.children[0].textContent + ' » réellement importé du dossier indexé vers la piste sélectionnée.', cfg.title);
                       }
                     });
@@ -3015,16 +3085,16 @@
           } else if (t === 'Appliquer') {
             sync(); A.showToast('Configuration appliquée à la fenêtre de projet.', 'Setup'); return;
           } else if (t.indexOf('Enregistrer') === 0) {
-            nativeSend('storeWorkspace', { name: 'Configuration ' + NAME[cur] });
-            A.showToast('Preset réellement enregistré dans le projet : « Configuration ' + NAME[cur] + ' » (storeWorkspace).', 'Setup');
+            nativeCheckedSay('storeWorkspace', { name: 'Configuration ' + NAME[cur] },
+              'Preset enregistré dans le projet : « Configuration ' + NAME[cur] + ' ».', 'Setup');
           } else if (t === 'Supprimer') {
-            nativeSend('deleteWorkspace', { name: 'Configuration ' + NAME[cur] });
-            A.showToast('Preset réellement supprimé du projet : « Configuration ' + NAME[cur] + ' ».', 'Setup');
+            nativeCheckedSay('deleteWorkspace', { name: 'Configuration ' + NAME[cur] },
+              'Preset supprimé du projet : « Configuration ' + NAME[cur] + ' ».', 'Setup');
           } else {
             /* Preset rappelé depuis le projet : les espaces de travail sont
                réellement persistés (recallWorkspace). */
-            nativeSend('recallWorkspace', { name: 'Configuration ' + NAME[cur] });
-            A.showToast('« ' + t + ' » : preset de configuration rappelé depuis le projet (espace de travail réel).', 'Setup');
+            nativeCheckedSay('recallWorkspace', { name: 'Configuration ' + NAME[cur] },
+              '« ' + t + ' » : preset de configuration rappelé depuis le projet.', 'Setup');
           }
         });
         $('[data-laysel]', body).addEventListener('click', (e) => {
@@ -3135,14 +3205,13 @@
               WS.list.push({ n: ++WS.seq, name: preset.name, id: preset.id, layout: preset.layout });
               W.persist();
               if (W.saveWorkspace && false) {}
-              nativeSend('storeWorkspace', {
+              nativeCheckedSay('storeWorkspace', {
                 name: preset.name,
                 positionBars: Number((A.state && A.state.pos) || 1),
                 panelState: JSON.stringify(preset.layout || {}),
                 windows: ((preset.layout && preset.layout.wins) || []).map((w) => String(w.id)),
                 toolbarItems: []
-              });
-              A.showToast('Preset « ' + preset.name + ' » instancié dans le projet (moteur réel).', 'Espaces de travail');
+              }, 'Preset « ' + preset.name + ' » instancié dans le projet (confirmé par le moteur).', 'Espaces de travail');
             }
             draw();
           }));
