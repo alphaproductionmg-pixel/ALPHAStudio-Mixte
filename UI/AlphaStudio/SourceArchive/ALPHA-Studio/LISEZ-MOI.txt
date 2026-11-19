@@ -1,0 +1,68 @@
+ALPHA Studio — archive du projet
+================================
+Date de cette version : 19 novembre 2026
+
+1. CE QU'IL Y A DANS CETTE ARCHIVE
+----------------------------------
+alpha-studio.html        LE LIVRABLE. Un seul fichier, aucune dépendance,
+                         aucun réseau : double-cliquez, ça s'ouvre dans le
+                         navigateur (Chrome, Edge, Firefox, Safari).
+                         Mesure : 947 303 octets, 59 fenêtres,
+                         458 entrées de menu (dont 49 sous-menus),
+                         242 actions distinctes, 15 667 lignes de source.
+
+src/                     Le code source séparé, lisible et modifiable :
+  body.html                structure de la fenêtre de projet + icônes SVG
+  style.css                style de la fenêtre de projet
+  app.js                   rendu, édition, menus, raccourcis, raccordements
+  windows.js               gestionnaire de fenêtres + 13 premières fenêtres
+  windows2.js              21 fenêtres (lot 2)
+  windows3.js              16 fenêtres (lot 4)
+  windows5.js              8 fenêtres (lots 5-8)
+  windows*.css             styles des fenêtres flottantes
+                         -> éditez src/, puis relancez build.py.
+
+build.py                 Assemble src/ -> alpha-studio.html.
+                         Commande :  python3 build.py
+                         (Python 3, aucune bibliothèque à installer.)
+
+docs/                    Les documents du projet :
+  ce-qui-manque-daw-complet.html/.pdf   audit : ce qui fonctionne, ce qui
+                                        manque, ce que pèse chaque couche,
+                                        et la route en 6 jalons.
+  comparatif-nuendo4-vs-alpha.html/.pdf comparatif avec le manuel Nuendo 4
+                                        (51 éléments documentés, page par page).
+  apercu-*.png, fenetre-*.png           captures et planches d'aperçu.
+
+make_lacunes.py          Régénère docs/ce-qui-manque-daw-complet.html
+make_comparatif.py       Régénère docs/comparatif-nuendo4-vs-alpha.html
+README.md                documentation complète du projet (le détail).
+
+2. CE QUI N'EST PAS DANS L'ARCHIVE (volontairement)
+---------------------------------------------------
+- Le manuel officiel Nuendo 4 (PDF de 16 Mo) et son extraction texte :
+  documents sous copyright Steinberg, non redistribuables. Le comparatif
+  cite les pages ; il n'a pas besoin du PDF pour être lu.
+- Les captures d'écran intermédiaires de travail et les doublons de planches.
+- Les scripts de test Playwright (environnement de développement) : les
+  résultats sont consignés dans README.md, section « Journal des tests ».
+- Caches, fichiers temporaires, environnements virtuels.
+
+3. COMMENT S'EN SERVIR
+----------------------
+a) Voir le résultat          : ouvrir alpha-studio.html
+b) Lire l'état des lieux     : ouvrir docs/ce-qui-manque-daw-complet.html
+c) Modifier puis reconstruire: éditer src/*, puis  python3 build.py
+d) Régénérer les documents   : python3 make_lacunes.py
+                               python3 make_comparatif.py
+   (les PDF sont produits à partir des HTML par n'importe quel
+    navigateur : Imprimer > Enregistrer au format PDF)
+
+4. ÉTAT DU PROJET EN UNE PHRASE
+-------------------------------
+L'interface est complète et testée ; le moteur audio n'existe pas encore
+(zéro ligne d'API audio dans le code). C'est le jalon J1 qui reste à faire
+pour que l'interface sonne.
+
+Projet pédagogique, non affilié à Steinberg. « Nuendo », « Cubase » et
+« VST » sont des marques de Steinberg Media Technologies GmbH.
