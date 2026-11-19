@@ -14,9 +14,10 @@ FetchContent_Declare(JUCE
     GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(JUCE)
 
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/UI/AlphaStudio/alpha-studio.html")
-    message(FATAL_ERROR "UI source manquante : transférer l'archive ALPHA-Studio dans UI/AlphaStudio avant de compiler.")
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/UI/AlphaStudio/src/app.js")
+    message(FATAL_ERROR "Sources UI manquantes : transférer le dossier src/ de l'archive ALPHA-Studio dans UI/AlphaStudio.")
 endif()
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
 juce_add_gui_app(AlphaStudio
     PRODUCT_NAME "ALPHA Studio"
@@ -24,6 +25,11 @@ juce_add_gui_app(AlphaStudio
     VERSION 0.3.0
     NEEDS_WEBVIEW2 TRUE)
 juce_generate_juce_header(AlphaStudio)
+
+add_custom_command(TARGET AlphaStudio PRE_BUILD
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/UI/AlphaStudio/build.py"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/UI/AlphaStudio"
+    COMMENT "Building original ALPHA Studio UI and injecting native bridge")
 
 target_sources(AlphaStudio PRIVATE
     Source/Main.cpp
