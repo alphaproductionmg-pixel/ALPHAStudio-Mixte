@@ -305,7 +305,7 @@ test('j2f — sources J2-J6, workflow et livrable cohérents', () => {
   assert.match(contract, /after_final_confirmed_test/);
   assert.match(contract, /Aucun élément n'est à 100 %/);
   const workflow = read('.github/workflows/windows-build.yml');
-  assert.match(workflow, /windows-latest/);
+  assert.match(workflow, /windows-2022/);
   assert.match(workflow, /cmake -S \. -B build/);
   assert.match(workflow, /cmake --build build/);
   assert.ok(read('.gitignore').includes('__pycache__/'));
