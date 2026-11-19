@@ -233,6 +233,44 @@ void AlphaWebMainComponent::handleCommand (const Array<var>& args,
         return;
     }
 
+    // AUDIT v6 (A121) : la corbeille Windows réelle — les suppressions du
+    // Pool y sont déplacées (moveToTrash) ; l'utilisateur la vide ici.
+    if (command == "emptyTrash")
+    {
+        URL (String ("shell:RecycleBinFolder")).launchInDefaultBrowser();
+        engine.setNativeStatus (TR ("Corbeille Windows ouverte : les médias supprimés du Pool s'y trouvent réellement."));
+        complete (buildState());
+        return;
+    }
+
+    // AUDIT v6 (A121) : révélation réelle du média dans l'explorateur Windows.
+    if (command == "revealMedia")
+    {
+        const auto path = payload.getProperty (Identifier ("path"), var()).toString();
+        const File f (path);
+        if (path.isNotEmpty() && f.exists())
+        {
+            f.revealToUser();
+            engine.setNativeStatus (TR ("Média révélé dans l'explorateur Windows : ") + f.getFileName());
+        }
+        else
+        {
+            engine.setNativeStatus (TR ("Média introuvable sur le disque : ")
+                                    + (path.isEmpty() ? TR ("chemin vide") : path));
+        }
+        complete (buildState());
+        return;
+    }
+
+    // AUDIT v6 (A120) : indexation réelle d'un dossier de médias choisi sous
+    // Windows — chaque fichier audio est lu (durée, fréquence, canaux réels).
+    if (command == "chooseMediaFolder")
+    {
+        chooseMediaFolder();
+        complete (buildState());
+        return;
+    }
+
     // Bibliothèque de projets réelle : tous les .alphaproj présents sur le disque.
     if (command == "newLibrary" || command == "projectLibrary")
     {
@@ -563,11 +601,13 @@ void AlphaWebMainComponent::exportWav (bool stems, int singleTrack)
     exportDone->reset();
     const bool single = ! stems && singleTrack >= 0;
     const auto title = stems ? "Choisir le dossier des stems"
-                            : single ? "Exporter la piste sélectionnée WAV 48 kHz / 24 bits"
-                                     : "Exporter le mixage WAV 48 kHz / 24 bits";
+                            : single ? "Exporter la piste sélectionnée 48 kHz / 24 bits (WAV, AIFF, FLAC ou OGG)"
+                                     : "Exporter le mixage 48 kHz / 24 bits (WAV, AIFF, FLAC ou OGG)";
     const auto initial = File::getSpecialLocation (File::userDocumentsDirectory)
                              .getChildFile (stems ? "Stems" : single ? "Piste.wav" : "Mixage.wav");
-    chooser = std::make_unique<FileChooser> (title, initial, stems ? "" : "*.wav");
+    // AUDIT v6 (A61) : formats réellement encodés par JUCE — MP3 n'a aucun
+    // encodeur natif ; FLAC (sans perte) et OGG Vorbis sont les équivalents.
+    chooser = std::make_unique<FileChooser> (title, initial, stems ? "" : "*.wav;*.aif;*.aiff;*.flac;*.ogg");
     const int exportFlags = stems ? (FileBrowserComponent::openMode | FileBrowserComponent::canSelectDirectories)
                                   : (FileBrowserComponent::saveMode | FileBrowserComponent::warnAboutOverwriting);
     Component::SafePointer<AlphaWebMainComponent> safe (this);
@@ -1052,6 +1092,92 @@ void AlphaWebMainComponent::choosePluginFolder()
             if (err.isNotEmpty()) AlertWindow::showMessageBoxAsync (MessageBoxIconType::WarningIcon, "ALPHA Studio", err);
             safe->publishState();
         });
+}
+
+void AlphaWebMainComponent::chooseMediaFolder()
+{
+    folderChooser = std::make_unique<FileChooser> (TR ("Choisir un dossier de médias à indexer"),
+                                                   File::getSpecialLocation (File::userMusicDirectory));
+    Component::SafePointer<AlphaWebMainComponent> safe (this);
+    folderChooser->launchAsync (FileBrowserComponent::openMode | FileBrowserComponent::canSelectDirectories,
+        [safe] (const FileChooser& fc)
+        {
+            if (safe == nullptr) return;
+            const File dir = fc.getResult();
+            if (dir == File()) return;
+            alpha::JsonValue p (alpha::JsonValue::Type::Object);
+            p["path"] = alpha::JsonValue (dir.getFullPathName().toStdString());
+            const auto err = safe->engine.command ("indexMediaFolder", alphaString (p.dump()));
+            if (err.isNotEmpty()) AlertWindow::showMessageBoxAsync (MessageBoxIconType::WarningIcon, "ALPHA Studio", err);
+            safe->publishState();
+        });
+}
+
+//==============================================================================
+// AUDIT v6 (A54) : glisser-déposer réel — les fichiers déposés sur la fenêtre
+// Windows sont importés par le moteur (audio, MIDI, projet, OMF/AAF, XML).
+bool AlphaWebMainComponent::isInterestedInFileDrag (const StringArray& files)
+{
+    for (const auto& f : files)
+    {
+        const File file (f);
+        if (file.hasFileExtension (".wav;.aif;.aiff;.flac;.ogg;.mp3;.mid;.midi;.alphaproj;.alpha;.json;.xml;.omf;.aaf"))
+            return true;
+    }
+    return false;
+}
+
+void AlphaWebMainComponent::filesDropped (const StringArray& files, int, int)
+{
+    importDroppedFiles (files);
+}
+
+void AlphaWebMainComponent::importDroppedFiles (const StringArray& files)
+{
+    // Même traitement réel que la boucle d'import du sélecteur de fichiers :
+    // chaque fichier déposé est importé par le moteur selon son extension.
+    for (const auto& path : files)
+    {
+        const File file (path);
+        if (! file.existsAsFile()) continue;
+        if (file.hasFileExtension (".mid") || file.hasFileExtension (".midi"))
+        {
+            MemoryBlock mb;
+            if (file.loadFileAsData (mb)) engine.importMidiData (mb.toBase64Encoding(), -1, 1.0);
+            continue;
+        }
+        if (file.hasFileExtension (".alphaproj") || file.hasFileExtension (".alpha"))
+        {
+            if (file.hasFileExtension (".alpha")) engine.loadProject (file);
+            else engine.loadProjectJson (file);
+            engine.addRecentReal (file);
+            continue;
+        }
+        if (file.hasFileExtension (".json"))
+        {
+            MemoryBlock mb;
+            if (file.loadFileAsData (mb)) engine.importProjectData (mb.toBase64Encoding(), file.getParentDirectory());
+            continue;
+        }
+        if (file.hasFileExtension (".xml"))
+        {
+            String error;
+            if (! engine.importFcpXml (file, error)) engine.setNativeStatus (error);
+            continue;
+        }
+        if (file.hasFileExtension (".omf") || file.hasFileExtension (".aaf"))
+        {
+            const auto e = engine.importOmfOrAaf (file, -1, 1.0);
+            if (e.isNotEmpty()) engine.setNativeStatus (e);
+            continue;
+        }
+        MemoryBlock mb;
+        if (! file.loadFileAsData (mb)) continue;
+        engine.importAudioData (file.getFileName(), mb.toBase64Encoding(), 1.0, -1);
+    }
+    engine.setNativeStatus (TR ("Glisser-déposer : ") + String (files.size())
+                            + TR (" fichier(s) importé(s) par le moteur."));
+    publishState();
 }
 
 void AlphaWebMainComponent::timerCallback()

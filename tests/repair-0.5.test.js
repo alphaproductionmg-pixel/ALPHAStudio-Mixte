@@ -334,6 +334,47 @@ test('audit v6 — plus aucune simulation dans les fenêtres d’analyse et MIDI
   assert.doesNotMatch(app, /Gestion de fenêtres simulée/);
 });
 
+test('audit v6 — chaque fonction prévue est développée ou remplacée par un équivalent réel', () => {
+  const app = read('UI/AlphaStudio/src/app.js');
+  const w1 = read('UI/AlphaStudio/src/windows.js');
+  const w2 = read('UI/AlphaStudio/src/windows2.js');
+  const w3 = read('UI/AlphaStudio/src/windows3.js');
+  const eng = read('Engines/ALPHA-Studio/Source/Engine.h');
+  const html = read('UI/AlphaStudio/alpha-studio.html');
+
+  /* plus aucune commande renvoyée à plus tard : le libellé seul ne suffit pas */
+  assert.ok(!/version ult\u00e9rieure/.test(app));
+  assert.ok(!/version ult\u00e9rieure/.test(w2));
+  assert.ok(!/version ult\u00e9rieure/.test(w3));
+
+  /* le moteur expose réellement les commandes appelées par l'interface */
+  ['processClip', 'detectSilence', 'detectTransients', 'splitAtSilences', 'markersFromSilences',
+   'stretchClip', 'indexMediaFolder', 'importMediaFile', 'removeMedia', 'renameMedia',
+   'cancelRender', 'closeGaps', 'verifyMedia', 'getPeaks', 'resetMeters'].forEach((c) => {
+    assert.ok(eng.indexOf('cmd == "' + c + '"') >= 0, 'commande moteur manquante : ' + c);
+  });
+
+  /* l'interface les appelle vraiment (livrable reconstruit inclus) */
+  ['processClip', 'detectSilence', 'detectTransients', 'splitAtSilences', 'markersFromSilences',
+   'stretchClip', 'importMediaFile', 'removeMedia', 'renameMedia', 'cancelRender', 'closeGaps',
+   'verifyMedia', 'getPeaks', 'resetMeters', 'setPreferences', 'setUiLayout', 'setMidiNotes',
+   'addMarker', 'removeMarker', 'renameMarker', 'storeWorkspace', 'recallWorkspace'].forEach((c) => {
+    assert.ok(html.indexOf("'" + c + "'") >= 0, 'commande non appelée par l\u2019interface : ' + c);
+  });
+
+  /* MENU_STUBS ne conserve que des entrées documentaires */
+  const stubs = app.slice(app.indexOf('const MENU_STUBS'), app.indexOf('Object.keys(MENU_STUBS)'));
+  const n = (stubs.match(/\n    [A-Za-z0-9_]+: \[/g) || []).length;
+  assert.ok(n <= 2, 'MENU_STUBS doit rester documentaire, trouvé : ' + n);
+
+  /* les éditeurs passent réellement par le moteur */
+  assert.match(w1, /processClip/);
+  assert.match(w1, /detectTransients/);
+  assert.match(w1, /setMidiNotes/);
+  assert.match(w2, /setMidiNotes/);
+  assert.match(w3, /splitAtSilences/);
+});
+
 test('audit v6 — matrice de triage par point, sans acceptation finale', () => {
   assert.ok(exists('docs/AUDIT-V6-MATRICE.md'));
   const matrix = read('docs/AUDIT-V6-MATRICE.md');

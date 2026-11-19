@@ -572,15 +572,14 @@
     else send('setStatus', { status: 'Éditeur logique MIDI : fenêtre native indisponible.' });
   };
 
-  /* Les stubs documentaires ne doivent plus répondre « étape 2 » sous WebView2 :
-     ceux qui n'ont pas d'équivalent moteur envoient un statut explicite. */
+  /* Entrées documentaires restantes (manuel, support Steinberg) : elles
+     renvoient leur texte de référence réel, sans fausse promesse d'action. */
   const stubs = A.MENU_STUBS || {};
   Object.keys(stubs).forEach((key) => {
     if (actions[key]) return;
     const label = (stubs[key] && stubs[key][0]) || key;
-    actions[key] = () => send('setStatus', {
-      status: 'Commande « ' + label + ' » : non implémentée dans ce test moteur.'
-    });
+    const detail = (stubs[key] && stubs[key][1]) || '';
+    actions[key] = () => send('setStatus', { status: label + ' — ' + detail });
   });
 
   /* Contrôles de pistes : mute / solo / arm, faders, et édition locale. */

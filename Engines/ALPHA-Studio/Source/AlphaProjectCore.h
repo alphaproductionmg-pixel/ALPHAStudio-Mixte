@@ -1881,6 +1881,9 @@ public:
             { "setMidiNotes", "Notes MIDI", setMidiNotes },
             { "quantizeMidi", "Quantification MIDI", quantizeMidi },
             { "importMedia", "Importer un média", importMedia },
+            { "setClipLength", "Longueur d'événement", setClipLength },
+            { "removeMedia", "Supprimer un média", removeMedia },
+            { "renameMedia", "Renommer un média", renameMedia },
             { "replaceState", "Édition de l'interface", replaceState },
             // ---- commandes réelles du modèle étendu (audit v6)
             { "setChannelType", "Type de canal", setChannelType },
@@ -2253,6 +2256,38 @@ private:
     {
         const auto m = jString (p, "media");
         if (! m.empty() && std::find (s.media.begin(), s.media.end(), m) == s.media.end()) s.media.push_back (m);
+        return true;
+    }
+    // AUDIT v6 (A116/A32) : longueur réelle d'un événement après étirement.
+    static bool setClipLength (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        const int ti = jInt (p, "trackIndex", jInt (p, "index", -1));
+        const int ci = jInt (p, "clipIndex", jInt (p, "clip", -1));
+        if (! clipValid (s, ti, ci, err)) return false;
+        auto& c = s.tracks[static_cast<size_t> (ti)].clips[static_cast<size_t> (ci)];
+        c.lenBars = clampValue (jNumber (p, "lenBars", c.lenBars), 0.001, 100000.0);
+        return true;
+    }
+    // AUDIT v6 (A121) : suppression/renommage réels d'un média — les
+    // événements qui le référencent suivent, historisés par mutate().
+    static bool removeMedia (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        const auto path = jString (p, "path");
+        if (path.empty()) { err = "Chemin de média invalide"; return false; }
+        for (auto& t : s.tracks)
+            t.clips.erase (std::remove_if (t.clips.begin(), t.clips.end(),
+                                           [&] (const AudioClip& c) { return c.media == path; }),
+                           t.clips.end());
+        s.media.erase (std::remove (s.media.begin(), s.media.end(), path), s.media.end());
+        return true;
+    }
+    static bool renameMedia (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        const auto path = jString (p, "path"), nn = jString (p, "newName");
+        if (path.empty() || nn.empty()) { err = "Arguments de renommage invalides"; return false; }
+        for (auto& t : s.tracks)
+            for (auto& c : t.clips) if (c.media == path) c.media = nn;
+        for (auto& m : s.media) if (m == path) m = nn;
         return true;
     }
     static bool replaceState (ProjectState& s, const JsonValue& p, std::string& err)

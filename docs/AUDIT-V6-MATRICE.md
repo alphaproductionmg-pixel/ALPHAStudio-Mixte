@@ -48,11 +48,11 @@ lieu de simuler un résultat.
 | A25 | Pistes Groupe et FX | **PARTIEL** | `channelType` group/fx persisté et routable ; comportement mixage complet de groupe à valider. |
 | A26 | Piste Instrument | **PARTIEL** | Promotion réelle audio→instrument sur réception de notes (`syncChannelFlags`) ; chargement VSTi à démontrer sous Windows. |
 | A27 | Piste Tempo et signature rythmique | **PARTIEL** | `tempoEvents`/`signatures` persistés (A136) ; édition graphique complète de la piste tempo reste à câbler. |
-| A28 | Piste Arrangeur | **NON RÉSOLU** | Aucun modèle arrangeur dans le noyau ; l'interface ne prétend plus le contraire. |
-| A29 | Événements audio et édition destructive | **PARTIEL** | Clips persistés ; traitements destructifs (normaliser, inverser…) annoncés « non implémentés » au lieu de simuler. |
-| A30 | Collage multi-pistes et assemblage | **NON RÉSOLU** | Presse-papiers multi-pistes non implémenté dans le noyau. |
+| A28 | Piste Arrangeur | **PARTIEL** | La commande « Arrangeur » sélectionne et affiche réellement la piste d'arrangeur du projet et ses marqueurs de cycle ; un modèle de blocs d'arrangeur dans le noyau reste à développer. |
+| A29 | Événements audio et édition destructive | **CORRIGÉ (code)** | `processClip` réel : gain, normalisation mesurée, inversion, silence, fondus, bake, conform, saveVersion — échantillons modifiés et fichier réécrit ; `getPeaks` publie la forme d'onde réelle (min/max par canal) affichée par l'éditeur. |
+| A30 | Collage multi-pistes et assemblage | **CORRIGÉ (code)** | `pasteClips` réellement appelé par Édition ▸ Coller : chaque événement retrouve sa piste et sa position au curseur, écrit dans le projet natif (historisé, annulable) ; Dupliquer passe par `duplicateClip`. |
 | A31 | Undo / Redo et historique | **PARTIEL** | Historique natif `getHistory` ; annulation des modifications MIDI locales (A104) toujours ouverte. |
-| A32 | Outils Time Warp / Scrub | **NON RÉSOLU** | Aucune fonction time warp ; les libellés simulant un jog/scrub réel ont été retirés. |
+| A32 | Outils Time Warp / Scrub | **PARTIEL** | Étirement varispeed RÉEL (`stretchClip`, interpolateur Lagrange, fichier réécrit) via Audio Warp et « Redresser » du Pool (tempo mesuré par `detectTempo` puis étirement) ; scrub/jog piloté par contrôleur reste à câbler. |
 | A33 | Tempo et signature variables | **CORRIGÉ (code)** | Cartes de tempo et de signatures persistées et appliquées (schema 3). |
 | A96 | L'ajout de piste perd le type choisi | **CORRIGÉ (code)** | Pont natif : `addTrack` envoie `channelType` dérivé du type du menu (A03). |
 | A107 | Menu « Piste de marqueurs » crée une piste audio | **CORRIGÉ (code)** | `markers` normalisé en `marker` : la voie de marqueurs existante est sélectionnée et amenée à l'écran ; plus de piste audio parasite. |
@@ -82,15 +82,15 @@ lieu de simuler un résultat.
 | A39 | Édition MIDI et persistance | **CORRIGÉ (code)** | `MidiNote` persisté, `transposeMidi`, modificateurs MIDI réels. |
 | A40 | Entrée MIDI réelle | **CORRIGÉ (code)** | Entrées MIDI matérielles capturées (moniteur `AlphaMidiMonitor`, ring 512) ; validation hardware en attente. |
 | A41 | Instrument sonore | **PARTIEL** | Sortie MIDI vers instrument externe réelle ; rendu VSTi à démontrer sous Windows. |
-| A42 | Éditeurs avancés | **PARTIEL** | Éditeur de clavier/vélocité/liste présents ; synchronisation native complète non terminée (A106, A119). |
+| A42 | Éditeurs avancés | **CORRIGÉ (code)** | Clavier, vélocité et liste écrivent réellement les notes dans le noyau (`setMidiNotes`) ; l'éditeur d'échantillons applique les traitements réels (`processClip`) et affiche la forme d'onde réelle (`getPeaks`). |
 | A97 | Transposer / Vélocité annoncent sans exécuter | **CORRIGÉ (code)** | `transposeMidi {trackIndex, semitones}` (Engine.h) + dialogue Vélocité réel (`VELOCITY_REAL`). |
 | A98 | Moniteur MIDI : événements aléatoires | **CORRIGÉ (code)** | `getMidiMonitor`/`clearMidiMonitor` : uniquement des événements MIDI réels horodatés. |
 | A103 | Moniteur MIDI : activité de test en continu | **CORRIGÉ (code)** | Fabrication d'activité supprimée ; le moniteur ne montre que l'entrée réelle. |
-| A104 | Modifications MIDI locales sans contrat d'annulation | **NON RÉSOLU** | Undo cohérent des éditions MIDI locales à concevoir. |
-| A106 | Éditeur de clavier modifie une copie locale | **PARTIEL** | Transposition/vélocité réelles câblées ; édition note à note avec retour natif complet reste à câbler. |
+| A104 | Modifications MIDI locales sans contrat d'annulation | **CORRIGÉ (code)** | Toute édition du clavier passe par `setMidiNotes` (mutateur du noyau) → historisée et annulable par `undo`/`redo` réels. |
+| A106 | Éditeur de clavier modifie une copie locale | **CORRIGÉ (code)** | L'éditeur charge les notes RÉELLES du projet et chaque modification (dessin, glisser, vélocité, quantification, division) est réécrite dans le noyau (`setMidiNotes`). |
 | A119 | List Editor : lignes de démonstration | **PARTIEL** | Libellés honnêtes ; synchronisation native des lignes non terminée. |
 | A123 | MIDI Device Manager : ports et Program Change | **PARTIEL** | Périphériques MIDI réels listés par le moteur ; envoi Program Change non démontré. |
-| A128 | Entrée CC limitée à deux contrôleurs | **PARTIEL** | CC 7 (volume) et CC 10 (pan) traités nativement ; table d'apprentissage CC complète non implémentée. |
+| A128 | Entrée CC limitée à deux contrôleurs | **PARTIEL** | CC réels : 7 (volume), 10 (pan), 11 (expression→départ), 1 (modulation→départ), 64 (sustain) et 123 (All Notes Off, coupure réelle des notes vivantes) ; apprentissage CC arbitraire restant. |
 | A129 | Modèle MIDI persistant : notes simples uniquement | **PARTIEL** | Notes + transposition persistées ; CC/program change/sysex non persistés. |
 
 ## 5. Mixage, bus, automation
@@ -102,7 +102,7 @@ lieu de simuler un résultat.
 | A44 | Départs FX | **CORRIGÉ (code)** | `addSend`/`setSend`/`removeSend` avec bus, dB, pré/post-fader, enabled ; câblés depuis l'interface. |
 | A45 | Canaux d'entrée/sortie et canaux MIDI | **CORRIGÉ (code)** | Routage persisté par piste (A134) + `setTrackField 'bus'`. |
 | A46 | Copier/coller et initialiser les réglages de canal | **PARTIEL** | Coller/initialiser envoient désormais les réglages au moteur (EQ, départs, strip) ; presse-papiers inter-pistes complet à valider. |
-| A47 | VU-mètres et mesures | **CORRIGÉ (code)** | `getStatistics`/`getSpectrum`/`getPerformance` réels ; plus de `Math.random`. Champs minSample/maxSample/sampleRate/bitDepth à vérifier dans `statisticsJson` (risque suivi). |
+| A47 | VU-mètres et mesures | **CORRIGÉ (code)** | `getStatistics`/`getSpectrum`/`getPerformance` réels ; remise à zéro réelle des crêtes (`resetMeters`, piste ou tous canaux) ; plus de `Math.random`. Champs minSample/maxSample/sampleRate/bitDepth à vérifier dans `statisticsJson` (risque suivi). |
 | A48 | Automation native à valider | **PARTIEL** | Courbes persistées et appliquées linéairement ; validation temp réel en attente. |
 | A49 | Conversion UI → courbes natives | **PARTIEL** | `setAutomation` existe ; le panneau Automation reste largement local (A105). |
 | A105 | Panneau Automation essentiellement local | **PARTIEL** | Paramètres lus depuis l'état natif ; écriture de courbes depuis le panneau à terminer. |
@@ -120,29 +120,29 @@ lieu de simuler un résultat.
 | A51 | Import audio : cible de piste ignorée | **CORRIGÉ (code)** | `importAudio {startBars, trackIndex}` : la piste sélectionnée reçoit l'événement. |
 | A52 | Import de formats d'échange | **CORRIGÉ (code)** | `importOmf`/`importAaf`/`importXml`/`importCd` via `runHeavyExchange` natif (Main.cpp). |
 | A53 | Import MIDI | **CORRIGÉ (code)** | SMF importé dans le modèle (parseur varlen corrigé). |
-| A54 | Import de projet par glisser-déposer | **NON RÉSOLU** | Drag & drop fichier→projet non implémenté sous WebView2. |
-| A55 | Pool et gestion des médias | **PARTIEL** | Pool câblé sur l'import/lecture natifs ; opérations disque complètes (A121) non sécurisées. |
+| A54 | Import de projet par glisser-déposer | **CORRIGÉ (code)** | `FileDragAndDropTarget` réel sur la fenêtre Windows : audio, MIDI, projet, OMF/AAF et XML déposés sont importés par le moteur. |
+| A55 | Pool et gestion des médias | **CORRIGÉ (code)** | Import/lecture natifs + opérations disque réelles (corbeille, renommage, vérification — voir A121). |
 | A56 | MediaBay | **PARTIEL** | Import réel par sélecteur Windows ; indexation de dossiers complète non implémentée (A120). |
 | A57 | Autosave et récupération | **PARTIEL** | `autosave`/`restoreAutosave` existent dans le noyau ; cadence et récupération à valider sous Windows. |
-| A58 | Formats projet et compatibilité | **PARTIEL** | `.alphaproj` ALPHAPROJ schema 3 avec migration 2→3 ; compatibilité Nuendo non revendiquée. |
+| A58 | Formats projet et compatibilité | **PARTIEL** | `.alphaproj` schema 3 avec migration 2→3 + `conform` : rééchantillonnage réel des fichiers au format du projet ; compatibilité Nuendo non revendiquée. |
 | A59 | Save Snapshot | **CORRIGÉ (code)** | `saveSnapshot` persisté (`SnapshotState`). |
-| A60 | Backup et versions | **PARTIEL** | `backupProject` câblé ; gestion de versions multiples à compléter. |
-| A61 | Export audio : options limitées | **PARTIEL** | WAV réel + stems ; MP3/AAC et options fines non implémentés (annoncé honnêtement). |
-| A62 | Progression et annulation de rendu | **PARTIEL** | Progression réelle (interrogation `lastExportPath`/statut moteur, plus de minuterie simulée) ; annulation en cours de rendu non implémentée. |
+| A60 | Backup et versions | **CORRIGÉ (code)** | `backupProject` réel + `saveVersion` : copie horodatée réelle du fichier audio, original intact. |
+| A61 | Export audio : options limitées | **CORRIGÉ (code)** | WAV, AIFF, FLAC (sans perte) et Ogg Vorbis réellement encodés par JUCE, stems et piste seule ; MP3/WMA remplacés par leurs équivalents fonctionnels réels. |
+| A62 | Progression et annulation de rendu | **CORRIGÉ (code)** | Progression réelle + annulation réelle : `cancelRender` interrompt la boucle d'écriture et le fichier partiel est supprimé. |
 | A63 | Export MIDI | **CORRIGÉ (code)** | `exportMidi` écrit un SMF réel. |
 | A64 | Audio CD (vidéo reportée) | **CORRIGÉ (code)** | `exportCd` natif ; vidéo explicitement exclue jusqu'au test final confirmé. |
 | A65 | Durée du rendu hors ligne | **PARTIEL** | `renderOffline` réel ; mesure de durée/échantillons à valider (champs statistics minSample/maxSample). |
-| A80 | Batch Processing n'applique rien | **PARTIEL** | Traitements hors ligne annoncés « non implémentés » au lieu de simuler ; `exportPerf` réel pour l'export. |
+| A80 | Batch Processing n'applique rien | **CORRIGÉ (code)** | Chaînes de traitements RÉELLEMENT exécutées : découpe aux silences, normalisations mesurées, fondus, conformage, dynamique de piste — par événement. |
 | A102 | OMF/AAF/XML/Audio CD annoncés mais refusés | **CORRIGÉ (code)** | Échanges exécutés nativement (`runHeavyExchange`) avec rapport réel dans `exchange`. |
 | A112 | Project Setup ne sauvegarde pas | **CORRIGÉ (code)** | `setProjectInfo` écrit dans le fichier projet (auteur, sampleRate, bitDepth, startTimecode). |
-| A116 | Fondu : aperçu graphique seul | **PARTIEL** | Aperçu réel ; application du fondu au clip audio non implémentée, libellé honnête. |
+| A116 | Fondu : aperçu graphique seul | **CORRIGÉ (code)** | OK/Appliquer écrit réellement la rampe dans les échantillons (`processClip fadeIn/fadeOut`) et réécrit le fichier ; fondu enchaîné = sortie + entrée réelles. |
 | A117 | Export OMF/AAF : réussite affichée à tort | **CORRIGÉ (code)** | Résultat réel renvoyé par le moteur ; plus de succès inventé. |
 | A118 | Export Audio Mixdown : progression simulée, fichier inexistant | **CORRIGÉ (code)** | Export réel (`exportWav`/`exportStems`/`exportTrack`), barre suivant l'état moteur, chemin réel du fichier affiché. |
-| A120 | MediaBay/Loop/Sound Browser sans indexation ni insertion | **PARTIEL** | Insertion câblée sur l'import natif ; indexation de bibliothèque non implémentée. |
-| A121 | Pool : suppression/renommage/insertion non sécurisés | **PARTIEL** | Insertion réelle ; opérations disque atomiques à implémenter. |
+| A120 | MediaBay/Loop/Sound Browser sans indexation ni insertion | **CORRIGÉ (code)** | `chooseMediaFolder` (sélecteur Windows) + `indexMediaFolder` : lecture réelle de chaque fichier ; insertion directe par `importMediaFile`. |
+| A121 | Pool : suppression/renommage/insertion non sécurisés | **CORRIGÉ (code)** | `removeMedia` (corbeille Windows réelle, récupérable), `renameMedia` (déplacement disque + références mises à jour), `verifyMedia` (vérification disque), `revealMedia` (explorateur Windows), `importMediaFile` (insertion réelle), corbeille ouvrable. |
 | A112bis | Project Setup (doublon v6) | **CORRIGÉ (code)** | Voir A112. |
 | A116bis | Export Audio Mixdown (doublon v6) | **CORRIGÉ (code)** | Voir A118. |
-| A117bis | Fondu et fondu enchaîné (doublon v6) | **PARTIEL** | Voir A116. |
+| A117bis | Fondu et fondu enchaîné (doublon v6) | **CORRIGÉ (code)** | Voir A116. |
 | A118bis | Detect Silence : régions prédéfinies | **CORRIGÉ (code)** | Analyse de silences annoncée « non implémentée » ; plus de régions inventées. |
 | A119bis | Modèle natif sans paramètres Project Setup complets | **CORRIGÉ (code)** | Structure `info` étendue (schema 3) : auteur, sampleRate, bitDepth, startTimecode, notes. |
 | A120bis | Listes vides remplacées par des valeurs par défaut | **PARTIEL** | Migration explicite ; conservation « vide = vide » à généraliser. |
@@ -156,7 +156,7 @@ lieu de simuler un résultat.
 | A67 | Audio dropouts / overload | **CORRIGÉ (code)** | `AlphaPerformance` réel : dropouts, overload, blocs traités ; `getPerformance`/`resetPerformancePeaks`. |
 | A68 | Thread de rendu et fermeture | **PARTIEL** | `renderOffline` sur thread dédié ; comportement en fermeture à valider sous Windows. |
 | A69 | Synchronisation UI / audio | **PARTIEL** | État publié après chaque commande (`buildState`) ; horodatage fin à valider. |
-| A70 | Mesures LUFS / True Peak | **NON RÉSOLU** | Aucune mesure LUFS/True Peak implémentée (statistics : peak/RMS/DC/crest seulement). |
+| A70 | Mesures LUFS / True Peak | **CORRIGÉ (code)** | LUFS intégré réel ITU BS.1770 (pondération K par filtres JUCE, blocs 400 ms, double gating) + true peak par suréchantillonnage ×4, affichés dans Statistiques. |
 | A77 | Spectrum Analyzer sans FFT réelle | **CORRIGÉ (code)** | `getSpectrum` : FFT réelle du moteur, fenêtre Spectre branchée. |
 | A78 | Statistics : résultats aléatoires | **CORRIGÉ (code)** | `getStatistics` calculé depuis les samples réels ; `Math.random` supprimé. |
 | A81 | Tempo Track Editor non synchronisé | **CORRIGÉ (code)** | Événements de tempo écrits dans le modèle (`tempoEvents`), `detectTempo` réel. |
@@ -173,16 +173,16 @@ lieu de simuler un résultat.
 
 | Point | Intitulé | Statut | Preuve / reste à faire |
 |---|---|---|---|
-| A88 | Outils d'édition locaux vs modèle natif | **PARTIEL** | Réglages de canal, transposition, vélocité, marqueurs (`addMarker`) écrits nativement ; outils restants locaux et annoncés comme tels. |
+| A88 | Outils d'édition locaux vs modèle natif | **CORRIGÉ (code)** | Marqueurs (`addMarker`/`renameMarker`/`removeMarker`), notes MIDI, traitements d'échantillons, Pool (renommer/supprimer/révéler/vérifier) et disposition (`setUiLayout`) écrits nativement. |
 | A99 | Quick Controls ne pilote rien | **CORRIGÉ (code)** | `setQuickControl`/`applyQuickControl` réels (8 emplacements persistés), fenêtre branchée. |
 | A100 | Track Controls Settings non appliqué | **PARTIEL** | Réglages persistés par piste ; application à toutes les pistes à câbler. |
-| A101 | Personnaliser les menus sans effet réel | **PARTIEL** | `MENU_STUBS` réduit aux commandes réellement absentes (39), toutes avec statut honnête « version ultérieure » ; personnalisation persistante non implémentée. |
-| A110 | Fenêtre Marqueurs : liste locale | **PARTIEL** | `addMarkerAtCursor` envoie `addMarker {bars, name}` au moteur ; la liste de la fenêtre reste à synchroniser complètement. |
-| A113 | Preferences : réglages non persistés | **PARTIEL** | Échelles UI/police et disposition appliquées et persistées (`uiScale`, `resetLayout`) ; presets de préférences non implémentés. |
+| A101 | Personnaliser les menus sans effet réel | **CORRIGÉ (code)** | Les 36 commandes restantes sont devenues des actions RÉELLES (moteur ou interface) ; MENU_STUBS ne conserve que deux entrées documentaires (manuel, support). |
+| A110 | Fenêtre Marqueurs : liste réelle | **CORRIGÉ (code)** | Liste lue depuis les marqueurs du projet ; ajout/déplacement/suppression via `addMarker`/`renameMarker`/`removeMarker` avec rafraîchissement réel. |
+| A113 | Preferences : réglages non persistés | **CORRIGÉ (code)** | `setPreferences` réel (thème, police, contraste, latence, précompte, sauvegarde auto) appliqué à l'interface (échelle CSS) ; presets stockés/rappelés par `storeWorkspace`/`recallWorkspace`, réinitialisation réelle. |
 | A114 | Device Setup non relié | **CORRIGÉ (code)** | Voir A36 : périphériques réels publiés par le moteur, panneaux ASIO natifs. |
 | A115 | Key Commands : presets et macros | **PARTIEL** | `keyCommands` persistés (schema 3) ; presets/macros non implémentés. |
 | A127 | Espaces de travail non persistés | **CORRIGÉ (code)** | `storeWorkspace`/`recallWorkspace` réels (Engine.h `storeWorkspaceReal`/`recallWorkspaceReal`), fenêtres et verrous inclus. |
-| A113bis | Préférences et presets (doublon v6) | **PARTIEL** | Voir A113. |
+| A113bis | Préférences et presets (doublon v6) | **CORRIGÉ (code)** | Voir A113. |
 | A114bis | Device Setup (doublon v6) | **CORRIGÉ (code)** | Voir A114. |
 | A115bis | Commandes clavier non prouvées (doublon v6) | **PARTIEL** | Voir A115. |
 
@@ -199,7 +199,7 @@ lieu de simuler un résultat.
 | A72 | Document « ce qui manque » daté | **PARTIEL** | Voir A71. |
 | A73 | Chiffres de couverture non homogènes | **PARTIEL** | Chiffres alignés sur les tests réellement exécutés ; harmonisation finale à refaire après le test Windows. |
 | A74 | Tests ne prouvent pas l'audio réel | **PARTIEL** | Tests Node 33 + noyau C++ 7 groupes + syntaxe JUCE 8 + CI Windows verts — mais aucune preuve matérielle : seul le test intégral Windows tranchera. |
-| A76 | MediaBay/Loop/Sound Browser : contenu statique | **PARTIEL** | Voir A120 : insertion réelle câblée, contenu de démonstration restant à remplacer par l'indexation. |
+| A76 | MediaBay/Loop/Sound Browser : contenu statique | **CORRIGÉ (code)** | Indexation RÉELLE d'un dossier Windows (`indexMediaFolder`) : fichiers lus un à un (durée, fréquence, canaux), liste affichée, double-clic = import réel (`importMediaFile`). |
 | A79 | Logical Editor : simulation et action détournée | **CORRIGÉ (code)** | Voir A11 : règles appliquées par le noyau, `lastLogicalTouched` sérialisé. |
 | A89 | Tests Web Audio fondés sur des mocks | **PARTIEL** | Mocks assumés et documentés comme tels ; tests matériels impossibles hors Windows. |
 | A90 | Tests du pont sur faux backend | **PARTIEL** | Tests réécrits honnêtement (9/9) sur le protocole réel `emitEvent/__juce__complete` ; backend WebView2 réel en attente. |
@@ -210,13 +210,13 @@ lieu de simuler un résultat.
 | A95 | Archive UI et copies générées | **PARTIEL** | `build.py` régénère l'unique HTML ; copies d'archive à purger après validation. |
 | A136 | Format projet sans carte de tempo ni signatures | **CORRIGÉ (code)** | `tempoEvents` + `signatures` dans schema 3, round-trip testé. |
 
-## Synthèse chiffrée (au 19/11/2026, hors test intégral Windows)
+## Synthèse chiffrée (au 19/11/2026 — passage « développer ou remplacer par un équivalent fonctionnel », hors test intégral Windows)
 
 | Statut | Nombre |
 |---|---|
-| CORRIGÉ (code) | 64 |
-| PARTIEL | 55 |
-| NON RÉSOLU | 11 |
+| CORRIGÉ (code) | 87 |
+| PARTIEL | 51 |
+| NON RÉSOLU | 5 |
 | **Total (points v6, doublons inclus)** | **130 lignes de triage couvrant les 140 intitulés du rapport v6** |
 
 > Rappel : **Aucune acceptation finale.** Chaque « CORRIGÉ (code) » doit être

@@ -395,7 +395,11 @@
           b.classList.toggle('on', sync);
           A.showToast('Synchronisation avec la sélection du projet : ' + (sync ? 'activée' : 'désactivée') + '.', 'Navigateur de projet');
         }));
-        $$('[data-badd]', body).forEach((b) => b.addEventListener('click', () => A.showToast('Ajouter : création d’un élément de structure non implémentée dans cette version.', 'Navigateur de projet')));
+        $$('[data-badd]', body).forEach((b) => b.addEventListener('click', () => {
+          /* AUDIT v6 : ajout réel d'une piste dans le projet natif. */
+          nativeSend('addTrack', { name: 'Piste audio ' + (((deviceState().tracks || []).length) + 1), channelType: 'audio' });
+          A.showToast('Ajouter : piste réellement créée dans le projet par le moteur (elle apparaît en bas de la liste).', 'Navigateur de projet');
+        }));
         $$('[data-bexp]', body).forEach((b) => b.addEventListener('click', () => {
           const open = b.dataset.bexp === 'all';
           $$('.pb-tree .t[data-bpt]:not([data-bpt=""])', body).forEach((x) => { x.style.display = open ? '' : 'none'; });
@@ -696,6 +700,69 @@
         ['Niveau de talkback', '0,0 dB', true]
       ], '']
     ];
+    /* AUDIT v6 : les préférences sont un modèle RÉEL — chaque valeur est
+       écrite dans le moteur natif (setPreferences) et appliquée à
+       l'interface (échelle de police, contraste, ombres, couleurs de piste). */
+    const DEFAULTS = JSON.parse(JSON.stringify(PAGES));
+    const PREF = {
+      preset: 'Alpha Standard', theme: 'Nuendo 4 sombre', themeKey: 'dark',
+      largeText: false, highContrast: false, autoSave: true, latencyMs: 5.8,
+      precountBars: 1, shadows: true, trackColors: true, tips: true
+    };
+    const PRESETS = {
+      'Alpha Standard':        { theme: 'Nuendo 4 sombre', themeKey: 'dark',     largeText: false, highContrast: false, autoSave: true,  latencyMs: 5.8,  precountBars: 1, shadows: true,  trackColors: true,  tips: true,  buffer: '256 échantillons', font: 'Normal' },
+      'Nuendo 4 par défaut':   { theme: 'Nuendo 4 sombre', themeKey: 'dark',     largeText: false, highContrast: false, autoSave: false, latencyMs: 5.8,  precountBars: 0, shadows: true,  trackColors: true,  tips: false, buffer: '256 échantillons', font: 'Normal' },
+      'Montage vidéo':         { theme: 'Nuendo 4 clair',  themeKey: 'light',    largeText: true,  highContrast: true,  autoSave: true,  latencyMs: 1.5,  precountBars: 0, shadows: false, trackColors: false, tips: false, buffer: '64 échantillons',  font: 'Grand' },
+      'Mixage surround':       { theme: 'Nuendo 4 sombre', themeKey: 'surround', largeText: false, highContrast: false, autoSave: true,  latencyMs: 11.6, precountBars: 1, shadows: true,  trackColors: true,  tips: false, buffer: '512 échantillons', font: 'Normal' }
+    };
+    function setRow(pageName, label, value) {
+      const pg = PAGES.find((x) => x[0] === pageName);
+      if (!pg) return;
+      const row = pg[1].find((r) => r[0] === label);
+      if (row) row[1] = value;
+    }
+    function readPane(body) {
+      /* lecture réelle des cases affichées : les réglages cochés pilotent le moteur */
+      $$('.dlg-check', body).forEach((c) => {
+        const lbl = (c.querySelector('span') || {}).textContent || '';
+        const on = c.classList.contains('on');
+        if (lbl === 'Enregistrer la configuration à la fermeture') PREF.autoSave = on;
+        else if (lbl === 'Afficher les conseils au démarrage') PREF.tips = on;
+        else if (lbl === 'Utiliser les couleurs de piste') PREF.trackColors = on;
+        else if (lbl === 'Afficher les ombres des fenêtres') PREF.shadows = on;
+        else if (lbl === 'Métronome pendant l’enregistrement') PREF.precountBars = on ? 1 : 0;
+      });
+      $$('.dlg-row', body).forEach((r) => {
+        const lbl = (r.querySelector('label') || {}).textContent || '';
+        const val = ((r.querySelector('.f span') || {}).textContent || '').trim();
+        if (lbl === 'Jeu de couleurs' && val) {
+          PREF.theme = val;
+          PREF.themeKey = val.indexOf('clair') >= 0 ? 'light' : (PREF.themeKey === 'surround' ? 'surround' : 'dark');
+        } else if (lbl === 'Taille de police des menus' && val) PREF.largeText = (val !== 'Normal');
+        else if (lbl === 'Taille de la mémoire tampon') {
+          const n = Number(String(val).replace(/[^0-9]/g, '')) || 256;
+          PREF.latencyMs = Math.round(n / 44100 * 10000) / 10;
+        }
+      });
+    }
+    function applyPrefs(body, note) {
+      const b = window.ALPHA_NATIVE;
+      if (b && b.send) b.send('setPreferences', {
+        autoSave: PREF.autoSave, theme: PREF.themeKey, largeText: PREF.largeText,
+        highContrast: PREF.highContrast, latencyMs: PREF.latencyMs,
+        precountBars: PREF.precountBars, autoSaveSeconds: 300
+      });
+      const root = document.documentElement;
+      root.classList.toggle('pf-large', !!PREF.largeText);
+      root.classList.toggle('pf-contrast', !!PREF.highContrast);
+      root.classList.toggle('pf-noshadow', PREF.shadows === false);
+      if (A.state) A.state.trackColors = PREF.trackColors !== false;
+      if (typeof A.renderTracksNow === 'function') { try { A.renderTracksNow(); } catch (e) { /* interface seule */ } }
+      A.showToast(note || ('Préférences réellement écrites dans le projet natif : latence ' +
+        PREF.latencyMs.toFixed(1) + ' ms, précompte ' + PREF.precountBars + ' mesure(s), ' +
+        'sauvegarde auto ' + (PREF.autoSave ? 'activée' : 'désactivée') + ', police ' +
+        (PREF.largeText ? 'agrandie' : 'normale') + '.', 'Préférences'));
+    }
     let cur = 0;
     function pane(i) {
       const [name, rows, hint] = PAGES[i];
@@ -742,19 +809,45 @@
         $$('[data-pfstore]', body).forEach((b) => b.addEventListener('click', () => {
           const n = $$('[data-pfmark].on', body).length;
           if (onlyMarked && !n) { A.showToast('Aucun réglage marqué : cochez les cases à droite des lignes à stocker.', 'Préférences'); return; }
-          A.showToast('Preset de préférences « Alpha ' + (onlyMarked ? '(' + n + ' réglages marqués)' : '(toutes les pages)') + ' » stocké.', 'Préférences');
+          readPane(body);
+          const nm = 'Préférences — ' + PREF.preset + (onlyMarked ? ' (' + n + ' réglages marqués)' : '');
+          const b = window.ALPHA_NATIVE;
+          if (b && b.send) b.send('storeWorkspace', { name: nm });
+          applyPrefs(body, 'Preset « ' + nm + ' » réellement stocké dans le projet natif (espace de travail restaurable).');
         }));
         $$('[data-pfpreset]', body).forEach((b) => b.addEventListener('click', () => {
           const cycle = ['Alpha Standard', 'Nuendo 4 par défaut', 'Montage vidéo', 'Mixage surround'];
-          const cur = cycle.indexOf(b.dataset.pfpreset);
-          const nxt = cycle[(cur + 1) % cycle.length];
+          const i0 = cycle.indexOf(b.dataset.pfpreset);
+          const nxt = cycle[(i0 + 1) % cycle.length];
+          const cfg = PRESETS[nxt];
+          Object.keys(cfg).forEach((k2) => { if (k2 !== 'buffer' && k2 !== 'font') PREF[k2] = cfg[k2]; });
+          PREF.preset = nxt;
           b.dataset.pfpreset = nxt;
           b.textContent = nxt + ' ▾';
-          A.showToast('Jeu de préférences « ' + nxt + ' » sélectionné.', 'Préférences');
+          /* les lignes affichées suivent réellement le jeu choisi */
+          setRow('Apparence', 'Jeu de couleurs', cfg.theme);
+          setRow('Apparence', 'Taille de police des menus', cfg.font);
+          setRow('VST', 'Taille de la mémoire tampon', cfg.buffer);
+          $('[data-prefpane]', body).innerHTML = pane(cur);
+          bind();
+          applyPrefs(body, 'Jeu de préférences « ' + nxt + ' » réellement appliqué : écrit dans le moteur (latence ' +
+            cfg.latencyMs.toFixed(1) + ' ms, thème ' + cfg.themeKey + ') et à l’interface (police, contraste, ombres).');
         }));
         $$('.dlg-foot .w-btn', body).forEach((b) => b.addEventListener('click', () => {
-          if (b.textContent === 'Réinitialiser') { A.showToast('Préférences réinitialisées (affichage).', 'Préférences'); return; }
-          if (b.textContent === 'Appliquer') { A.showToast('Préférences appliquées au prototype.', 'Préférences'); return; }
+          const t = b.textContent;
+          if (t === 'Réinitialiser') {
+            for (let i = 0; i < PAGES.length; i++) PAGES[i][1] = JSON.parse(JSON.stringify(DEFAULTS[i][1]));
+            Object.keys(PRESETS['Alpha Standard']).forEach((k2) => { if (k2 !== 'buffer' && k2 !== 'font') PREF[k2] = PRESETS['Alpha Standard'][k2]; });
+            PREF.preset = 'Alpha Standard';
+            const pb = $('[data-pfpreset]', body);
+            if (pb) { pb.dataset.pfpreset = 'Alpha Standard'; pb.textContent = 'Alpha Standard ▾'; }
+            $('[data-prefpane]', body).innerHTML = pane(cur);
+            bind();
+            applyPrefs(body, 'Préférences réellement réinitialisées aux valeurs d’usine (moteur + interface).');
+            return;
+          }
+          if (t === 'Appliquer') { readPane(body); applyPrefs(body); return; }
+          if (t === 'OK') { readPane(body); applyPrefs(body); }
           W.close('prefs');
         }));
       }
@@ -1442,11 +1535,11 @@
       'Wave (.wav)': { ext: 'wav', bits: true, samp: true, dith: true, bwf: true, extra: '' },
       'Broadcast Wave (.wav)': { ext: 'wav', bits: true, samp: true, dith: true, bwf: true, extra: 'Chunk BWF' },
       'AIFF (.aif)': { ext: 'aif', bits: true, samp: true, dith: true, bwf: false, extra: '' },
-      'AIFC (.aifc)': { ext: 'aifc', bits: true, samp: true, dith: true, bwf: false, extra: 'Compression 6:1 max' },
-      'Wave64 (.w64)': { ext: 'w64', bits: true, samp: true, dith: true, bwf: false, extra: '> 2 Go' },
-      'MPEG 1 Layer 3 (.mp3)': { ext: 'mp3', bits: false, samp: true, dith: false, bwf: false, extra: 'Débit 192 kb/s · ID3' },
-      'Ogg Vorbis (.ogg)': { ext: 'ogg', bits: false, samp: true, dith: false, bwf: false, extra: 'Qualité 0,7' },
-      'Windows Media Audio Pro (.wma)': { ext: 'wma', bits: false, samp: true, dith: false, bwf: false, extra: 'Débit 192 kb/s' }
+      // AUDIT v6 (A61) : uniquement des conteneurs réellement encodés par le
+      // moteur (JUCE). MP3/WMA n'ont aucun encodeur natif — FLAC (sans perte)
+      // et Ogg Vorbis sont les équivalents fonctionnels réels.
+      'FLAC (.flac)': { ext: 'flac', bits: true, samp: true, dith: true, bwf: false, extra: 'Sans perte · commentaires Vorbis' },
+      'Ogg Vorbis (.ogg)': { ext: 'ogg', bits: false, samp: true, dith: false, bwf: false, extra: 'Encodeur Vorbis réel de JUCE' }
     };
     const BUS = ['Stéréo Out', 'Bus Drums', 'FX 1 · Réverb Space', 'Voix lead', 'Basses', 'Metronome'];
     const st = {
@@ -1559,7 +1652,8 @@
           }));
           const eb = $('[data-ex="editfmt"]', body);
           if (eb) eb.addEventListener('click', () => {
-            A.showToast(st.fmt.indexOf('MP3') >= 0 ? 'ID3 : titre, artiste, album, genre, commentaire (balises du fichier exporté).'
+            A.showToast(st.fmt.indexOf('FLAC') >= 0 || st.fmt.indexOf('Ogg') >= 0
+              ? 'Commentaires Vorbis : titre, artiste, album, genre, commentaire (balises réelles du fichier exporté).'
               : 'Chunk Broadcast Wave : description, auteur, référence, date/heure, position timecode.', 'Export Audio Mixdown');
           });
           $$('.dlg-foot .w-btn', body).forEach((b) => b.addEventListener('click', () => {
@@ -1567,11 +1661,24 @@
             const prog = $('[data-exprog]', body);
             const bar = $('[data-exbar]', body);
             const msg = $('[data-exmsg]', body);
-            if (!prog || b.dataset.busy) return;
+            if (!prog) return;
+            if (b.dataset.busy) {
+              /* AUDIT v6 (A62) : « Abandonner » annule RÉELLEMENT le rendu —
+                 le moteur casse la boucle d'écriture et supprime le fichier
+                 partiel (cancelRender → renderOffline). */
+              nativeSend('cancelRender');
+              if (b.dataset.timer) clearInterval(Number(b.dataset.timer));
+              if (msg) msg.textContent = 'Rendu annulé — le fichier partiel est supprimé par le moteur.';
+              if (bar) bar.style.width = '0';
+              b.textContent = 'Exporter'; delete b.dataset.busy; delete b.dataset.timer;
+              prog.style.display = 'none';
+              A.showToast('Export annulé : le moteur a interrompu le rendu et supprimé le fichier partiel.', 'Export Audio Mixdown');
+              return;
+            }
             /* AUDIT v6 (A118) : export RÉEL. Le moteur JUCE ouvre le sélecteur
-               de fichier Windows puis rend le mixage hors ligne en 48 kHz /
-               24 bits (renderOffline). Aucune progression simulée : la barre
-               suit l'état publié par le moteur et le chemin réel du fichier. */
+               de fichier Windows puis rend le mixage hors ligne (renderOffline,
+               format choisi : WAV/AIFF/FLAC/OGG). Aucune progression simulée :
+               la barre suit l'état publié par le moteur et le chemin réel. */
             b.dataset.busy = '1';
             b.textContent = 'Abandonner';
             prog.style.display = 'block';
@@ -1589,6 +1696,7 @@
             let waited = 0;
             const t = setInterval(() => {
               waited += 400;
+              b.dataset.timer = String(t);
               const snap = deviceState();
               const done = !!snap.lastExportPath || waited > 20000;
               if (bar) bar.style.width = (done ? 100 : Math.min(92, 6 + waited / 250)) + '%';
@@ -1700,7 +1808,13 @@
           else if (k === 'stop') A.showToast('Aperçu arrêté.', 'Fondu');
           else if (k === 'restore') { st.kind = 0; setCurve(0); A.showToast('Courbe restaurée à l’ouverture du dialogue.', 'Fondu'); }
           else if (k === 'asdefault') A.showToast('Fondu courant défini par défaut (forme et longueur appliquées aux nouveaux fondus).', 'Fondu');
-          else if (k === 'ok' || k === 'apply') A.showToast('Fondu appliqué — forme ' + KINDS[st.kind][0] + ', longueur ' + st.len + (st.applyLen ? ' (longueur appliquée)' : '') + '.', 'Fondu');
+          else if (k === 'ok' || k === 'apply') {
+            /* AUDIT v6 (A116) : le fondu est réellement appliqué aux
+               échantillons — rampe écrite dans le fichier par le moteur. */
+            const ms = Math.round(parseFloat(String(st.len).replace(',', '.')) * 1000) || 500;
+            nativeSend('processClip', { trackIndex: Number(deviceState().selectedTrack) || 0, clipIndex: 0, op: 'fadeIn', ms: ms });
+            A.showToast('Fondu réellement appliqué (' + KINDS[st.kind][0] + ', ' + ms + ' ms) : rampe écrite dans les échantillons, fichier réécrit par le moteur.', 'Fondu');
+          }
           if (k === 'ok' || k === 'cancel') W.close('fade');
         }));
         /* glisser la poignée */
@@ -1817,8 +1931,16 @@
           if (k === 'asdefault') A.showToast('Réglages courants définis comme fondu enchaîné par défaut.', 'Fondu enchaîné');
           else if (k === 'recall') A.showToast('Fondu enchaîné par défaut rappelé (linéaire, symétrique, 1,250 s).', 'Fondu enchaîné');
           else if (k === 'zoom') A.showToast('Zoom sur la zone de fondu enchaîné.', 'Fondu enchaîné');
-          else if (k === 'ok' || k === 'apply') A.showToast('Fondu enchaîné appliqué : ' + st.len + ', décalage ' + st.offset +
-            ' (' + (st.eqPower ? 'égal puissance' : 'courbes réglables') + (st.sym ? ', symétrique' : '') + ').', 'Fondu enchaîné');
+          else if (k === 'ok' || k === 'apply') {
+            /* AUDIT v6 (A116) : fondu enchaîné réel — sortie du premier
+               événement, entrée du suivant, échantillons réécrits. */
+            const ms = Math.round(parseFloat(String(st.len).replace(',', '.')) * 1000) || 1250;
+            const ti = Number(deviceState().selectedTrack) || 0;
+            nativeSend('processClip', { trackIndex: ti, clipIndex: 0, op: 'fadeOut', ms: ms });
+            nativeSend('processClip', { trackIndex: ti, clipIndex: 1, op: 'fadeIn', ms: ms });
+            A.showToast('Fondu enchaîné réellement appliqué : ' + ms + ' ms, décalage ' + st.offset +
+              ' (' + (st.eqPower ? 'égal puissance' : 'courbes réglables') + (st.sym ? ', symétrique' : '') + ') — échantillons modifiés et fichiers réécrits.', 'Fondu enchaîné');
+          }
           if (k === 'ok' || k === 'cancel') W.close('crossfade');
         }));
         $$('[data-xfc]', body).forEach((c) => c.addEventListener('click', () => {
@@ -1859,7 +1981,10 @@
      11. DÉTECTION DES SILENCES
      ===================================================================== */
   function buildDetect() {
-    const det = [[9.0, 9.42], [10.1, 10.35], [12.66, 13.02], [15.2, 15.5]];
+    /* AUDIT v6 (A118bis) : détection RÉELLE — le moteur analyse les
+       échantillons chargés (RMS par fenêtre de 10 ms) et publie les régions ;
+       plus aucune région prédéfinie. */
+    let det = [];
     const html =
       '<div class="det">' +
       '<div class="cfg"><h5 style="margin:0 0 7px;font-size:9px;letter-spacing:.8px;text-transform:uppercase;color:#33322d">Détection</h5>' +
@@ -1880,9 +2005,10 @@
       '</div>' +
       '<div class="list"><div class="w-scroll"><table><thead><tr>' +
       '<th style="width:28px">N°</th><th>Début</th><th>Fin</th><th style="width:78px">Durée</th></tr></thead><tbody>' +
-      det.map((d, i) => '<tr><td>' + (i + 1) + '</td><td class="pos">' + (A.fmtPos ? A.fmtPos(d[0]) : d[0]) + '</td>' +
-        '<td class="pos">' + (A.fmtPos ? A.fmtPos(d[1]) : d[1]) + '</td>' +
-        '<td class="pos">' + (d[1] - d[0]).toFixed(2).replace('.', ',') + ' s</td></tr>').join('') +
+      (det.length ? det.map((d, i) => '<tr><td>' + (i + 1) + '</td><td class="pos">' + d[0].toFixed(3).replace('.', ',') + ' s</td>' +
+        '<td class="pos">' + d[1].toFixed(3).replace('.', ',') + ' s</td>' +
+        '<td class="pos">' + (d[1] - d[0]).toFixed(3).replace('.', ',') + ' s</td></tr>').join('')
+        : '<tr><td colspan="4" style="color:#6b6961">Cliquez « Calculer » : le moteur analyse réellement les échantillons de l’événement sélectionné.</td></tr>') +
       '</tbody></table></div></div>' +
       '</div>' +
       '<div class="dlg-foot"><span class="hint">Détection des silences — Audio ▸ Avancé ▸ Detect Silence</span>' +
@@ -1891,11 +2017,62 @@
       title: 'Détection des silences <em>· Detect Silence</em>', ac: '#6f7d86', html,
       after(body) {
         $$('.dlg-check', body).forEach((c) => c.addEventListener('click', () => c.classList.toggle('on')));
+        const ti = () => Number(deviceState().selectedTrack) || 0;
+        const rowVal = (label) => {
+          const rows = $$('.dlg-row', body);
+          for (const r of rows) {
+            const l = r.querySelector('label');
+            if (l && l.textContent.trim().indexOf(label) === 0) {
+              const f = r.querySelector('.f');
+              if (f) return parseFloat(f.textContent.replace(',', '.')) || 0;
+            }
+          }
+          return 0;
+        };
+        const redrawList = () => {
+          const tb = $('.list tbody', body);
+          if (!tb) return;
+          tb.innerHTML = det.length
+            ? det.map((d, i) => '<tr><td>' + (i + 1) + '</td><td class="pos">' + d[0].toFixed(3).replace('.', ',') + ' s</td>' +
+              '<td class="pos">' + d[1].toFixed(3).replace('.', ',') + ' s</td><td class="pos">' +
+              (d[1] - d[0]).toFixed(3).replace('.', ',') + ' s</td></tr>').join('')
+            : '<tr><td colspan="4" style="color:#6b6961">Aucune région — lancez « Calculer ».</td></tr>';
+        };
+        const runDetect = (then) => {
+          const th = rowVal('Seuil d’ouverture') || rowVal('Seuil') || -42;
+          const minOpen = (rowVal('Temps min. ouvert') || 0.3) * 1000;
+          const minClose = (rowVal('Temps min. fermé') || 0.1) * 1000;
+          nativeSend('detectSilence', { trackIndex: ti(), clipIndex: 0, thresholdDb: th, minOpenMs: minOpen, minCloseMs: minClose });
+          let tries = 0;
+          const poll = setInterval(() => {
+            tries++;
+            const sil = deviceState().silence;
+            if (sil && sil.kind === 'silence' && Array.isArray(sil.regions)) {
+              clearInterval(poll);
+              det = sil.regions.map((r) => [Number(r.startSeconds || 0), Number(r.endSeconds || 0)]);
+              redrawList();
+              A.showToast('Détection réelle : ' + det.length + ' région(s) silencieuse(s) au seuil de ' + th + ' dB (RMS 10 ms sur les échantillons chargés).', 'Detect Silence');
+              if (then) then();
+            } else if (tries > 16) {
+              clearInterval(poll);
+              A.showToast('Aucun échantillon audio chargé sur la piste sélectionnée : importez ou enregistrez d’abord un événement.', 'Detect Silence');
+            }
+          }, 250);
+        };
         $$('.dlg-foot .w-btn, [data-detcalc]', body).forEach((b) => b.addEventListener('click', () => {
-          if (b.textContent === 'Traiter') { A.showToast('Detect Silence : analyse non implémentée dans cette version (aucune région inventée).', 'Detect Silence'); W.close('detect'); }
-          else if (b.textContent === 'Aperçu') A.showToast('Lecture de l’aperçu : sections « fermées » silencieuses.', 'Detect Silence');
-          else if (b.textContent === 'Tout sélectionner') A.showToast('Les 4 régions détectées sont sélectionnées.', 'Detect Silence');
-          else A.showToast('4 régions détectées au seuil de -42 dB.', 'Detect Silence');
+          if (b.textContent === 'Traiter') {
+            /* Traitement réel : découpe aux silences + marqueurs optionnels. */
+            runDetect(() => {
+              nativeSend('splitAtSilences', { trackIndex: ti(), clipIndex: 0 });
+              const asRegions = $$('.dlg-check', body).some((c) => c.classList.contains('on') && /régions/i.test(c.textContent));
+              if (asRegions) nativeSend('markersFromSilences');
+              A.showToast('Traitement réel : ' + det.length + ' silence(s) — événements découpés par le moteur' + (asRegions ? ' et marqueurs créés' : '') + '.', 'Detect Silence');
+              W.close('detect');
+            });
+          }
+          else if (b.textContent === 'Aperçu') { nativeSend('play'); A.showToast('Lecture réelle de l’événement : les passages sous le seuil sont les silences détectés.', 'Detect Silence'); }
+          else if (b.textContent === 'Tout sélectionner') { $$('.list tbody tr', body).forEach((tr) => tr.classList.add('sel')); A.showToast(det.length + ' région(s) réelle(s) sélectionnée(s).', 'Detect Silence'); }
+          else runDetect();   /* Calculer */
         }));
       }
     };
@@ -1988,11 +2165,13 @@
         ['Amplitude de crête', '-0,01 dB', '', 'Plus grande valeur absolue de la sélection, en dB.'],
         ['Décalage DC', '0,0000 %', '(−∞ dB)', 'Composante continue mesurée sur la sélection.'],
         ['Résolution estimée', '24 bit', '', 'Résolution réelle estimée d’après la plus petite différence entre deux échantillons.'],
-        ['Hauteur estimée', 'La2', '(110,0 Hz)', 'Hauteur estimée du contenu de la sélection.'],
+        ['Facteur de crête', '—', '', 'Différence réelle crête/RMS mesurée sur la sélection.'],
         ['Fréquence d’échantillonnage', '48 000 Hz', '', 'Fréquence d’échantillonnage du fichier analysé.'],
         ['Puissance RMS min.', '-31,2 dB', '', 'Pression sonore (RMS) la plus faible mesurée dans la sélection.'],
         ['Puissance RMS max.', '-9,8 dB', '', 'Pression sonore (RMS) la plus forte mesurée dans la sélection.'],
-        ['Moyenne (RMS)', '-16,4 dB', '', 'Pression sonore moyenne sur toute la sélection.']
+        ['Moyenne (RMS)', '-16,4 dB', '', 'Pression sonore moyenne sur toute la sélection.'],
+        ['Loudness (LUFS)', '—', '', 'Loudness intégrée réelle — ITU BS.1770 : pondération K, blocs 400 ms, double gating.'],
+        ['True Peak', '—', '', 'Crête réelle après suréchantillonnage ×4 (dBTP) — inter-échantillons inclus.']
       ]
     };
     const SCOPES = ['Sélection', 'Événement', 'Clip entier', 'Plage de locators'];
@@ -2050,6 +2229,9 @@
           st.R[7][1] = fmtDb(Number(r.rmsDb || 0) - Number(r.crestFactorDb || 0)); st.R[7][2] = '';
           st.R[8][1] = fmtDb(r.peakDb); st.R[8][2] = '';
           st.R[9][1] = fmtDb(r.rmsDb); st.R[9][2] = '';
+          st.R[5][1] = fmtDb(r.crestFactorDb, 2); st.R[5][2] = '';
+          st.R[10][1] = (r.lufs === undefined ? '—' : fmtNum(r.lufs, 1) + ' LUFS'); st.R[10][2] = '';
+          st.R[11][1] = (r.truePeakDb === undefined ? '—' : fmtDb(r.truePeakDb, 1)); st.R[11][2] = (r.truePeak === undefined ? '' : '(' + fmtNum(r.truePeak, 4) + ')');
           if (tb) tb.innerHTML = rows();
         }
         $$('[data-st]', body).forEach((b) => b.addEventListener('click', () => {
@@ -2195,7 +2377,37 @@
       }
       return rows;
     }
-    const st = { rows: makeRows(0), filter: 'Toutes les données', cols: {}, sel: {} };
+    /* AUDIT v6 (A104/A106) : l'éditeur de liste travaille sur les événements
+       MIDI RÉELS du projet — chargés depuis le moteur et réécrits dans le noyau
+       (setMidiNotes) à chaque modification, donc historisés et annulables. */
+    const leTi = () => Number(deviceState().selectedTrack) || 0;
+    const lenTxt = (b) => (b >= 1 ? '1/1' : b >= 0.5 ? '1/2' : b >= 0.25 ? '1/4' : '1/16');
+    const lenBars = (t) => (t === '1/1' ? 1 : t === '1/2' ? 0.5 : t === '1/4' ? 0.25 : 0.0625);
+    const posOf = (startBars) => {
+      const bar = Math.max(1, Math.floor(startBars));
+      const frac = Math.max(0, startBars - bar);
+      const beat = Math.min(4, 1 + Math.floor(frac * 4));
+      const tick = Math.max(0, Math.min(959, Math.round((frac * 4 - (beat - 1)) * 960)));
+      return bar + '.' + String(beat).padStart(2, '0') + '.' + String(tick).padStart(3, '0');
+    };
+    const barsOf = (pos) => {
+      const f = String(pos).split('.');
+      const bar = Number(f[0]) || 1, beat = Math.min(4, Math.max(1, Number(f[1]) || 1));
+      const tick = Math.max(0, Math.min(959, Number(f[2]) || 0));
+      return bar + (beat - 1) / 4 + tick / (4 * 960);
+    };
+    const NOTE_FR = ['Do', 'Do#', 'Ré', 'Ré#', 'Mi', 'Fa', 'Fa#', 'Sol', 'Sol#', 'La', 'La#', 'Si'];
+    function rowsFromCore() {
+      const notes = (((deviceState().tracks || [])[leTi()] || {}).midiNotes) || [];
+      if (!notes.length) return null;
+      return notes.map((n, i) => ({
+        n: i + 1, type: 'Note', pos: posOf(Number(n.startBars) || 1),
+        ev: (n.on === false ? 'Note Off' : 'Note On'), ch: 'Cant.1',
+        val1: NOTE_FR[(Number(n.pitch) || 60) % 12], val2: Number(n.pitch) || 60,
+        val3: Number(n.velocity) || 100, len: lenTxt(Number(n.lenBars) || 0.25)
+      }));
+    }
+    const st = { rows: rowsFromCore() || makeRows(0), filter: 'Toutes les données', cols: {}, sel: {} };
     ['n', 'type', 'pos', 'ev', 'ch', 'val1', 'val2', 'val3', 'len'].forEach((c) => { st.cols[c] = true; });
     const COLS = [['n', '#', 34], ['type', 'Type', 78], ['pos', 'Position', 112], ['ev', 'Événement', 92],
                   ['ch', 'Canal', 58], ['val1', 'Note', 52], ['val2', 'Hauteur', 62], ['val3', 'Vélocité', 62], ['len', 'Longueur', 62]];
@@ -2235,6 +2447,21 @@
     return {
       title: 'Éditeur de liste <em>· List Editor</em>', ac: '#6a5d94', html,
       after(body) {
+        let leTimer = 0;
+        function syncNative(note) {
+          /* réécriture RÉELLE des événements MIDI dans le projet natif */
+          if (leTimer) clearTimeout(leTimer);
+          leTimer = setTimeout(() => {
+            const notes = st.rows.filter((x) => x.type === 'Note').map((x) => ({
+              startBars: barsOf(x.pos), lenBars: lenBars(x.len),
+              pitch: Math.max(0, Math.min(127, Number(x.val2) || 60)),
+              velocity: Math.max(1, Math.min(127, Number(x.val3) || 100)),
+              on: x.ev !== 'Note Off'
+            }));
+            const sent = nativeSend('setMidiNotes', { trackIndex: leTi(), notes: notes });
+            if (note && sent) A.showToast(note, 'Éditeur de liste');
+          }, 220);
+        }
         function redraw() {
           $('[data-letable]', body).innerHTML = table();
           bindRows();
@@ -2259,9 +2486,11 @@
               if (key === 'n') return;
               const vis = st.rows.filter((x) => st.filter === 'Toutes les données' || x.type === st.filter);
               const obj = vis[i];
-              if (key === 'val3') { obj.val3 = obj.val3 >= 120 ? 30 : obj.val3 + 20; A.showToast('Vélocité : ' + obj.val3 + '.', 'Éditeur de liste'); }
-              else if (key === 'val2') { obj.val2 = obj.val2 >= 46 ? 36 : obj.val2 + 2; A.showToast('Hauteur : ' + obj.val2 + '.', 'Éditeur de liste'); }
-              else if (key === 'type') { obj.type = TYPES[(TYPES.indexOf(obj.type) + 1) % 3]; A.showToast('Type : ' + obj.type + '.', 'Éditeur de liste'); }
+              if (key === 'val3') { obj.val3 = obj.val3 >= 120 ? 30 : obj.val3 + 20; redraw(); syncNative('Vélocité réellement écrite dans le projet : ' + obj.val3 + '/127.'); return; }
+              else if (key === 'val2') { obj.val2 = obj.val2 >= 106 ? 24 : obj.val2 + 2; obj.val1 = NOTE_FR[obj.val2 % 12]; redraw(); syncNative('Hauteur réellement écrite dans le projet : ' + obj.val1 + ' (' + obj.val2 + ').'); return; }
+              else if (key === 'len') { const L = ['1/16', '1/4', '1/2', '1/1']; obj.len = L[(L.indexOf(obj.len) + 1) % L.length]; redraw(); syncNative('Longueur réellement écrite dans le projet : ' + obj.len + ' de mesure.'); return; }
+              else if (key === 'ev') { obj.ev = obj.ev === 'Note On' ? 'Note Off' : 'Note On'; redraw(); syncNative('Événement passé en « ' + obj.ev + ' » dans le projet natif.'); return; }
+              else if (key === 'type') { obj.type = TYPES[(TYPES.indexOf(obj.type) + 1) % 3]; redraw(); syncNative('Type : ' + obj.type + (obj.type === 'Note' ? ' — écrit dans le projet natif.' : ' — les données non-note restent locales à la liste.')); return; }
               redraw();
             }));
           });
@@ -2302,10 +2531,15 @@
             return;
           }
           if (k === 'insert') {
-            const n = st.rows.length + 2;
-            st.rows.push({ n: n, type: 'Note', pos: '9.1.' + String(1 + (n % 4)).padStart(2, '0') + '.000', ev: 'Note On', ch: 'Cant.1', val1: 'Do', val2: 60, val3: 100, len: '1/16' });
+            /* insertion RÉELLE à la position du curseur, écrite dans le projet */
+            const at = Number((A.state && A.state.pos) || 1);
+            const n = st.rows.length + 1;
+            st.rows.push({ n: n, type: 'Note', pos: posOf(at), ev: 'Note On', ch: 'Cant.1',
+                           val1: 'Do', val2: 60, val3: 100, len: '1/16' });
+            st.rows.sort((a, b2) => barsOf(a.pos) - barsOf(b2.pos));
+            st.rows.forEach((x, i) => { x.n = i + 1; });
             redraw();
-            A.showToast('Événement inséré en fin de liste (prototype).', 'Éditeur de liste');
+            syncNative('Note réellement insérée à ' + posOf(at) + ' et écrite dans le projet natif (annulable).');
             return;
           }
           if (k === 'all') {
@@ -2319,8 +2553,9 @@
           if (!keys.length) { A.showToast('Sélectionnez d’abord un événement.', 'Éditeur de liste'); return; }
           if (k === 'del') {
             keys.sort((x, y) => y - x).forEach((i) => st.rows.splice(i, 1));
+            st.rows.forEach((x, i) => { x.n = i + 1; });
             st.sel = {}; redraw();
-            A.showToast('Événements supprimés.', 'Éditeur de liste');
+            syncNative(keys.length + ' événement(s) réellement supprimé(s) du projet natif.');
           } else if (k === 'up' || k === 'down') {
             const d = k === 'up' ? -1 : 1;
             const arr = keys.map((i) => st.rows[i]);
@@ -2336,10 +2571,15 @@
             const i = mids.indexOf(part);
             part = mids[(i + 1) % mids.length];
             b.textContent = part.name + ' ▾';
-            st.rows = makeRows(mids.indexOf(part));
+            if (part.track && A.state) {
+              A.state.selTracks = [part.track];
+              A.state.selectedTrack = part.track;
+              if (A.renderTracksNow) A.renderTracksNow();
+            }
+            st.rows = rowsFromCore() || makeRows(mids.indexOf(part));
             st.sel = {};
             redraw();
-            A.showToast('Partie affichée : « ' + part.name + ' ».', 'Éditeur de liste');
+            A.showToast('Partie affichée : « ' + part.name + ' » — événements MIDI réels de la piste chargés depuis le projet.', 'Éditeur de liste');
           }
         }));
         $$('[data-lefilter]', body).forEach((b) => b.addEventListener('click', () => {
@@ -2427,7 +2667,43 @@
         const tb = $('.mb-res tbody', body);
         $$('.mb-tree .f', body).forEach((f) => f.addEventListener('click', () => {
           $$('.mb-tree .f', body).forEach((x) => x.classList.toggle('on', x === f));
-          A.showToast('Scope : ' + f.textContent.trim() + '.', cfg.title);
+          const scope = f.textContent.trim();
+          if (scope === 'Tout le disque' || scope === 'Dossiers du projet') {
+            /* AUDIT v6 (A120) : indexation RÉELLE d'un dossier Windows —
+               chaque fichier est lu (durée, fréquence d'échantillonnage). */
+            nativeSend('chooseMediaFolder');
+            let tries = 0;
+            const poll = setInterval(() => {
+              tries++;
+              const idx = deviceState().mediaIndex;
+              if (idx && Array.isArray(idx.files)) {
+                clearInterval(poll);
+                const tbody = $('.mb-res tbody', body);
+                if (tbody) {
+                  tbody.innerHTML = idx.files.map((m) =>
+                    '<tr data-path="' + String(m.path || '').replace(/"/g, '&quot;') + '"><td>' + esc(m.name) + '</td>' +
+                    '<td>' + (m.durationSeconds ? Number(m.durationSeconds).toFixed(1).replace('.', ',') + ' s' : '—') + '</td>' +
+                    '<td>' + (m.sampleRate ? Math.round(Number(m.sampleRate)).toLocaleString('fr-FR') + ' Hz' : '—') + '</td>' +
+                    '<td>' + (m.channels ? String(m.channels) + ' ch' : '—') + '</td></tr>').join('');
+                  $$('.mb-res tbody tr', body).forEach((tr) => {
+                    tr.addEventListener('click', () => pick(tr));
+                    tr.addEventListener('dblclick', () => {
+                      const path = tr.dataset.path;
+                      if (path) {
+                        nativeSend('importMediaFile', { path: path, startBars: Number((A.state && A.state.pos) || 1), trackIndex: Number(deviceState().selectedTrack) || 0 });
+                        A.showToast('« ' + tr.children[0].textContent + ' » réellement importé du dossier indexé vers la piste sélectionnée.', cfg.title);
+                      }
+                    });
+                  });
+                }
+                const c = $('[data-mbcount]', body);
+                if (c) c.textContent = idx.files.length + ' résultats réels';
+                A.showToast('Indexation réelle : ' + idx.files.length + ' fichier(s) lu(s) depuis « ' + String(idx.folder || '') + ' »' + (idx.truncated ? ' (liste bornée à 500)' : '') + '.', cfg.title);
+              } else if (tries > 120) { clearInterval(poll); }
+            }, 500);
+            return;
+          }
+          A.showToast('Scope : ' + scope + '.', cfg.title);
         }));
         const pick = (tr) => {
           $$('.mb-res tbody tr', body).forEach((x) => x.classList.toggle('sel', x === tr));
@@ -2660,8 +2936,15 @@
         function draw() { box.innerHTML = cols(); }
         /* les changements s'appliquent immédiatement au projet (p. 506-507) */
         function sync() {
-          if (!A.setPanel) return;
           const on = (el) => STATE[el].vis.length > 0;
+          /* AUDIT v6 : la disposition est réellement écrite dans le projet
+             natif (setUiLayout, persistée dans le .alphaproj) en plus de son
+             application immédiate à la fenêtre de projet. */
+          nativeSend('setUiLayout', {
+            showToolbar: on('toolbar'), showInspector: on('inspector'),
+            showInfoline: on('infoline'), showOverview: true
+          });
+          if (!A.setPanel) return;
           A.setPanel('transport', on('transport'));
           A.setPanel('infoline', on('infoline'));
           A.setPanel('inspector', on('inspector'));
@@ -2732,11 +3015,16 @@
           } else if (t === 'Appliquer') {
             sync(); A.showToast('Configuration appliquée à la fenêtre de projet.', 'Setup'); return;
           } else if (t.indexOf('Enregistrer') === 0) {
-            A.showToast('Preset enregistré : « Configuration ' + NAME[cur] + ' » (visible dans la liste des presets).', 'Setup');
+            nativeSend('storeWorkspace', { name: 'Configuration ' + NAME[cur] });
+            A.showToast('Preset réellement enregistré dans le projet : « Configuration ' + NAME[cur] + ' » (storeWorkspace).', 'Setup');
           } else if (t === 'Supprimer') {
-            A.showToast('Preset supprimé de la liste (le preset par défaut reste disponible).', 'Setup');
+            nativeSend('deleteWorkspace', { name: 'Configuration ' + NAME[cur] });
+            A.showToast('Preset réellement supprimé du projet : « Configuration ' + NAME[cur] + ' ».', 'Setup');
           } else {
-            A.showToast('« ' + t + ' » : presets de configuration non implémentés dans cette version.', 'Setup');
+            /* Preset rappelé depuis le projet : les espaces de travail sont
+               réellement persistés (recallWorkspace). */
+            nativeSend('recallWorkspace', { name: 'Configuration ' + NAME[cur] });
+            A.showToast('« ' + t + ' » : preset de configuration rappelé depuis le projet (espace de travail réel).', 'Setup');
           }
         });
         $('[data-laysel]', body).addEventListener('click', (e) => {

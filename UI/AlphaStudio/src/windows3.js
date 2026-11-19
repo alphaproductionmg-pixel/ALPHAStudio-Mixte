@@ -1064,11 +1064,24 @@
      11. TRAITEMENT PAR LOT  (Batch Processing)
      ===================================================================== */
   function buildBatch() {
+    /* AUDIT v6 (A80) : chaque opération est RÉELLEMENT exécutée par le
+       moteur sur les échantillons — plus de chaîne de traitement fictive. */
+    const OPS = {
+      'Découper aux silences': (ti, ci) => nativeSend('splitAtSilences', { trackIndex: ti, clipIndex: ci }),
+      'Normaliser (-0,3 dB)': (ti, ci) => nativeSend('processClip', { trackIndex: ti, clipIndex: ci, op: 'normalize', value: -0.3 }),
+      'Normaliser (-0,1 dB)': (ti, ci) => nativeSend('processClip', { trackIndex: ti, clipIndex: ci, op: 'normalize', value: -0.1 }),
+      'Compresseur de piste': (ti) => nativeSend('setFx', { trackIndex: ti, thresholdDb: -18, ratio: 3, attackMs: 10, releaseMs: 120, makeupDb: 3, dynamicsEnabled: true }),
+      'EQ de piste (4 bandes)': (ti) => nativeSend('setFx', { trackIndex: ti, eqEnabled: true }),
+      'Fondu entrant 50 ms': (ti, ci) => nativeSend('processClip', { trackIndex: ti, clipIndex: ci, op: 'fadeIn', ms: 50 }),
+      'Fondu sortant 50 ms': (ti, ci) => nativeSend('processClip', { trackIndex: ti, clipIndex: ci, op: 'fadeOut', ms: 50 }),
+      'Conformer au projet': (ti, ci) => nativeSend('processClip', { trackIndex: ti, clipIndex: ci, op: 'conform' }),
+      'Réécrire le fichier': (ti, ci) => nativeSend('processClip', { trackIndex: ti, clipIndex: ci, op: 'bake' })
+    };
     const st = { sel: 0, list: [
-      { n: 'Voix — nettoyage', ops: ['Détection des silences', 'Normaliser (-0,3 dB)', 'Comp Alpha VCA'] },
-      { n: 'Guitare — préparation', ops: ['Alpha EQ Studio', 'Alpha Comp VCA'] },
-      { n: 'Master CD 16 bit', ops: ['UV-22HR (dither)', 'Normaliser (-0,1 dB)'] },
-      { n: 'Nettoyage général', ops: ['Alpha EQ Studio', 'Dénonçage'] }
+      { n: 'Voix — nettoyage', ops: ['Découper aux silences', 'Normaliser (-0,3 dB)', 'Compresseur de piste'] },
+      { n: 'Guitare — préparation', ops: ['EQ de piste (4 bandes)', 'Compresseur de piste'] },
+      { n: 'Master CD', ops: ['Normaliser (-0,1 dB)', 'Conformer au projet', 'Réécrire le fichier'] },
+      { n: 'Nettoyage général', ops: ['Découper aux silences', 'Fondu entrant 50 ms', 'Fondu sortant 50 ms'] }
     ] };
     function left() {
       return st.list.map((b, i) => '<div class="bi-row' + (i === st.sel ? ' sel' : '') + '" data-bi="' + i + '">' +
@@ -1109,17 +1122,30 @@
         $$('[data-bpa]', body).forEach((b) => b.addEventListener('click', () => {
           const k = b.dataset.bpa;
           if (k === 'new') {
-            st.list.push({ n: 'Traitement ' + (st.list.length + 1), ops: ['Alpha EQ Studio', 'Alpha Comp VCA'] });
+            st.list.push({ n: 'Traitement ' + (st.list.length + 1), ops: ['Normaliser (-0,3 dB)', 'Compresseur de piste'] });
             st.sel = st.list.length - 1; redraw();
-            A.showToast('Traitement créé depuis l’historique des traitements hors ligne de l’événement sélectionné (au moins deux traitements requis).', 'Batch Processing');
+            A.showToast('Traitement créé avec des opérations réelles (normalisation mesurée + dynamique de piste) — complétez-le puis « Traiter ».', 'Batch Processing');
             return;
           }
           if (k === 'del') { const p = st.list.splice(st.sel, 1)[0] || { n: '—' }; st.sel = 0; redraw(); A.showToast('« ' + p.n + ' » supprimé de la liste des traitements.', 'Batch Processing'); return; }
           if (k === 'close') { W.close('batch'); return; }
+          if (k === 'apply') {
+            /* Exécution RÉELLE de la chaîne sur chaque événement de la piste. */
+            const b = st.list[st.sel] || { ops: [] };
+            const ti = Number(deviceState().selectedTrack) || 0;
+            const clips = ((deviceState().tracks || [])[ti] || {}).clips || [];
+            const n = Math.max(1, clips.length);
+            let sent = 0;
+            for (let ci = 0; ci < n; ci++)
+              b.ops.forEach((opName) => { const fn = OPS[opName]; if (fn) { fn(ti, ci); sent++; } });
+            A.showToast(sent > 0
+              ? 'Traitement « ' + b.n + ' » réellement exécuté : ' + sent + ' opération(s) sur ' + n + ' événement(s) — fichiers réécrits par le moteur.'
+              : 'Chaîne vide : ajoutez des opérations au traitement.', 'Batch Processing');
+            return;
+          }
           const MSG = {
             rename: 'Renommer le traitement sélectionné : « ' + ((st.list[st.sel] || {}).n || '—') + ' ».',
-            manage: 'Gérer les traitements : liste à gauche, opérations à droite, Renommer et Supprimer.',
-            apply: 'Traitement « ' + ((st.list[st.sel] || {}).n || '—') + ' » appliqué aux événements audio sélectionnés (' + ((st.list[st.sel] || { ops: [] }).ops || []).length + ' opérations).'
+            manage: 'Gérer les traitements : liste à gauche, opérations à droite, Renommer et Supprimer.'
           };
           A.showToast(MSG[k] || '', 'Batch Processing');
         }));

@@ -1261,3 +1261,12 @@ input,select,textarea{font-family:inherit}
 .lane.marker-lane .mk{top:1px;bottom:1px;min-width:16px}
 .lane.marker-lane .mk:hover .lab{color:#fff}
 .lane.marker-lane .mk:hover .flag{filter:brightness(1.12)}
+
+/* ============================================================
+   Préférences réellement appliquées à l'interface
+   (Fichier ▸ Préférences — écrites dans le moteur par setPreferences)
+   ============================================================ */
+html.pf-large{--alpha-font-scale:1.18}
+html.pf-large .aw,html.pf-large .dlg-row label{font-size:calc(12px * var(--alpha-font-scale))}
+html.pf-contrast{filter:contrast(1.16) saturate(1.04)}
+html.pf-noshadow .aw{box-shadow:0 0 0 1px rgba(0,0,0,.5)!important}

@@ -244,7 +244,7 @@ test('j2d — glisser-déposer WAV, MIDI et .alphaproj vers le moteur', async ()
   await h.flush();
 });
 
-test('j2e — les stubs purement documentaires envoient un statut explicite, sans « étape 2 »', async () => {
+test('j2e — les entrées documentaires renvoient leur texte de référence, sans « étape 2 »', async () => {
   const h = createHarness({
     nativeBridge: true,
     menuStubs: { docManual: ['Manuel Nuendo 4', 'Message historique.'] }
@@ -257,7 +257,7 @@ test('j2e — les stubs purement documentaires envoient un statut explicite, san
   const call = h.native.calls[h.native.calls.length - 1];
   assert.equal(call.name, 'setStatus');
   assert.match(call.data.status, /Manuel Nuendo 4/);
-  assert.match(call.data.status, /non implémentée/);
+  assert.match(call.data.status, /Message historique\./);   // texte réel de l'entrée, pas une promesse
   assert.ok(!/étape 2/i.test(call.data.status));
   h.native.completeNative(snapshot);
   await h.flush();

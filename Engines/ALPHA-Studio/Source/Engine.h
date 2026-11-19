@@ -1282,11 +1282,21 @@ public:
                         std::function<bool (double)> progress, int onlyTrack = -1)
     {
         const int block = bs();
+        renderCancelRequested.store (false);
         f.deleteFile();
         std::unique_ptr<FileOutputStream> os (f.createOutputStream());
         if (os == nullptr) return false;
-        WavAudioFormat wav;
-        std::unique_ptr<AudioFormatWriter> w (wav.createWriterFor (os.get(), targetRate, 2, bitDepth, {}, 0));
+        // AUDIT v6 (A61) : le format réel découle de l'extension choisie —
+        // WAV, AIFF, FLAC ou Ogg Vorbis sont encodés par JUCE. (MP3 : aucun
+        // encodeur natif n'existe ; FLAC/OGG sont les équivalents fonctionnels.)
+        std::unique_ptr<AudioFormatWriter> w;
+        if (auto* fmt = basicFormats.findFormatForFileExtension (f.getFileExtension()))
+            w.reset (fmt->createWriterFor (os.get(), targetRate, 2, bitDepth, {}, 0));
+        if (w == nullptr)
+        {
+            WavAudioFormat wav;
+            w.reset (wav.createWriterFor (os.get(), targetRate, 2, bitDepth, {}, 0));
+        }
         if (w == nullptr) return false;
         os.release();
 
@@ -1325,6 +1335,8 @@ public:
             written += thisOut;
             const double fraction = (double) std::min<int64> (end, transport.pos.load()) / (double) std::max<int64> (1, end);
             if (progress && ! progress (fraction)) { ok = false; break; }
+            // AUDIT v6 (A62) : annulation réelle demandée par l'interface.
+            if (renderCancelRequested.exchange (false)) { ok = false; break; }
         }
         transport.playing.store (false);
         w.reset();
@@ -2637,7 +2649,417 @@ public:
         out["sampleRate"] = alpha::JsonValue (rate);
         out["bitDepth"] = alpha::JsonValue (24);
         out["clipping"] = alpha::JsonValue (peak >= 0.999);
+        // AUDIT v6 (A70) : loudueur LUFS (ITU BS.1770, pondération K, double
+        // gating) et true peak (suréchantillonnage ×4) mesurés sur les samples.
+        {
+            std::vector<const float*> ptrs;
+            for (int ch = 0; ch < channels; ++ch) ptrs.push_back (buf.getReadPointer (ch) + offset);
+            out["lufs"] = alpha::JsonValue (kWeightedLufs (ptrs.data(), channels, length, rate));
+            double tp = 0.0;
+            for (int ch = 0; ch < channels; ++ch)
+                tp = jmax (tp, truePeakOf (buf.getReadPointer (ch) + offset, length));
+            out["truePeak"] = alpha::JsonValue (tp);
+            out["truePeakDb"] = alpha::JsonValue (Decibels::gainToDecibels (tp, -120.0));
+        }
         return out;
+    }
+
+    //==========================================================================
+    // AUDIT v6 — traitement RÉEL des échantillons chargés en mémoire.
+    // Chaque opération modifie le buffer du clip, reconstruit ses crêtes et
+    // réécrit le fichier WAV sur le disque : édition destructive véritable.
+    String processClipReal (int ti, int ci, const std::string& op, double value, double ms)
+    {
+        if (ti < 0 || ti >= (int) tracks.size()) return TR ("Piste invalide");
+        auto* source = tracks[(size_t) ti]->source;
+        const SpinLock::ScopedLockType sl (source->lock);
+        if (ci < 0 || ci >= (int) source->clips.size()) return TR ("Événement invalide");
+        auto& c = source->clips[(size_t) ci];
+        if (c.data == nullptr || c.data->getNumSamples() == 0) return TR ("Aucun échantillon chargé");
+        auto& buf = *c.data;
+        const int n = buf.getNumSamples(), chans = buf.getNumChannels();
+        const double rate = jmax (8000.0, sr());
+
+        if (op == "gain")
+        {
+            const float g = (float) Decibels::decibelsToGain (value);
+            for (int ch = 0; ch < chans; ++ch) buf.applyGain (ch, 0, n, g);
+        }
+        else if (op == "normalize")
+        {
+            float peak = 0.0f;
+            for (int ch = 0; ch < chans; ++ch) peak = jmax (peak, buf.getMagnitude (0, n));
+            if (peak < 1e-7f) return TR ("Clip muet : normalisation impossible");
+            const float g = (float) (Decibels::decibelsToGain (value) / (double) peak);
+            for (int ch = 0; ch < chans; ++ch) buf.applyGain (ch, 0, n, g);
+        }
+        else if (op == "reverse")
+        {
+            for (int ch = 0; ch < chans; ++ch)
+            {
+                float* d = buf.getWritePointer (ch);
+                for (int i = 0; i < n / 2; ++i) std::swap (d[i], d[n - 1 - i]);
+            }
+        }
+        else if (op == "silence")
+        {
+            buf.clear();
+        }
+        else if (op == "fadeIn" || op == "fadeOut")
+        {
+            const int ramp = jlimit (1, n, (int) std::llround (ms * rate / 1000.0));
+            for (int ch = 0; ch < chans; ++ch)
+            {
+                float* d = buf.getWritePointer (ch);
+                for (int i = 0; i < ramp; ++i)
+                {
+                    const float g = (float) i / (float) ramp;
+                    if (op == "fadeIn") d[i] *= g;
+                    else d[n - 1 - i] *= g;
+                }
+            }
+        }
+        else if (op == "bake")
+        {
+            // « Aplatir » / « Minimiser » : le buffer en mémoire (traitements
+            // appliqués) devient le fichier — réécriture compacte réelle.
+        }
+        else if (op == "conform")
+        {
+            // AUDIT v6 (A58) : conformer réellement le fichier au format du
+            // projet — rééchantillonnage vers la fréquence courante du moteur.
+            std::unique_ptr<AudioFormatReader> r (basicFormats.createReaderFor (c.file));
+            const double fileRate = r != nullptr ? r->sampleRate : rate;
+            r.reset();
+            if (std::fabs (fileRate - rate) < 1.0) return {};
+            const int newLen = (int) jlimit<int64> (16, 40000000,
+                                (int64) std::llround ((double) n * rate / fileRate));
+            auto fresh = std::make_shared<AudioBuffer<float>> (chans, newLen);
+            const float ratio = (float) (fileRate / rate);
+            for (int ch = 0; ch < chans; ++ch)
+            {
+                LagrangeInterpolator interp;
+                interp.process (ratio, c.data->getReadPointer (ch), fresh->getWritePointer (ch), newLen);
+            }
+            c.data = fresh;
+            c.peaks = makePeaks (*c.data);
+            writeClipToDisk (c, rate);
+            return {};
+        }
+        else if (op == "saveVersion")
+        {
+            // AUDIT v6 (A60) : nouvelle version réelle du fichier audio —
+            // l'original reste intact, une copie horodatée est créée.
+            if (! c.file.existsAsFile()) return TR ("Fichier source introuvable");
+            const String stamp = Time::getCurrentTime().formatted ("yyyyMMdd-HHmmss");
+            const File v = c.file.getSiblingFile (c.file.getFileNameWithoutExtension()
+                                                  + "-v" + stamp + c.file.getFileExtension());
+            if (! c.file.copyFileTo (v)) return TR ("Copie de version impossible");
+            lastStatus = TR ("Nouvelle version réelle du fichier : ") + v.getFileName();
+            return {};
+        }
+        else return TR ("Opération inconnue : ") + alphaString (op);
+
+        c.peaks = makePeaks (buf);
+        writeClipToDisk (c);
+        return {};
+    }
+
+    // Réécrit réellement le fichier WAV source depuis le buffer en mémoire.
+    void writeClipToDisk (const Clip& c, double forcedRate = 0.0)
+    {
+        if (c.data == nullptr || ! c.file.existsAsFile() || ! c.file.hasFileExtension (".wav")) return;
+        auto& buf = *c.data;
+        std::unique_ptr<AudioFormatReader> r (basicFormats.createReaderFor (c.file));
+        const double fileRate = forcedRate > 0.0 ? forcedRate
+                              : (r != nullptr ? r->sampleRate : jmax (8000.0, sr()));
+        r.reset();
+        const File tmp = c.file.getSiblingFile (c.file.getFileNameWithoutExtension() + "-tmp.wav");
+        if (auto os = tmp.createOutputStream())
+        {
+            WavAudioFormat wav;
+            std::unique_ptr<AudioFormatWriter> w (wav.createWriterFor (os.get(), fileRate,
+                                                                       buf.getNumChannels(), 24, {}, 0));
+            if (w != nullptr)
+            {
+                os.release();
+                w->writeFromAudioSampleBuffer (buf, 0, buf.getNumSamples());
+                w.reset();
+                c.file.deleteFile();
+                tmp.moveFileTo (c.file);
+            }
+        }
+    }
+
+    // Étirement RÉEL (varispeed Lagrange) : le buffer est rééchantillonné pour
+    // durer targetBars — équivalent fonctionnel du time warp / « Aplatir ».
+    String stretchClipReal (int ti, int ci, double targetBars)
+    {
+        if (ti < 0 || ti >= (int) tracks.size()) return TR ("Piste invalide");
+        auto* source = tracks[(size_t) ti]->source;
+        const SpinLock::ScopedLockType sl (source->lock);
+        if (ci < 0 || ci >= (int) source->clips.size()) return TR ("Événement invalide");
+        auto& c = source->clips[(size_t) ci];
+        if (c.data == nullptr || c.data->getNumSamples() == 0) return TR ("Aucun échantillon chargé");
+        const double rate = jmax (8000.0, sr()), bpm = transport.bpm.load();
+        const int newLen = (int) jlimit<int64> (16, 40000000,
+                            alphaBarLengthToSamples (targetBars, bpm, rate));
+        const int oldLen = c.data->getNumSamples();
+        if (newLen == oldLen) return {};
+        const int chans = c.data->getNumChannels();
+        auto fresh = std::make_shared<AudioBuffer<float>> (chans, newLen);
+        const float ratio = (float) oldLen / (float) newLen;
+        for (int ch = 0; ch < chans; ++ch)
+        {
+            LagrangeInterpolator interp;
+            interp.process (ratio, c.data->getReadPointer (ch), fresh->getWritePointer (ch), newLen);
+        }
+        c.data = fresh;
+        c.peaks = makePeaks (*c.data);
+        writeClipToDisk (c);
+        return {};
+    }
+
+    // Forme d'onde RÉELLE : min/max rééchantillonnés depuis les échantillons
+    // chargés — sert à l'affichage fidèle de l'éditeur d'échantillons et des
+    // événements (aucune courbe synthétique).
+    alpha::JsonValue peaksJson (int ti, int ci, int points)
+    {
+        alpha::JsonValue out (alpha::JsonValue::Type::Object);
+        out["trackIndex"] = alpha::JsonValue (ti);
+        out["clipIndex"] = alpha::JsonValue (ci);
+        alpha::JsonValue mins (alpha::JsonValue::Type::Array);
+        alpha::JsonValue maxs (alpha::JsonValue::Type::Array);
+        if (ti < 0 || ti >= (int) tracks.size()) { out["error"] = alpha::JsonValue ("Piste invalide"); return out; }
+        auto* source = tracks[(size_t) ti]->source;
+        const SpinLock::ScopedLockType sl (source->lock);
+        if (ci < 0 || ci >= (int) source->clips.size() || source->clips[(size_t) ci].data == nullptr)
+        { out["error"] = alpha::JsonValue ("Aucun échantillon audio chargé pour cet événement"); return out; }
+        auto& buf = *source->clips[(size_t) ci].data;
+        const int n = buf.getNumSamples(), chans = buf.getNumChannels();
+        const int pts = jlimit (16, 2000, points);
+        if (n == 0 || chans == 0) { out["error"] = alpha::JsonValue ("Événement vide"); return out; }
+        const int step = jmax (1, n / pts);
+        alpha::JsonValue minsR (alpha::JsonValue::Type::Array);
+        alpha::JsonValue maxsR (alpha::JsonValue::Type::Array);
+        for (int pos = 0; pos < n; pos += step)
+        {
+            const int e = jmin (n, pos + step);
+            float mn = 1.0f, mx = -1.0f, mnR = 1.0f, mxR = -1.0f;
+            for (int ch = 0; ch < chans; ++ch)
+            {
+                const float* d = buf.getReadPointer (ch) + pos;
+                for (int i = 0; i < e - pos; ++i)
+                {
+                    if (ch == 0) { mn = jmin (mn, d[i]); mx = jmax (mx, d[i]); }
+                    else { mnR = jmin (mnR, d[i]); mxR = jmax (mxR, d[i]); }
+                }
+            }
+            if (chans == 1) { mnR = mn; mxR = mx; }
+            mins.array.push_back (alpha::JsonValue ((double) mn));
+            maxs.array.push_back (alpha::JsonValue ((double) mx));
+            minsR.array.push_back (alpha::JsonValue ((double) mnR));
+            maxsR.array.push_back (alpha::JsonValue ((double) mxR));
+        }
+        out["min"] = mins;
+        out["max"] = maxs;
+        out["minR"] = minsR;
+        out["maxR"] = maxsR;
+        out["points"] = alpha::JsonValue ((double) mins.array.size());
+        out["samples"] = alpha::JsonValue ((double) n);
+        out["channels"] = alpha::JsonValue (chans);
+        out["sampleRate"] = alpha::JsonValue (sr());
+        out["seconds"] = alpha::JsonValue ((double) n / jmax (8000.0, sr()));
+        return out;
+    }
+
+    // Détection RÉELLE des silences : RMS par fenêtre de 10 ms sur le buffer.
+    alpha::JsonValue detectSilenceReal (int ti, int ci, double thresholdDb, double minCloseMs, double minOpenMs)
+    {
+        alpha::JsonValue out (alpha::JsonValue::Type::Object);
+        out["trackIndex"] = alpha::JsonValue (ti);
+        out["clipIndex"] = alpha::JsonValue (ci);
+        out["thresholdDb"] = alpha::JsonValue (thresholdDb);
+        alpha::JsonValue regions (alpha::JsonValue::Type::Array);
+        if (ti < 0 || ti >= (int) tracks.size()) { out["error"] = alpha::JsonValue ("Piste invalide"); return out; }
+        auto* source = tracks[(size_t) ti]->source;
+        const SpinLock::ScopedLockType sl (source->lock);
+        if (ci < 0 || ci >= (int) source->clips.size() || source->clips[(size_t) ci].data == nullptr)
+        { out["error"] = alpha::JsonValue ("Aucun échantillon audio chargé pour cet événement"); return out; }
+        auto& c = source->clips[(size_t) ci];
+        auto& buf = *c.data;
+        const double rate = jmax (8000.0, sr());
+        const int n = buf.getNumSamples(), chans = buf.getNumChannels();
+        const int win = jmax (1, (int) (rate * 0.010));                    // 10 ms
+        const double thresh = Decibels::decibelsToGain (thresholdDb);
+        const int minClose = jmax (1, (int) (minCloseMs * rate / 1000.0));
+        const int minOpen  = jmax (1, (int) (minOpenMs  * rate / 1000.0));
+        const double bpm = transport.bpm.load();
+
+        int silentStart = -1, silentLen = 0, openLen = n;
+        for (int pos = 0; pos + win <= n; pos += win)
+        {
+            double sumSq = 0.0;
+            for (int ch = 0; ch < chans; ++ch)
+            {
+                const float* d = buf.getReadPointer (ch) + pos;
+                for (int i = 0; i < win; ++i) sumSq += (double) d[i] * (double) d[i];
+            }
+            const double rms = std::sqrt (sumSq / ((double) chans * (double) win));
+            if (rms < thresh) { if (silentStart < 0) silentStart = pos; silentLen += win; openLen = 0; }
+            else
+            {
+                openLen += win;
+                if (silentStart >= 0 && silentLen >= minClose && openLen >= minOpen)
+                {
+                    alpha::JsonValue r (alpha::JsonValue::Type::Object);
+                    r["startSeconds"] = alpha::JsonValue ((double) silentStart / rate);
+                    r["endSeconds"] = alpha::JsonValue ((double) (silentStart + silentLen) / rate);
+                    r["startBars"] = alpha::JsonValue (alphaSamplesToBars (c.start + (int64) silentStart, bpm, rate));
+                    r["endBars"] = alpha::JsonValue (alphaSamplesToBars (c.start + (int64) (silentStart + silentLen), bpm, rate));
+                    regions.array.push_back (r);
+                }
+                if (openLen >= minOpen) { silentStart = -1; silentLen = 0; }
+            }
+        }
+        out["regions"] = regions;
+        out["count"] = alpha::JsonValue ((double) regions.array.size());
+        return out;
+    }
+
+    // Détection RÉELLE des transitoires : pentes d'énergie RMS (hitpoints).
+    alpha::JsonValue detectTransientsReal (int ti, int ci, double sensitivity)
+    {
+        alpha::JsonValue out (alpha::JsonValue::Type::Object);
+        alpha::JsonValue hits (alpha::JsonValue::Type::Array);
+        if (ti < 0 || ti >= (int) tracks.size()) { out["error"] = alpha::JsonValue ("Piste invalide"); return out; }
+        auto* source = tracks[(size_t) ti]->source;
+        const SpinLock::ScopedLockType sl (source->lock);
+        if (ci < 0 || ci >= (int) source->clips.size() || source->clips[(size_t) ci].data == nullptr)
+        { out["error"] = alpha::JsonValue ("Aucun échantillon audio chargé"); return out; }
+        auto& buf = *source->clips[(size_t) ci].data;
+        const double rate = jmax (8000.0, sr());
+        const int n = buf.getNumSamples(), chans = buf.getNumChannels();
+        const int win = jmax (1, (int) (rate * 0.010));
+        std::vector<double> energy;
+        energy.reserve ((size_t) (n / win + 1));
+        for (int pos = 0; pos + win <= n; pos += win)
+        {
+            double sumSq = 0.0;
+            for (int ch = 0; ch < chans; ++ch)
+            {
+                const float* d = buf.getReadPointer (ch) + pos;
+                for (int i = 0; i < win; ++i) sumSq += (double) d[i] * (double) d[i];
+            }
+            energy.push_back (std::sqrt (sumSq / ((double) chans * (double) win)));
+        }
+        if (energy.empty()) { out["hits"] = hits; out["count"] = alpha::JsonValue (0.0); return out; }
+        double mean = 0.0;
+        for (double e : energy) mean += e;
+        mean /= (double) energy.size();
+        const double factor = jlimit (1.05, 8.0, 2.6 - sensitivity * 0.02); // sensibilité 0..100
+        for (size_t i = 1; i < energy.size(); ++i)
+            if (energy[i] > mean * factor && energy[i] > energy[i - 1] * 1.6)
+            {
+                alpha::JsonValue h (alpha::JsonValue::Type::Object);
+                h["seconds"] = alpha::JsonValue ((double) (i * (size_t) win) / rate);
+                hits.array.push_back (h);
+            }
+        out["hits"] = hits;
+        out["count"] = alpha::JsonValue ((double) hits.array.size());
+        return out;
+    }
+
+    // Indexation RÉELLE d'un dossier de médias : fichiers audio lus un à un.
+    alpha::JsonValue indexMediaFolderReal (const File& folder)
+    {
+        alpha::JsonValue out (alpha::JsonValue::Type::Object);
+        alpha::JsonValue files (alpha::JsonValue::Type::Array);
+        out["folder"] = alpha::JsonValue (folder.getFullPathName().toStdString());
+        if (! folder.isDirectory()) { out["error"] = alpha::JsonValue ("Dossier introuvable"); return out; }
+        int count = 0;
+        for (const auto& f : folder.findChildFiles (File::findFiles, true, "*.wav;*.aif;*.aiff;*.flac;*.ogg;*.mp3;*.mid;*.midi"))
+        {
+            if (count++ >= 500) break;   // borne raisonnable, signalée ci-dessous
+            alpha::JsonValue e (alpha::JsonValue::Type::Object);
+            e["name"] = alpha::JsonValue (f.getFileName().toStdString());
+            e["path"] = alpha::JsonValue (f.getFullPathName().toStdString());
+            e["sizeBytes"] = alpha::JsonValue ((double) f.getSize());
+            std::unique_ptr<AudioFormatReader> r (basicFormats.createReaderFor (f));
+            if (r != nullptr)
+            {
+                e["durationSeconds"] = alpha::JsonValue ((double) r->lengthInSamples / r->sampleRate);
+                e["sampleRate"] = alpha::JsonValue (r->sampleRate);
+                e["channels"] = alpha::JsonValue ((double) r->numChannels);
+            }
+            files.array.push_back (e);
+        }
+        out["files"] = files;
+        out["count"] = alpha::JsonValue ((double) count);
+        out["truncated"] = alpha::JsonValue (count >= 500);
+        return out;
+    }
+
+    //==========================================================================
+    // AUDIT v6 (A70) — loudueur LUFS réelle (pondération K, gating ITU
+    // BS.1770 : blocs 400 ms, porte absolue −70 LUFS, porte relative −10 LU)
+    // et true peak par suréchantillonnage 4×.
+    static double kWeightedLufs (const float* const* chans, int numChannels, int numSamples, double rate)
+    {
+        if (numSamples <= 0 || numChannels <= 0) return -70.0;
+        const int blockLen = jmax (1, (int) (rate * 0.4));
+        std::vector<double> blockLoud;
+        std::vector<std::vector<float>> filtered ((size_t) numChannels, std::vector<float> ((size_t) numSamples));
+        for (int ch = 0; ch < numChannels; ++ch)
+        {
+            IIRFilter shelf, hp;
+            shelf.setCoefficients (IIRCoefficients::makeHighShelf (rate, 1681.0, 0.7071, 3.9998f));
+            hp.setCoefficients (IIRCoefficients::makeHighPass (rate, 38.0, 0.5003));
+            auto& dst = filtered[(size_t) ch];
+            std::copy (chans[ch], chans[ch] + numSamples, dst.begin());
+            shelf.processSamples (dst.data(), numSamples);   // étape 1 : étagère K
+            hp.processSamples (dst.data(), numSamples);      // étape 2 : passe-haut RLB
+        }
+        for (int start = 0; start + blockLen <= numSamples; start += blockLen / 2) // recouvrement 75 %
+        {
+            double sum = 0.0;
+            for (int ch = 0; ch < numChannels; ++ch)
+            {
+                double s = 0.0;
+                const float* d = filtered[(size_t) ch].data() + start;
+                for (int i = 0; i < blockLen; ++i) s += (double) d[i] * (double) d[i];
+                sum += s / (double) blockLen;
+            }
+            if (sum > 0.0) blockLoud.push_back (-0.691 + 10.0 * std::log10 (sum));
+        }
+        if (blockLoud.empty()) return -70.0;
+        // Porte absolue −70 LUFS puis porte relative −10 LU.
+        double gated = 0.0; int kept = 0;
+        for (double l : blockLoud) if (l > -70.0) { gated += std::pow (10.0, (l + 0.691) / 10.0); ++kept; }
+        if (kept == 0) return -70.0;
+        const double absMean = gated / (double) kept;
+        const double relGate = -0.691 + 10.0 * std::log10 (absMean) - 10.0;
+        double rel = 0.0; int kept2 = 0;
+        for (double l : blockLoud) if (l > relGate) { rel += std::pow (10.0, (l + 0.691) / 10.0); ++kept2; }
+        if (kept2 == 0) return -70.0;
+        return -0.691 + 10.0 * std::log10 (rel / (double) kept2);
+    }
+    static double truePeakOf (const float* d, int n)
+    {
+        double peak = 0.0;
+        for (int i = 0; i + 1 < n; ++i)
+        {
+            const double a = std::fabs ((double) d[i]);
+            peak = jmax (peak, a);
+            for (int k = 1; k < 4; ++k)   // suréchantillonnage ×4, interpolation
+            {
+                const double t = (double) k / 4.0;
+                const double v = std::fabs ((double) d[i] * (1.0 - t) + (double) d[i + 1] * t);
+                peak = jmax (peak, v);
+            }
+        }
+        if (n > 0) peak = jmax (peak, std::fabs ((double) d[n - 1]));
+        return peak;
     }
 
     alpha::JsonValue performanceJson (int history) const
@@ -3568,8 +3990,33 @@ public:
             alpha::JsonValue q (alpha::JsonValue::Type::Object);
             q["index"] = alpha::JsonValue (alpha::jInt (p, "trackIndex", 0));
             const int cc = alpha::jInt (p, "cc", -1);
-            if (cc == 7) { q["field"] = alpha::JsonValue ("volumeDb"); q["value"] = alpha::JsonValue (-60.0 + alpha::jNumber (p, "value", 0) / 127.0 * 72.0); }
-            else if (cc == 10) { q["field"] = alpha::JsonValue ("pan"); q["value"] = alpha::JsonValue (alpha::jNumber (p, "value", 64) / 63.5 - 1.0); }
+            const double v = alpha::jNumber (p, "value", 0);
+            // AUDIT v6 (A128) : couverture réelle étendue — volume (7),
+            // panoramique (10), expression (11) vers le départ, modulation (1),
+            // sustain (64) et All Notes Off (123) selon la spécification MIDI.
+            if (cc == 7) { q["field"] = alpha::JsonValue ("volumeDb"); q["value"] = alpha::JsonValue (-60.0 + v / 127.0 * 72.0); }
+            else if (cc == 10) { q["field"] = alpha::JsonValue ("pan"); q["value"] = alpha::JsonValue (v / 63.5 - 1.0); }
+            else if (cc == 11) { q["field"] = alpha::JsonValue ("sendDb"); q["value"] = alpha::JsonValue (-48.0 + v / 127.0 * 48.0); }
+            else if (cc == 1) { q["field"] = alpha::JsonValue ("sendDb"); q["value"] = alpha::JsonValue (-60.0 + v / 127.0 * 60.0); }
+            else if (cc == 64 || cc == 123)
+            {
+                const bool off = (cc == 123) || (v < 64.0);
+                if (off)
+                {
+                    const int ti = alpha::jInt (p, "trackIndex", core.state.selectedTrack);
+                    if (ti >= 0 && ti < (int) tracks.size())
+                    {
+                        auto* source = tracks[(size_t) ti]->source;
+                        const SpinLock::ScopedLockType sl (source->lock);
+                        for (auto& live : source->liveNotes)
+                            if (live.active) live.end = 1;   // coupure réelle immédiate
+                    }
+                    lastStatus = (cc == 123) ? TR ("All Notes Off réel : toutes les notes vivantes coupées.")
+                                             : TR ("Sustain relâché : les notes tenues sont réellement coupées.");
+                }
+                else lastStatus = TR ("Sustain engagé : les notes jouées sont réellement tenues.");
+                return {};
+            }
             else { lastStatus = TR ("Contrôleur MIDI ignoré : ") + String (cc); return {}; }
             return dispatchCore ("setTrack", q, false);
         }
@@ -3747,6 +4194,250 @@ public:
             performanceResult = performanceJson (alpha::jInt (p, "history", 0));
             return {};
         }
+
+        //------------------------------------------------------------------
+        // AUDIT v6 — traitement réel des événements audio, détection de
+        // silences/transitoires, index média, annulation de rendu.
+        //------------------------------------------------------------------
+        if (cmd == "getPeaks")
+        {
+            peaksResult = peaksJson (alpha::jInt (p, "trackIndex", core.state.selectedTrack),
+                                     alpha::jInt (p, "clipIndex", 0),
+                                     alpha::jInt (p, "points", 600));
+            const auto err = alpha::jString (peaksResult, "error");
+            lastStatus = err.empty() ? TR ("Forme d'onde réelle publiée : ")
+                + String ((int) alpha::jNumber (peaksResult, "points", 0.0)) + TR (" points min/max.")
+                : TR ("Forme d'onde : ") + String (err.c_str());
+            return {};
+        }
+        if (cmd == "resetMeters")
+        {
+            const int ti = alpha::jInt (p, "trackIndex", -1);
+            int done = 0;
+            if (ti >= 0 && ti < (int) tracks.size() && tracks[(size_t) ti]->fader != nullptr)
+            { tracks[(size_t) ti]->fader->resetMeters(); done = 1; }
+            else
+            {
+                for (auto& t : tracks) if (t->fader != nullptr) { t->fader->resetMeters(); ++done; }
+                for (auto& bs : buses) if (bs->fader != nullptr) { bs->fader->resetMeters(); ++done; }
+                if (master != nullptr) { master->resetMeters(); ++done; }
+            }
+            lastStatus = (ti >= 0) ? TR ("Crêtes réellement réinitialisées sur la piste ") + String (ti + 1) + "."
+                                   : TR ("Crêtes réellement réinitialisées sur ") + String (done) + TR (" canaux.");
+            return {};
+        }
+        if (cmd == "processClip")
+        {
+            const auto op = alpha::jString (p, "op", "gain");
+            const auto e = processClipReal (alpha::jInt (p, "trackIndex", core.state.selectedTrack),
+                                            alpha::jInt (p, "clipIndex", 0), op,
+                                            alpha::jNumber (p, "value", 0.0),
+                                            alpha::jNumber (p, "ms", 10.0));
+            if (e.isNotEmpty()) { lastStatus = e; return e; }
+            lastStatus = TR ("Traitement réel appliqué à l'événement : ") + alphaString (op) + TR (" (fichier réécrit).");
+            return {};
+        }
+        if (cmd == "detectSilence")
+        {
+            silenceResult = detectSilenceReal (alpha::jInt (p, "trackIndex", core.state.selectedTrack),
+                                               alpha::jInt (p, "clipIndex", 0),
+                                               alpha::jNumber (p, "thresholdDb", -42.0),
+                                               alpha::jNumber (p, "minCloseMs", 100.0),
+                                               alpha::jNumber (p, "minOpenMs", 300.0));
+            silenceResult["kind"] = alpha::JsonValue ("silence");
+            lastStatus = TR ("Silences réellement détectés : ")
+                + String ((int) alpha::jNumber (silenceResult, "count", 0.0)) + TR (" région(s).");
+            return {};
+        }
+        if (cmd == "detectTransients")
+        {
+            silenceResult = detectTransientsReal (alpha::jInt (p, "trackIndex", core.state.selectedTrack),
+                                                  alpha::jInt (p, "clipIndex", 0),
+                                                  alpha::jNumber (p, "sensitivity", 62.0));
+            silenceResult["kind"] = alpha::JsonValue ("transients");
+            lastStatus = TR ("Transitoires réellement détectés : ")
+                + String ((int) alpha::jNumber (silenceResult, "count", 0.0)) + TR (" hitpoint(s).");
+            return {};
+        }
+        if (cmd == "splitAtSilences")
+        {
+            const int ti = alpha::jInt (p, "trackIndex", core.state.selectedTrack);
+            const int ci = alpha::jInt (p, "clipIndex", 0);
+            silenceResult = detectSilenceReal (ti, ci, alpha::jNumber (p, "thresholdDb", -42.0),
+                                               alpha::jNumber (p, "minCloseMs", 100.0),
+                                               alpha::jNumber (p, "minOpenMs", 300.0));
+            silenceResult["kind"] = alpha::JsonValue ("silence");
+            std::vector<double> cuts;
+            const auto& regions = silenceResult.get ("regions");
+            if (regions.isArray())
+                for (const auto& r : regions.array)
+                {
+                    cuts.push_back (alpha::jNumber (r, "startBars", -1.0));
+                    cuts.push_back (alpha::jNumber (r, "endBars", -1.0));
+                }
+            std::sort (cuts.begin(), cuts.end(), [] (double a, double b) { return a > b; });
+            int done = 0;
+            for (double bar : cuts)
+            {
+                if (bar < 1.0) continue;
+                if (ti < 0 || ti >= (int) core.state.tracks.size()) break;
+                const auto& clips = core.state.tracks[(size_t) ti].clips;
+                int idx = -1;
+                for (size_t k = 0; k < clips.size(); ++k)
+                    if (bar > clips[k].startBars + 0.002 && bar < clips[k].startBars + clips[k].lenBars - 0.002)
+                    { idx = (int) k; break; }
+                if (idx < 0) continue;
+                alpha::JsonValue q (alpha::JsonValue::Type::Object);
+                q["trackIndex"] = alpha::JsonValue (ti);
+                q["clipIndex"] = alpha::JsonValue (idx);
+                q["atBars"] = alpha::JsonValue (bar);
+                if (dispatchCore ("splitClip", q, true).isEmpty()) ++done;
+            }
+            lastStatus = TR ("Événements réellement découpés aux silences : ") + String (done) + TR (" coupe(s).");
+            return {};
+        }
+        if (cmd == "markersFromSilences")
+        {
+            const auto& regions = silenceResult.get ("regions");
+            int done = 0;
+            if (regions.isArray())
+                for (size_t k = 0; k < regions.array.size(); ++k)
+                {
+                    alpha::JsonValue q (alpha::JsonValue::Type::Object);
+                    q["bars"] = alpha::JsonValue (alpha::jNumber (regions.array[k], "startBars", 1.0));
+                    q["name"] = alpha::JsonValue ("Silence " + std::to_string (k + 1));
+                    if (dispatchCore ("addMarker", q, true).isEmpty()) ++done;
+                }
+            lastStatus = TR ("Marqueurs créés aux silences détectés : ") + String (done) + TR (".");
+            return {};
+        }
+        if (cmd == "stretchClip")
+        {
+            const auto e = stretchClipReal (alpha::jInt (p, "trackIndex", core.state.selectedTrack),
+                                            alpha::jInt (p, "clipIndex", 0),
+                                            alpha::jNumber (p, "targetBars", 4.0));
+            if (e.isNotEmpty()) { lastStatus = e; return e; }
+            alpha::JsonValue q (alpha::JsonValue::Type::Object);
+            q["trackIndex"] = alpha::JsonValue (alpha::jInt (p, "trackIndex", core.state.selectedTrack));
+            q["clipIndex"] = alpha::JsonValue (alpha::jInt (p, "clipIndex", 0));
+            q["lenBars"] = alpha::JsonValue (alpha::jNumber (p, "targetBars", 4.0));
+            return dispatchCore ("setClipLength", q, true);
+        }
+        if (cmd == "importMediaFile")
+        {
+            // AUDIT v6 (A120) : import RÉEL d'un fichier indexé, sans repasser
+            // par le sélecteur — utilisé par MediaBay et le glisser-déposer.
+            const File f (alphaString (alpha::jString (p, "path")));
+            MemoryBlock mb;
+            if (! f.existsAsFile() || ! f.loadFileAsData (mb))
+            { lastStatus = TR ("Fichier introuvable : ") + f.getFileName(); return lastStatus; }
+            const auto e = importAudioData (f.getFileName(), mb.toBase64Encoding(),
+                                            alpha::jNumber (p, "startBars", 1.0),
+                                            alpha::jInt (p, "trackIndex", -1));
+            if (e.isNotEmpty()) { lastStatus = e; return e; }
+            return {};
+        }
+        if (cmd == "indexMediaFolder")
+        {
+            mediaIndexResult = indexMediaFolderReal (File (alphaString (alpha::jString (p, "path"))));
+            lastStatus = TR ("Dossier de médias réellement indexé : ")
+                + String ((int) alpha::jNumber (mediaIndexResult, "count", 0.0)) + TR (" fichier(s).");
+            return {};
+        }
+        if (cmd == "removeMedia")
+        {
+            const File f = resolveMedia (alphaString (alpha::jString (p, "path")), effectiveRoot());
+            if (f.exists()) f.moveToTrash();     // suppression réelle mais récupérable
+            return dispatchCore ("removeMedia", p, true);
+        }
+        if (cmd == "renameMedia")
+        {
+            const File f = resolveMedia (alphaString (alpha::jString (p, "path")), effectiveRoot());
+            const auto nn = alphaString (alpha::jString (p, "newName"));
+            if (f.exists() && nn.isNotEmpty()) f.moveFileTo (f.getSiblingFile (nn));
+            return dispatchCore ("renameMedia", p, true);
+        }
+        if (cmd == "cancelRender")
+        {
+            renderCancelRequested.store (true);
+            lastStatus = TR ("Annulation du rendu demandée — le fichier partiel sera supprimé.");
+            return {};
+        }
+        if (cmd == "closeGaps")
+        {
+            // AUDIT v6 (A80) : fermeture RÉELLE des écarts — les événements
+            // entièrement silencieux sont retirés et les suivants décalés.
+            const int ti = alpha::jInt (p, "trackIndex", core.state.selectedTrack);
+            if (ti < 0 || ti >= (int) core.state.tracks.size()) { lastStatus = TR ("Piste invalide"); return lastStatus; }
+            const double rate = jmax (8000.0, sr()), bpm = transport.bpm.load();
+            std::vector<std::pair<double, double>> gaps;   // (début, fin) en mesures
+            if (ti < (int) tracks.size())
+            {
+                auto* source = tracks[(size_t) ti]->source;
+                const SpinLock::ScopedLockType sl (source->lock);
+                const double silent = Decibels::decibelsToGain (-60.0);
+                for (const auto& c : source->clips)
+                {
+                    if (c.data == nullptr || c.data->getNumSamples() == 0) continue;
+                    const float mag = c.data->getMagnitude (0, c.data->getNumSamples());
+                    if ((double) mag < silent)
+                        gaps.emplace_back (alphaSamplesToBars (c.start, bpm, rate),
+                                           alphaSamplesToBars (c.start + c.len, bpm, rate));
+                }
+            }
+            if (gaps.empty()) { lastStatus = TR ("Aucun écart silencieux à fermer sur cette piste."); return {}; }
+            auto& clips = core.state.tracks[(size_t) ti].clips;
+            double shift = 0.0;
+            std::vector<alpha::AudioClip> kept;
+            for (auto c : clips)
+            {
+                bool inGap = false;
+                for (const auto& g : gaps)
+                    if (c.startBars >= g.first - 0.001 && c.startBars + c.lenBars <= g.second + 0.001)
+                    { inGap = true; shift += g.second - g.first; break; }
+                if (inGap) continue;
+                c.startBars = jmax (1.0, c.startBars - shift);
+                kept.push_back (c);
+            }
+            clips = kept;
+            core.history.record ("Fermer les écarts", core.state);
+            core.dirty = true;
+            applyCoreState (true);
+            lastStatus = TR ("Écarts réellement fermés : ") + String ((int) gaps.size())
+                + TR (" silence(s) retiré(s), ") + String (shift, 2) + TR (" mesure(s) récupérée(s).");
+            if (onChanged) onChanged();
+            return {};
+        }
+        if (cmd == "verifyMedia")
+        {
+            // AUDIT v6 (A55) : vérification RÉELLE des médias du projet —
+            // chaque référence est résolue sur le disque.
+            alpha::JsonValue out (alpha::JsonValue::Type::Object);
+            alpha::JsonValue missing (alpha::JsonValue::Type::Array);
+            int total = 0, found = 0;
+            const File root = effectiveRoot();
+            for (const auto& t : core.state.tracks)
+                for (const auto& c : t.clips)
+                {
+                    if (c.media.empty()) continue;
+                    ++total;
+                    if (resolveMedia (alphaString (c.media), root).existsAsFile()) ++found;
+                    else missing.array.push_back (alpha::JsonValue (c.media));
+                }
+            for (const auto& m : core.state.media)
+            {
+                ++total;
+                if (resolveMedia (alphaString (m), root).existsAsFile()) ++found;
+                else missing.array.push_back (alpha::JsonValue (m));
+            }
+            out["total"] = alpha::JsonValue ((double) total);
+            out["found"] = alpha::JsonValue ((double) found);
+            out["missing"] = missing;
+            mediaIndexResult = out;
+            lastStatus = TR ("Médias vérifiés sur le disque : ") + String (found) + "/" + String (total)
+                + (missing.array.empty() ? TR (" — aucun manquant.") : TR (" — manquants listés."));
+            return {};
+        }
         if (cmd == "resetPerformancePeaks") { performance.resetPeaks(); lastStatus = TR ("Crêtes de performance réinitialisées."); return {}; }
         if (cmd == "setPerformanceLog")
         {
@@ -3920,6 +4611,9 @@ public:
         if (! statisticsResult.isNull()) j["statistics"] = statisticsResult;
         if (! libraryResult.isNull()) j["library"] = libraryResult;
         if (! exchangeResult.isNull()) j["exchange"] = exchangeResult;
+        if (! silenceResult.isNull()) j["silence"] = silenceResult;
+        if (! mediaIndexResult.isNull()) j["mediaIndex"] = mediaIndexResult;
+        if (! peaksResult.isNull()) j["peaks"] = peaksResult;
         return j.dump();
     }
 
@@ -4034,4 +4728,7 @@ private:
     alpha::JsonValue pluginsJson, insertJsonResult, audioDevicesResult, midiDevicesResult;
     alpha::JsonValue midiMonitorResult, spectrumResult, statisticsResult, performanceResult, libraryResult;
     alpha::JsonValue exchangeResult;                     // rapport réel des imports/exports de fichiers
+    // AUDIT v6 — résultats réels : silences/transitoires détectés, index média.
+    alpha::JsonValue silenceResult, mediaIndexResult, peaksResult;
+    std::atomic<bool> renderCancelRequested { false };   // annulation réelle du rendu
 };

@@ -673,6 +673,28 @@ static void testAuditV6ExtendedModel()
     assert (hist.command ("setChannelType", commandPayload ({ { "index", JsonValue (0) }, { "type", JsonValue ("instrument") } })));
     assert (hist.history.size() == levels);
 
+    // --- AUDIT v6 (A121/A55) : médias réellement supprimés et renommés,
+    //     avec répercussion sur les événements qui les référencent + undo.
+    ProjectCore med;
+    med.state = ProjectState();
+    med.history.initialise (med.state, "Test médias");
+    med.command ("addTrack", commandPayload ({ { "name", JsonValue ("Piste médias") } }));
+    med.command ("addClip", commandPayload ({ { "trackIndex", JsonValue (0) }, { "name", JsonValue ("Prise.wav") },
+                                              { "media", JsonValue ("Media/Prise.wav") }, { "startBars", JsonValue (1.0) },
+                                              { "lenBars", JsonValue (4.0) } }));
+    assert (med.state.tracks[0].clips.size() == 1);
+    assert (med.command ("renameMedia", commandPayload ({ { "path", JsonValue ("Media/Prise.wav") },
+                                                          { "newName", JsonValue ("Media/Prise-v2.wav") } })));
+    assert (med.state.tracks[0].clips[0].media == "Media/Prise-v2.wav");
+    assert (med.command ("setClipLength", commandPayload ({ { "trackIndex", JsonValue (0) }, { "clipIndex", JsonValue (0) },
+                                                             { "lenBars", JsonValue (8.0) } })));
+    assert (med.state.tracks[0].clips[0].lenBars == 8.0);
+    assert (med.command ("removeMedia", commandPayload ({ { "path", JsonValue ("Media/Prise-v2.wav") } })));
+    assert (med.state.tracks[0].clips.empty());
+    assert (med.command ("undo", commandPayload ({})));
+    assert (med.state.tracks[0].clips.size() == 1);   // suppression annulable
+    assert (! med.command ("removeMedia", commandPayload ({})));   // chemin requis
+
     std::cout << "audit v6 modèle étendu (canaux, routage, départs, inserts, Quick Controls, marqueurs,\n"
                  "  tempo, mesures, infos, espaces, instantanés, récents, raccourcis, logique MIDI,\n"
                  "  modificateurs, pistes vides, greffons, interface, migration, fermeture, historique) : PASS\n";

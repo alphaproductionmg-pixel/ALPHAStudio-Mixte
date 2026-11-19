@@ -4,12 +4,17 @@
 #include <atomic>
 #include <memory>
 
-class AlphaWebMainComponent final : public juce::Component, private juce::Timer
+class AlphaWebMainComponent final : public juce::Component, private juce::Timer,
+                                    public juce::FileDragAndDropTarget
 {
 public:
     AlphaWebMainComponent();
     ~AlphaWebMainComponent() override;
     void resized() override;
+
+    // AUDIT v6 (A54) : import réel par glisser-déposer de fichiers Windows.
+    bool isInterestedInFileDrag (const juce::StringArray& files) override;
+    void filesDropped (const juce::StringArray& files, int x, int y) override;
 
 private:
     class Browser final : public juce::WebBrowserComponent
@@ -41,6 +46,8 @@ private:
     void showPluginBrowser (const juce::var& payload);
     void showProjectLibrary();
     void choosePluginFolder();
+    void chooseMediaFolder();          // AUDIT v6 (A120) : indexation réelle
+    void importDroppedFiles (const juce::StringArray& files);
 
     double uiScaleOverride = 1.0;
     double fontScaleOverride = 1.0;

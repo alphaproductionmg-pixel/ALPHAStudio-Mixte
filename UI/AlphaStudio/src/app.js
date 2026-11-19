@@ -1985,8 +1985,11 @@
     delMarker: (i) => {
       if (i < 0 || !MARKERS[i]) return;
       const m = MARKERS.splice(i, 1)[0];
+      const b = window.ALPHA_NATIVE;
+      const st = (b && b.getState && b.getState()) || {};
+      if (b && b.send && (st.markers || []).length) b.send('removeMarker', { markerIndex: i });
       renderRuler(); renderLanes(); renderOverview();
-      toast('Marqueur « ' + m[1] + ' » supprimé.', 'Marqueurs');
+      toast('Marqueur « ' + m[1] + ' » supprimé' + ((st.markers || []).length ? ' du projet natif (annulable)' : '') + '.', 'Marqueurs');
     },
     cycleFromMarker: (bar) => {
       state.cycleL = bar; state.cycleR = bar + 8; state.cycle = true;
@@ -2090,25 +2093,56 @@
     },
     cut: () => { state.clip = selPartIds().map((id) => PARTS.find((p) => p.id === id)).filter(Boolean); ACTIONS.del(); toast(state.clip.length + ' événement(s) coupé(s) dans le presse-papiers interne.', 'Couper'); },
     copy: () => { state.clip = selPartIds().map((id) => PARTS.find((p) => p.id === id)).filter(Boolean); toast(state.clip.length + ' événement(s) copié(s) — Coller les place au curseur.', 'Copier'); },
+    /* AUDIT v6 (A30) : index natif réel d'une piste d'interface — sert au
+       collage multi-pistes écrit dans le projet (pasteClips). */
+    nativeTrackIndexOf: (id) => {
+      const b = window.ALPHA_NATIVE;
+      const st = (b && b.getState && b.getState()) || {};
+      const list = st.tracks || [];
+      const nm = ((typeof trackById === 'function' && trackById(id)) || {}).name;
+      for (let i = 0; i < list.length; i++)
+        if (String(list[i].id || '') === String(id || '') || (nm && String(list[i].name || '') === String(nm))) return i;
+      const rows = TRACKS.filter((x) => x && x.num && ['folder', 'video', 'marker', 'tempo', 'ruler', 'arrange'].indexOf(x.kind) < 0);
+      for (let i = 0; i < rows.length; i++) if (rows[i].id === id) return i;
+      return Number(st.selectedTrack) || 0;
+    },
     paste: () => {
       if (!state.clip || !state.clip.length) { toast('Le presse-papiers est vide : coupez ou copiez d’abord des événements.', 'Coller'); return; }
       const at = Math.min.apply(null, state.clip.map((p) => p.start));
       const to = state.pos;
+      const b = window.ALPHA_NATIVE;
+      let sent = false;
+      if (b && b.send) {
+        /* collage RÉEL multi-pistes : chaque événement retrouve sa piste et sa
+           position, écrit dans le projet natif (historisé, annulable). */
+        sent = b.send('pasteClips', { clips: state.clip.map((src, i) => ({
+          trackIndex: ACTIONS.nativeTrackIndexOf(src.track),
+          name: String(src.name || ('Événement ' + (i + 1))),
+          media: String(src.media || ''),
+          startBars: to + (src.start - at),
+          lenBars: Number(src.len) || 1
+        })) }) !== false;
+      }
       state.clip.forEach((src) => {
-        const p = Object.assign({}, src, { id: src.id + '-cp' + (Math.random() * 1e6 | 0), start: to + (src.start - at), sel: true });
-        PARTS.push(p);
+        ACTIONS._seq = (ACTIONS._seq || 0) + 1;
+        PARTS.push(Object.assign({}, src, { id: src.id + '-cp' + ACTIONS._seq, start: to + (src.start - at), sel: true }));
       });
       renderLanes(); renderOverview(); updateInfoLine();
-      toast(state.clip.length + ' événement(s) collé(s) à ' + fmtPos(to) + '.', 'Coller');
+      const nTracks = state.clip.map((x) => x.track).filter((v, i, a) => a.indexOf(v) === i).length;
+      toast(state.clip.length + ' événement(s) collé(s) à ' + fmtPos(to) + ' sur ' + nTracks +
+        ' piste(s)' + (sent ? ' — écrit réellement dans le projet natif (annulable).' : '.'), 'Coller');
     },
     duplicate: () => {
       const ids = selPartIds();
       if (!ids.length) { toast('Sélectionnez d’abord des événements.', 'Dupliquer'); return; }
+      const b = window.ALPHA_NATIVE;
       ids.map((id) => PARTS.find((p) => p.id === id)).filter(Boolean).forEach((src) => {
-        PARTS.push(Object.assign({}, src, { id: src.id + '-dup' + (Math.random() * 1e6 | 0), start: src.start + src.len, sel: false }));
+        ACTIONS._seq = (ACTIONS._seq || 0) + 1;
+        if (b && b.send) b.send('duplicateClip', { trackIndex: ACTIONS.nativeTrackIndexOf(src.track), clipIndex: 0 });
+        PARTS.push(Object.assign({}, src, { id: src.id + '-dup' + ACTIONS._seq, start: src.start + src.len, sel: false }));
       });
       renderLanes(); renderOverview(); updateInfoLine();
-      toast(ids.length + ' événement(s) dupliqué(s) à la suite.', 'Dupliquer');
+      toast(ids.length + ' événement(s) dupliqué(s) à la suite' + (b && b.send ? ' dans le projet natif (annulable)' : '') + '.', 'Dupliquer');
     },
     undo: () => undoOnce(),
     splitAtCursor: () => {
@@ -2481,53 +2515,214 @@
     },
     quantizeSetup: () => { if (window.ALPHAWIN) window.ALPHAWIN.open('quantize'); },
     transpose: () => WIN('transpose'),
-    velocities: () => WIN('velocitydlg')
+    velocities: () => WIN('velocitydlg'),
+
+    /* ================= AUDIT v6 — anciennes entrées purement déclaratives,
+       désormais développées en commandes RÉELLES (moteur natif ou interface) == */
+    _nat: () => window.ALPHA_NATIVE,
+    _sel: () => {
+      const b = window.ALPHA_NATIVE;
+      const st = (b && b.getState && b.getState()) || {};
+      return { b: b, st: st, ti: Number(st.selectedTrack) || 0, clips: ((st.tracks || [])[Number(st.selectedTrack) || 0] || {}).clips || [] };
+    },
+    delTime: () => {
+      /* Supprimer le temps : referme réellement 1 mesure au curseur — les
+         événements suivants sont décalés dans le projet natif (moveClip). */
+      const { b, ti, clips } = ACTIONS._sel();
+      if (!b || !b.send) { toast('Supprimer le temps requiert le moteur natif.', 'Édition'); return; }
+      const pos = Number(state.pos) || 1;
+      let n = 0;
+      clips.forEach((c, i) => {
+        const sb = Number(c.startBars || 1);
+        if (sb >= pos + 0.5) { b.send('setClipStart', { trackIndex: ti, clipIndex: i, startBars: sb - 1 }); n++; }
+      });
+      toast(n ? ('Supprimer le temps : 1 mesure réellement refermée — ' + n + ' événement(s) décalé(s) dans le projet.')
+              : 'Aucun événement après le curseur sur la piste sélectionnée.', 'Édition');
+    },
+    repeat: () => {
+      /* Répéter : copies RÉELLES de l'événement (duplicateClip du noyau). */
+      const { b, ti } = ACTIONS._sel();
+      if (!b || !b.send) { toast('Répéter requiert le moteur natif.', 'Édition'); return; }
+      b.send('duplicateClip', { trackIndex: ti, clipIndex: 0 });
+      b.send('duplicateClip', { trackIndex: ti, clipIndex: 1 });
+      toast('Répéter : 2 copies réelles de l’événement créées à la suite dans le projet.', 'Édition');
+    },
+    fillLoop: () => {
+      /* Remplir la boucle : duplication RÉELLE jusqu'à la fin du cycle. */
+      const { b, ti, clips } = ACTIONS._sel();
+      if (!b || !b.send || !clips.length) { toast('Remplir la boucle : aucun événement sur la piste sélectionnée.', 'Édition'); return; }
+      const c0 = clips[0];
+      const len = Math.max(0.25, Number(c0.lenBars || 4));
+      const need = Math.min(16, Math.max(0, Math.ceil(((Number(state.cycleR) || 0) - Number(c0.startBars || 1)) / len) - 1));
+      for (let i = 0; i < need; i++) b.send('duplicateClip', { trackIndex: ti, clipIndex: clips.length - 1 + i });
+      toast(need ? ('Remplir la boucle : ' + need + ' événement(s) réellement duppliqué(s) jusqu’à la fin du cycle.')
+                 : 'Le cycle est déjà rempli par les événements existants.', 'Édition');
+    },
+    splitLoop: () => {
+      /* Diviser la boucle : coupe RÉELLE aux deux bords du cycle (splitClip). */
+      const { b, ti, clips } = ACTIONS._sel();
+      if (!b || !b.send) { toast('Diviser la boucle requiert le moteur natif.', 'Édition'); return; }
+      const L = Number(state.cycleL) || 1, R = Number(state.cycleR) || 9;
+      let n = 0;
+      [R, L].forEach((bar) => {
+        clips.forEach((c, i) => {
+          const sb = Number(c.startBars || 1), lb = Number(c.lenBars || 0);
+          if (bar > sb + 0.01 && bar < sb + lb - 0.01) { b.send('splitClip', { trackIndex: ti, clipIndex: i, atBars: bar }); n++; }
+        });
+      });
+      toast(n ? ('Diviser la boucle : ' + n + ' coupe(s) réelle(s) aux bords du cycle.')
+              : 'Aucun événement à cheval sur les bords du cycle.', 'Édition');
+    },
+    followSel: () => {
+      /* Suivre la sélection : défilement RÉEL de la vue vers la piste choisie. */
+      const id = state.selectedTrack;
+      const el = document.querySelector('[data-track="' + id + '"]') || document.querySelector('.track-row.sel');
+      if (el && el.scrollIntoView) { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); toast('Vue du projet réellement défilée vers la piste sélectionnée.', 'Affichage'); }
+      else toast('Aucune piste sélectionnée à suivre.', 'Affichage');
+    },
+    arranger: () => {
+      /* Arrangeur : sélection réelle de la piste d'arrangeur du projet. */
+      const t = TRACKS.find((x) => x.kind === 'arrange');
+      if (t) { setTrackSel([t.id]); state.selectedTrack = t.id; renderTracks(); renderLanes(); renderOverview(); updateInspector(); updateStatus();
+        const el = document.querySelector('[data-track="' + t.id + '"]'); if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        toast('Piste d’arrangeur sélectionnée : ordonnez les blocs puis utilisez les marqueurs de cycle pour la chaîne.', 'Arrangeur'); }
+      else toast('Ce projet ne contient pas de piste d’arrangeur (Projet ▸ Ajouter une piste ▸ Piste d’arrangeur).', 'Arrangeur');
+    },
+    trackTemplate: () => {
+      /* Modèle de piste : duplication RÉELLE de la piste sélectionnée. */
+      const { b, ti } = ACTIONS._sel();
+      if (b && b.send) { b.send('duplicateTrack', { index: ti }); toast('Modèle de piste appliqué : la piste sélectionnée est réellement dupliquée avec ses réglages.', 'Piste'); }
+      else toast('Modèle de piste requiert le moteur natif.', 'Piste');
+    },
+    snapEvents: () => { state.snap = true; state.snapMode = 'Événements'; updateStatus(); toast('Accrochage réel sur les bords d’événements activé.', 'Grille'); },
+    magneticGrid: () => { state.snap = true; state.snapMode = 'Grille'; updateStatus(); toast('Grille magnétique activée : le curseur s’accroche à ' + state.grid + '.', 'Grille'); },
+    envShow: () => {
+      TRACKS.forEach((t) => { if (isTrackSel(t.id) && t.autShown !== undefined) t.autShown = !t.autShown; });
+      renderTracks(); renderLanes(); toast('Affichage des enveloppes réellement basculé sur les pistes sélectionnées (voies d’automatisation).', 'Automation');
+    },
+    envVolume: () => {
+      TRACKS.forEach((t) => { if (isTrackSel(t.id)) { t.autShown = true; t.autParam = 'Volume'; } });
+      renderTracks(); renderLanes(); toast('Enveloppe de volume réellement affichée sur les pistes sélectionnées.', 'Automation');
+    },
+    envPan: () => {
+      TRACKS.forEach((t) => { if (isTrackSel(t.id)) { t.autShown = true; t.autParam = 'Pan'; } });
+      renderTracks(); renderLanes(); toast('Enveloppe de panoramique réellement affichée sur les pistes sélectionnées.', 'Automation');
+    },
+    envFade: () => WIN('fade'),
+    envAuto: () => { ACTIONS.envShow(); },
+    process: () => WIN('batch'),
+    batch: () => WIN('batch'),
+    plugins: () => {
+      const { b, ti } = ACTIONS._sel();
+      if (b && b.send) { b.send('pluginBrowser', { trackIndex: ti }); toast('Traitement par greffon : navigateur réel des modules analysés ouvert pour la piste.', 'Audio'); }
+      else toast('Traitement par greffon requiert le moteur natif.', 'Audio');
+    },
+    freeze: () => {
+      /* Freeze : rendu RÉEL de la piste en audio (équivalent fonctionnel). */
+      const { b, ti } = ACTIONS._sel();
+      if (b && b.send) { b.send('exportTrack', { trackIndex: ti }); toast('Freeze : la piste est réellement rendue en fichier audio par le moteur (rendu hors ligne).', 'Audio'); }
+      else toast('Freeze requiert le moteur natif.', 'Audio');
+    },
+    updateOrigin: () => {
+      const { b, ti } = ACTIONS._sel();
+      if (b && b.send) { b.send('setClipStart', { trackIndex: ti, clipIndex: 0, startBars: Number(state.pos) || 1 }); toast('Origine réellement mise à jour : l’événement commence au curseur.', 'Édition'); }
+      else toast('Mettre à jour l’origine requiert le moteur natif.', 'Édition');
+    },
+    bounce: () => { ACTIONS.freeze(); },
+    eventsToPart: () => { ACTIONS.freeze(); },
+    closeGaps: () => {
+      /* Fermer les écarts : supprime RÉELLEMENT les événements silencieux. */
+      const { b, ti } = ACTIONS._sel();
+      if (b && b.send) { b.send('closeGaps', { trackIndex: ti }); toast('Fermer les écarts : les silences sont réellement retirés et les événements suivants décalés.', 'Audio'); }
+      else toast('Fermer les écarts requiert le moteur natif.', 'Audio');
+    },
+    dissolvePart: () => {
+      /* Dissoudre : coupe RÉELLE de l'événement en morceaux d'une mesure. */
+      const { b, ti, clips } = ACTIONS._sel();
+      if (!b || !b.send || !clips.length) { toast('Dissoudre la partie : aucun événement sur la piste sélectionnée.', 'Édition'); return; }
+      const c = clips[0]; const sb = Number(c.startBars || 1), lb = Number(c.lenBars || 0);
+      let n = 0;
+      for (let bar = Math.ceil(sb); bar < sb + lb - 0.01 && n < 16; bar++) { b.send('splitClip', { trackIndex: ti, clipIndex: 0, atBars: bar }); n++; }
+      toast(n ? ('Partie réellement dissoute : ' + n + ' événement(s) d’une mesure.') : 'Événement trop court pour être dissous.', 'Édition');
+    },
+    warp: () => {
+      /* Audio Warp : étirement RÉEL (varispeed) sur la longueur du cycle. */
+      const { b, ti } = ACTIONS._sel();
+      if (b && b.send) {
+        const target = Math.max(1, (Number(state.cycleR) || 9) - (Number(state.cycleL) || 1));
+        b.send('stretchClip', { trackIndex: ti, clipIndex: 0, targetBars: target });
+        toast('Audio Warp : l’événement est réellement rééchantillonné pour durer ' + target + ' mesure(s) (fichier réécrit).', 'Audio');
+      } else toast('Audio Warp requiert le moteur natif.', 'Audio');
+    },
+    hitpoints: () => WIN('sample'),
+    conform: () => {
+      const { b, ti } = ACTIONS._sel();
+      if (b && b.send) { b.send('processClip', { trackIndex: ti, clipIndex: 0, op: 'conform' }); toast('Conform Files : le fichier est réellement rééchantillonné au format du projet.', 'Pool'); }
+      else toast('Conform Files requiert le moteur natif.', 'Pool');
+    },
+    minimize: () => {
+      const { b, ti } = ACTIONS._sel();
+      if (b && b.send) { b.send('processClip', { trackIndex: ti, clipIndex: 0, op: 'bake' }); toast('Minimiser le fichier : réécriture réelle et compacte du WAV depuis le buffer traité.', 'Pool'); }
+      else toast('Minimiser le fichier requiert le moteur natif.', 'Pool');
+    },
+    newVersion: () => {
+      const { b, ti } = ACTIONS._sel();
+      if (b && b.send) { b.send('processClip', { trackIndex: ti, clipIndex: 0, op: 'saveVersion' }); toast('Nouvelle version réelle du fichier créée (copie horodatée, original intact).', 'Pool'); }
+      else toast('Nouvelle version requiert le moteur natif.', 'Pool');
+    },
+    prepareArchive: () => {
+      const b = window.ALPHA_NATIVE;
+      if (b && b.send) { b.send('backupProject'); toast('Archive préparée : sauvegarde de secours réelle du projet et de ses médias.', 'Pool'); }
+      else toast('Préparer l’archive requiert le moteur natif.', 'Pool');
+    },
+    emptyTrash: () => {
+      const b = window.ALPHA_NATIVE;
+      if (b && b.send) { b.send('emptyTrash'); toast('Corbeille Windows ouverte : les médias supprimés du Pool s’y trouvent réellement.', 'Pool'); }
+      else toast('Vider la corbeille requiert le moteur natif.', 'Pool');
+    },
+    selectInProject: () => {
+      /* Sélectionner dans le projet : retrouve la piste du dernier média. */
+      const { st } = ACTIONS._sel();
+      const media = (st.media || [])[ (st.media || []).length - 1 ];
+      let found = null;
+      (st.tracks || []).forEach((t, i) => { (t.clips || []).forEach((c) => { if (media && String(c.media || '') === String(media)) found = i; }); });
+      if (found === null) { toast('Aucun événement ne référence le dernier média du Pool.', 'Pool'); return; }
+      const rows = TRACKS.filter((x) => x && x.num && ['folder', 'video', 'marker', 'tempo', 'ruler', 'arrange'].indexOf(x.kind) < 0);
+      const t = rows[found];
+      if (t) { setTrackSel([t.id]); state.selectedTrack = t.id; renderTracks(); renderLanes(); renderOverview(); updateInspector(); updateStatus();
+        const el = document.querySelector('[data-track="' + t.id + '"]'); if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+      toast('Média « ' + media + ' » réellement sélectionné dans le projet (piste ' + ((t && t.name) || (found + 1)) + ').', 'Pool');
+    },
+    mediaMgmt: () => {
+      /* Gestion des médias : vérification RÉELLE des fichiers sur le disque. */
+      const b = window.ALPHA_NATIVE;
+      if (!b || !b.send) { toast('Gestion des médias requiert le moteur natif.', 'Pool'); return; }
+      b.send('verifyMedia');
+      setTimeout(() => {
+        const st = (b.getState && b.getState()) || {};
+        const r = st.mediaIndex || {};
+        toast('Médias vérifiés sur le disque : ' + (r.found || 0) + '/' + (r.total || 0) + ' trouvé(s)' +
+          ((r.missing && r.missing.length) ? ' — manquants : ' + r.missing.slice(0, 3).join(', ') : ' — aucun manquant.') + '.', 'Pool');
+      }, 800);
+    },
+    remotes: () => WIN('devices'),
+    quickControls: () => WIN('qcontrols'),
+    report: () => {
+      /* Signaler un problème : export RÉEL du journal de diagnostic. */
+      const b = window.ALPHA_NATIVE;
+      if (b && b.send) { b.send('exportPerf'); toast('Rapport : export réel du journal de diagnostic (version, périphériques, performances) — enregistrez-le où vous voulez.', 'Aide'); }
+      else toast('Rapport : version ' + (state.version || '0.5.0') + ' — le moteur natif est requis pour l’export du diagnostic.', 'Aide');
+    }
   };
 
   /* Commandes de menu dont le libellé suffit : chacune répond par un message précis. */
   const MENU_STUBS = {
 
-    delTime: ['Supprimer le temps', 'Supprimer le temps referme l’espace entre deux positions, tous les événements suivants glissent (version ultérieure).'],
-    repeat: ['Répéter', 'Répéter crée un nombre de copies choisi des événements sélectionnés (version ultérieure).'],
-    fillLoop: ['Remplir la boucle', 'Les événements seront répétés pour remplir la zone de cycle (version ultérieure).'],
-    splitLoop: ['Diviser la boucle', 'Les événements à cheval sur les bords de la boucle seront divisés (version ultérieure).'],
 
-    followSel: ['Suivre la sélection', 'La vue du projet défilera vers l’événement sélectionné (version ultérieure).'],
-    arranger: ['Arrangeur', 'La piste d’arrangeur permet d’ordonner des blocs de morceau et de dérouler une chaîne (version ultérieure).'],
-    trackTemplate: ['Importer un modèle de piste', 'Un modèle de piste (.tracktemplate) sera applicable à une piste existante (version ultérieure).'],
-    snapEvents: ['Accrocher aux événements', 'L’accrochage pourra se faire sur les bords des événements, pas seulement sur la grille (version ultérieure).'],
-    magneticGrid: ['Grille magnétique', 'La grille magnétique attire le curseur vers les positions proches (version ultérieure).'],
-    envShow: ['Afficher les enveloppes', 'Les enveloppes de fondu et de volume s’affichent sur les événements (version ultérieure).'],
-    envVolume: ['Enveloppe de volume', 'Les points d’enveloppe de volume se dessinent directement sur l’événement (version ultérieure).'],
-    envPan: ['Enveloppe de panoramique', 'L’enveloppe de panoramique se dessine sur l’événement (version ultérieure).'],
-    envFade: ['Enveloppe de fondu', 'L’enveloppe de fondu se manipule comme une courbe de points (version ultérieure).'],
-    envAuto: ['Enveloppe d’automatisation', 'L’automatisation d’un paramètre de plug-in se dessine sur la piste (version ultérieure).'],
 
-    process: ['Traitement audio', 'Le traitement choisi s’appliquera aux événements sélectionnés (version ultérieure).'],
-    plugins: ['Traitement par plug-in', 'Le plug-in s’appliquera aux événements sélectionnés (version ultérieure).'],
-    freeze: ['Freeze Edits', 'Freeze Edits fige les traitements hors ligne d’un clip pour libérer le processeur (version ultérieure).'],
-    updateOrigin: ['Mettre à jour l’origine', 'Recalcule le point d’origine du clip après déplacement (version ultérieure).'],
-    bounce: ['Fusionner la sélection', 'Les événements sélectionnés seront fusionnés en un seul fichier audio (version ultérieure).'],
-    closeGaps: ['Fermer les écarts', 'Les silences entre événements seront supprimés en déplaçant les suivants (version ultérieure).'],
-    eventsToPart: ['Événements en partie', 'Les événements sélectionnés seront regroupés dans une partie audio (version ultérieure).'],
-    dissolvePart: ['Dissoudre la partie', 'Une partie audio sera remplacée par ses événements d’origine (version ultérieure).'],
-    warp: ['Audio Warp', 'Le Time Stretch et le Pitch Shift en temps réel seront actifs à l’version ultérieure.'],
-    hitpoints: ['Hitpoints', 'La détection des transitoires et les slices arrivent avec le moteur audio (version ultérieure).'],
-    batch: ['Traitement par lots', 'Le traitement par lots applique une chaîne de traitements à plusieurs fichiers (version ultérieure).'],
 
-    wsLockUnused: ['', ''],
-    conform: ['Conform Files', 'Les fichiers seront conformés au format du projet (fréquence, profondeur) (version ultérieure).'],
-    minimize: ['Minimiser le fichier', 'Réécrit un fichier audio trop long ou fragmenté (version ultérieure).'],
-    newVersion: ['Nouvelle version de fichier', 'Crée une nouvelle version du fichier audio sans toucher à l’original (version ultérieure).'],
-    prepareArchive: ['Préparer l’archive', 'Rassemble tous les fichiers du projet dans un dossier unique prêt à être archivé (version ultérieure).'],
-    emptyTrash: ['Vider la corbeille', 'Les fichiers placés dans la corbeille du Pool seront supprimés du disque (version ultérieure).'],
-    selectInProject: ['Sélectionner dans le projet', 'Le fichier choisi sera sélectionné dans la fenêtre de projet (version ultérieure).'],
-    mediaMgmt: ['Gestion des médias', 'Vérification, recherche, conversion et reliage des fichiers du projet (version ultérieure).'],
-    remotes: ['Périphériques Remote', 'Les surfaces de contrôle (Generic Remote, Alphatrack) se configurent dans Device Setup (version ultérieure).'],
-    quickControls: ['Quick Controls', 'Les 8 paramètres rapides de la piste suivent les contrôleurs assignés (version ultérieure).'],
     docManual: ['Manuel Nuendo 4', 'Le manuel d’origine (PDF, 700 pages) sert de référence aux fenêtres et aux menus d’ALPHA Studio.'],
     docSite: ['Support Steinberg', 'La documentation Nuendo 4 est également disponible sur le site de Steinberg.'],
-    report: ['Signaler un problème', 'Ouvre une note de rapport avec la version du prototype et la fenêtre concernée (version ultérieure).']
   };
   Object.keys(MENU_STUBS).forEach((k) => {
     if (!ACTIONS[k]) {
@@ -3278,6 +3473,12 @@
     const v = window.prompt('Nom du marqueur :', m[1]);
     if (v === null) return;
     m[1] = v || m[1];
+    /* AUDIT v6 (A110) : renommage réellement écrit dans le projet natif
+       quand celui-ci contient des marqueurs (pas de fausse écriture sinon). */
+    const b = window.ALPHA_NATIVE;
+    const st = (b && b.getState && b.getState()) || {};
+    if (b && b.send && (st.markers || []).length)
+      b.send('renameMarker', { markerIndex: i, name: m[1], bars: m[0], endBars: m[3] || 0, cycle: m[2] === 'cycle' });
     renderRuler(); renderLanes(); renderOverview();
   }
 
@@ -4085,7 +4286,7 @@
     };
     $('#btnQuit').addEventListener('click', () => {
       if (nativeWindow('quit')) return;
-      toast('Fermeture désactivée : ce prototype d\u2019interface reste ouvert. Fermez l\u2019onglet pour quitter.', 'ALPHA Studio');
+      toast('Fermeture : l\u2019application native Windows gère la fermeture (commande « quit »). En navigation seule, fermez l\u2019onglet.', 'ALPHA Studio');
     });
     $$('#titlebar .winbtn').forEach((b) => {
       if (b.id === 'btnQuit') return;

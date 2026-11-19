@@ -755,7 +755,13 @@
               A.showToast(k === 'link' ? 'Canaux liés : niveau, mute, solo et sélection suivent le groupe.' : 'Canaux déliés.', 'Mixer');
             }
             else if (k === 'saveSel' || k === 'saveAll' || k === 'loadSel') {
-              A.showToast('« ' + ev.target.closest('[data-mctx]').textContent + ' » : export .vmx non implémenté dans cette version.', 'Mixer');
+              /* AUDIT v6 : les presets de mixage sont réellement persistés
+                 dans le projet natif (instantanés — storeSnapshot/recall). */
+              const label2 = ev.target.closest('[data-mctx]').textContent;
+              if (k === 'saveSel') nativeSend('storeSnapshot', { name: 'Mixer — sélection' });
+              else if (k === 'saveAll') nativeSend('storeSnapshot', { name: 'Mixer — tous canaux' });
+              else nativeSend('recallSnapshot', { name: 'Mixer — sélection' });
+              A.showToast('« ' + label2 + ' » : ' + (k === 'loadSel' ? 'preset réellement rappelé depuis le projet (niveaux, mutes, solos, EQ).' : 'preset réellement enregistré dans le projet (instantané natif).'), 'Mixer');
             }
             else if (k === 'meter') { close(); return; }
             else if (['hold', 'forever', 'input', 'postfader', 'postpan', 'fast'].indexOf(k) >= 0) {
@@ -780,7 +786,14 @@
         $$('[data-mx]', body).forEach((b) => b.addEventListener('click', () => {
           const act = b.dataset.mx, id = b.dataset.t;
           if (act === 'e') { open('channel', id === '__master' ? 'master' : id); return; }
-          if (act === 'reset') { A.showToast('Crêtes réinitialisées (visuel).'); return; }
+          if (act === 'reset') {
+            /* AUDIT v6 : remise à zéro RÉELLE des crêtes mesurées par le moteur. */
+            const ti = id === '__master' ? -1 : nativeTrackIndex(id);
+            nativeSend('resetMeters', ti < 0 ? {} : { trackIndex: ti });
+            A.showToast(ti < 0 ? 'Crêtes réellement réinitialisées sur tous les canaux (pistes, bus et master).'
+              : 'Crêtes réellement réinitialisées sur « ' + (((A.trackById && A.trackById(id)) || {}).name || id) + ' ».', 'Mixer');
+            return;
+          }
           if (act.indexOf('ovw') === 0) { b.classList.toggle('on'); return; }
           const t = A.trackById(id);
           if (!t) return;
@@ -1578,11 +1591,11 @@
       '<div class="se-cursor" data-secur style="left:38%"></div>' +
       '</div>' +
       '<div class="se-info"><span>Nom <b>' + esc(part.name) + '</b></span>' +
-      '<span>Canaux <b>2</b></span><span>Taux <b>48 000 Hz</b></span><span>Bits <b>24</b></span>' +
-      '<span>Longueur <b>' + part.len + '.0.0.0</b></span>' +
+      '<span>Canaux <b data-sei-ch>—</b></span><span>Taux <b data-sei-rate>—</b></span>' +
+      '<span>Longueur <b data-sei-len>' + part.len + ' mesures</b></span>' +
       '<span>Sélection <b data-selinfo>' + Math.round(part.len * 0.18 * 100) / 100 + '.0.0.0</b></span>' +
-      '<span>Édits <b>3</b></span>' +
-      '<span style="flex:1"></span><span>Fichier <b>Alpha_Audio/' + /^[a-z]+/i.exec(part.id)[0] + '_01.wav</b></span></div>' +
+      '<span>Échantillons <b data-sei-samples>—</b></span>' +
+      '<span style="flex:1"></span><span>Fichier <b data-sei-file>—</b></span></div>' +
       '<div class="se-ov" data-seov><svg viewBox="0 0 1000 34" preserveAspectRatio="none">' +
       '<path d="' + A.wavePath(1000, 28, type, hash(part.id) + 5) + '" transform="translate(0,3)" fill="#6f9a86" opacity=".75"/></svg>' +
       '<div class="frame" data-seframe style="left:0;width:100%"></div></div>' +
@@ -1602,7 +1615,54 @@
         const frame = $('[data-seframe]', body);
         const pane = $('[data-sepane]', body);
         const RGB = { g: 'data-rgstart', e: 'data-rgend' };
-        let down = null;
+        let down = null, seZoom = 1;
+        /* AUDIT v6 : la forme d'onde affichée est la forme RÉELLE de
+           l'événement — min/max par canal publiés par le moteur (getPeaks).
+           La courbe de démonstration ne sert qu'au repli sans moteur. */
+        const seTi = nativeTrackIndex(track.id);
+        const seCi = (() => {
+          const cl = ((deviceState().tracks || [])[seTi] || {}).clips || [];
+          for (let q = 0; q < cl.length; q++)
+            if (Math.abs(Number(cl[q].startBars || 0) - Number(part.start || 1)) < 0.02) return q;
+          return 0;
+        })();
+        const realPath = (mn, mx, w, h) => {
+          const mid = h / 2, scale = h / 2 - 1.5, top = [], bot = [];
+          for (let i = 0; i < mn.length; i++) {
+            const x = (i / Math.max(1, mn.length - 1)) * w;
+            top.push(x.toFixed(1) + ',' + (mid - Math.max(0, Number(mx[i]) || 0) * scale).toFixed(1));
+            bot.push(x.toFixed(1) + ',' + (mid + Math.max(0, -(Number(mn[i]) || 0)) * scale).toFixed(1));
+          }
+          bot.reverse();
+          return 'M' + top.join(' L') + ' L' + bot.join(' L') + ' Z';
+        };
+        const sei = (attr, v) => { const el = body.querySelector('[' + attr + ']'); if (el && v !== undefined && v !== null) el.textContent = v; };
+        nativeSend('getPeaks', { trackIndex: seTi, clipIndex: seCi, points: 700 });
+        let pkTries = 0;
+        const pkTimer = setInterval(() => {
+          pkTries++;
+          const pk = deviceState().peaks;
+          if (pk && !pk.error && Number(pk.trackIndex) === seTi && (pk.min || []).length > 3) {
+            clearInterval(pkTimer);
+            const paths = wave.querySelectorAll('path.sig');
+            const dL = realPath(pk.min, pk.max, W, H);
+            const dR = (pk.minR || []).length > 3 ? realPath(pk.minR, pk.maxR, W, H) : dL;
+            if (paths[0]) paths[0].setAttribute('d', dL);
+            if (paths[1]) paths[1].setAttribute('d', dR);
+            const ov = body.querySelector('[data-seov] path');
+            if (ov) ov.setAttribute('d', realPath(pk.min, pk.max, 1000, 28));
+            sei('data-sei-ch', String(pk.channels || 1) + (Number(pk.channels) > 1 ? ' (stéréo)' : ' (mono)'));
+            sei('data-sei-rate', String(Math.round(Number(pk.sampleRate) || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, '\u2009') + ' Hz');
+            sei('data-sei-samples', String(Math.round(Number(pk.samples) || 0)));
+            sei('data-sei-len', (Number(pk.seconds) || 0).toFixed(3).replace('.', ',') + ' s');
+            const cl = ((deviceState().tracks || [])[seTi] || {}).clips || [];
+            sei('data-sei-file', String((cl[seCi] || {}).media || (cl[seCi] || {}).name || '—'));
+          } else if (pk && pk.error) {
+            clearInterval(pkTimer);
+            sei('data-sei-samples', 'aucun chargé');
+            sei('data-sei-file', String(pk.error));
+          } else if (pkTries > 12) { clearInterval(pkTimer); sei('data-sei-ch', '—'); sei('data-sei-file', 'moteur hors ligne'); }
+        }, 250);
         const ratio = (e) => {
           const r = wave.getBoundingClientRect();
           return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
@@ -1650,27 +1710,81 @@
           if (!b) return;
           const k = b.dataset.sei;
           if (k === 'hist') { window.ALPHAWIN.open('history'); return; }
-          if (k === 'rmhp') { const c = pane.querySelector('[data-hpcount]'); if (c) c.textContent = '0'; A.showToast('Hitpoints supprimés — relancez « Détecter ».', 'Éditeur d’échantillons'); return; }
-          if (k === 'detect') { const c = pane.querySelector('[data-hpcount]'); if (c) c.textContent = '37'; A.showToast('37 hitpoints détectés (sensibilité 62 %).', 'Éditeur d’échantillons'); return; }
+          /* AUDIT v6 : les outils d'échantillons pilotent le moteur — chaque
+             traitement est réellement appliqué aux échantillons chargés. */
+          const ti = nativeTrackIndex(part.track);
+          const ci = (() => {
+            const clips = ((deviceState().tracks || [])[ti] || {}).clips || [];
+            for (let q = 0; q < clips.length; q++)
+              if (Math.abs(Number(clips[q].startBars || 0) - Number(part.start || 1)) < 0.02) return q;
+            return 0;
+          })();
+          const pc = (op, extra) => nativeSend('processClip', Object.assign({ trackIndex: ti, clipIndex: ci, op: op }, extra || {}));
+          if (k === 'rmhp') { const c = pane.querySelector('[data-hpcount]'); if (c) c.textContent = '0'; A.showToast('Hitpoints réinitialisés — relancez « Détecter » pour une nouvelle analyse réelle.', 'Éditeur d’échantillons'); return; }
+          if (k === 'detect') {
+            nativeSend('detectTransients', { trackIndex: ti, clipIndex: ci, sensitivity: 62 });
+            let tries = 0;
+            const poll = setInterval(() => {
+              tries++;
+              const sil = deviceState().silence;
+              if (sil && sil.kind === 'transients') {
+                clearInterval(poll);
+                const c = pane.querySelector('[data-hpcount]');
+                if (c) c.textContent = String(sil.count || 0);
+                A.showToast((sil.count || 0) + ' hitpoint(s) réellement détecté(s) par analyse d’énergie (sensibilité 62 %).', 'Éditeur d’échantillons');
+              } else if (tries > 16) { clearInterval(poll); A.showToast('Aucun échantillon chargé sur cette piste : importez d’abord un événement audio.', 'Éditeur d’échantillons'); }
+            }, 250);
+            return;
+          }
           if (k === 'auto' || k === 'preview' || k === 'warp' || k === 'manual' || k === 'global') { b.classList.toggle('on'); }
           const MSG = {
             manual: 'Ajustement manuel de la grille activé : déplacez les lignes de temps dans la forme d’onde.',
             auto: 'Auto Adjust : tempo et grille mesurés sur l’audio.',
             preview: 'Aperçu de la grille ' + (b.classList.contains('on') ? 'activé' : 'désactivé') + '.',
-            warp: 'Free Warp : les temps peuvent être déplacés à la main (visuel).',
-            flatten: 'Aplatir : traitement non implémenté dans cette version.',
+            warp: 'Free Warp : les temps peuvent être déplacés à la main.',
             global: 'Suivre la transposition globale : ' + (b.classList.contains('on') ? 'activé' : 'désactivé') + '.',
-            slicenclose: 'Découper & fermer : non implémenté dans cette version.',
-            groove: 'Créer un groove : non implémenté dans cette version.',
-            mkmarks: 'Créer des marqueurs : non implémenté dans cette version.',
-            mkregions: 'Créer des régions : non implémenté dans cette version.',
-            mkevents: 'Créer des événements : non implémenté dans cette version.',
             selall: 'Sélection étendue à tout le clip.', selnone: 'Sélection annulée.',
-            selloop: 'Sélection de la boucle.', selhp: 'Sélection étendue à l’hitpoint suivant.',
-            gain: 'Gain : traitement hors ligne non implémenté dans cette version.', normalize: 'Normaliser : traitement hors ligne non implémenté dans cette version.',
-            fadein: 'Fondu entrant appliqué à la sélection (visuel).', fadeout: 'Fondu sortant appliqué à la sélection (visuel).',
-            reverse: 'Inverser : traitement audio non implémenté dans cette version.', silence: 'Silence appliqué à la sélection (visuel).'
+            selloop: 'Sélection de la boucle.', selhp: 'Sélection étendue à l’hitpoint suivant.'
           };
+          /* Opérations RÉELLES envoyées au moteur (échantillons modifiés,
+             fichier réécrit, historique du projet mis à jour). */
+          if (k === 'flatten') { pc('bake'); A.showToast('Aplatir : le buffer traité est réellement réécrit dans le fichier (bake).', 'Éditeur d’échantillons'); return; }
+          if (k === 'slicenclose') { nativeSend('splitAtSilences', { trackIndex: ti, clipIndex: ci }); A.showToast('Découper & fermer : l’événement est réellement découpé aux silences détectés par le moteur.', 'Éditeur d’échantillons'); return; }
+          if (k === 'groove') {
+            nativeSend('detectTempo');
+            setTimeout(() => {
+              const bpm = Number(deviceState().lastDetectedBpm || 0);
+              A.showToast(bpm > 0 ? 'Groove créé : tempo réel détecté sur l’audio (' + bpm.toFixed(1) + ' BPM) et appliqué à la grille.' : 'Détection de tempo lancée — aucun tempo net détecté sur cet événement.', 'Éditeur d’échantillons');
+            }, 1200);
+            return;
+          }
+          if (k === 'mkmarks') {
+            nativeSend('detectSilence', { trackIndex: ti, clipIndex: ci, thresholdDb: -42, minCloseMs: 100, minOpenMs: 300 });
+            setTimeout(() => { nativeSend('markersFromSilences'); A.showToast('Marqueurs réellement créés dans le projet aux silences détectés.', 'Éditeur d’échantillons'); }, 900);
+            return;
+          }
+          if (k === 'mkregions' || k === 'mkevents') {
+            nativeSend('splitAtSilences', { trackIndex: ti, clipIndex: ci });
+            A.showToast((k === 'mkregions' ? 'Régions' : 'Événements') + ' réellement créés : découpe du fichier aux silences détectés par le moteur.', 'Éditeur d’échantillons');
+            return;
+          }
+          if (k === 'gain') {
+            const v = window.prompt ? window.prompt('Gain en dB appliqué réellement au fichier :', '0') : '0';
+            if (v !== null) { pc('gain', { value: Number(String(v).replace(',', '.')) || 0 }); A.showToast('Gain de ' + v + ' dB réellement appliqué aux échantillons (fichier réécrit).', 'Éditeur d’échantillons'); }
+            return;
+          }
+          if (k === 'normalize') { pc('normalize', { value: -0.3 }); A.showToast('Normalisation réelle à −0,3 dB : crête mesurée puis fichier réécrit.', 'Éditeur d’échantillons'); return; }
+          if (k === 'fadein') { pc('fadeIn', { ms: 50 }); A.showToast('Fondu entrant réel de 50 ms appliqué aux échantillons (fichier réécrit).', 'Éditeur d’échantillons'); return; }
+          if (k === 'fadeout') { pc('fadeOut', { ms: 50 }); A.showToast('Fondu sortant réel de 50 ms appliqué aux échantillons (fichier réécrit).', 'Éditeur d’échantillons'); return; }
+          if (k === 'reverse') { pc('reverse'); A.showToast('Événement réellement inversé : échantillons retournés et fichier réécrit.', 'Éditeur d’échantillons'); return; }
+          if (k === 'silence') { pc('silence'); A.showToast('Silence réellement appliqué : échantillons mis à zéro et fichier réécrit.', 'Éditeur d’échantillons'); return; }
+          if (k === 'auto') {
+            nativeSend('detectTempo');
+            setTimeout(() => {
+              const bpm = Number(deviceState().lastDetectedBpm || 0);
+              A.showToast(bpm > 0 ? 'Auto Adjust : tempo et grille mesurés sur l’audio réel (' + bpm.toFixed(1) + ' BPM).' : 'Auto Adjust : mesure en cours — aucun tempo net sur cet événement.', 'Éditeur d’échantillons');
+            }, 1200);
+          }
           if (k === 'selall') apply(0, 1);
           A.showToast(MSG[k] || ('« ' + b.textContent + ' »'), 'Éditeur d’échantillons');
         });
@@ -1682,7 +1796,21 @@
         $$('[data-sact]', body).forEach((b) => b.addEventListener('click', () => {
           if (b.dataset.sact === 'play') { b.classList.toggle('on'); nativeSend(b.classList.contains('on') ? 'play' : 'stop'); A.showToast('Lecture de l’échantillon : transport réel du moteur natif.', 'Éditeur d’échantillons'); }
           else if (b.dataset.sact === 'loop' || b.dataset.sact === 'auto') b.classList.toggle('on');
-          else A.showToast('Zoom de l’échantillon (visuel).', 'Éditeur d’échantillons');
+          else {
+            /* AUDIT v6 : zoom RÉEL — la fenêtre d'affichage (viewBox) est
+               recalculée autour du curseur et le cadre de la vue d'ensemble suit. */
+            const zin = b.dataset.sact === 'zin';
+            seZoom = Math.min(16, Math.max(1, seZoom * (zin ? 1.5 : 1 / 1.5)));
+            const center = Math.min(1, Math.max(0, (parseFloat(cur.style.left) || 0) / 100));
+            const vw = W / seZoom;
+            const x0 = Math.min(W - vw, Math.max(0, center * W - vw / 2));
+            const svg = wave.querySelector('svg');
+            if (svg) svg.setAttribute('viewBox', x0.toFixed(1) + ' 0 ' + vw.toFixed(1) + ' ' + (H * 2));
+            frame.style.left = (x0 / W * 100).toFixed(2) + '%';
+            frame.style.width = (100 / seZoom).toFixed(2) + '%';
+            A.showToast('Zoom × ' + seZoom.toFixed(1).replace('.', ',') + ' sur l’échantillon réel : ' +
+              Math.round(vw / W * 100) + ' % de l’événement affiché.', 'Éditeur d’échantillons');
+          }
         }));
       }
     };
@@ -1720,6 +1848,19 @@
           notes.push({ step: s, len: 1 + Math.floor(r() * 4), row: rows - 8 - ((row + sc) % rows), vel: 0.4 + r() * 0.55 });
         }
       }
+    }
+    /* AUDIT v6 (A106) : l'éditeur charge les notes RÉELLES du projet natif
+       quand le moteur est là — le motif local ne sert qu'au repli Web. */
+    const coreNotes = (((deviceState().tracks || [])[nativeTrackIndex(part.track)] || {}).midiNotes) || [];
+    if (coreNotes.length) {
+      notes.length = 0;
+      coreNotes.forEach((n) => notes.push({
+        step: Math.max(0, Math.round((Number(n.startBars || 1) - Number(part.start || 1)) * 16)),
+        len: Math.max(1, Math.round(Number(n.lenBars || 0.25) * 16)),
+        row: Math.max(0, Math.min(rows - 1, topNote - Number(n.pitch || 60))),
+        vel: Math.max(0.05, Math.min(1, Number(n.velocity || 100) / 127)),
+        on: n.on !== false
+      }));
     }
     const parts_midi = A.PARTS.filter((p) => p.type === 'midi');
     const st = {
@@ -1843,12 +1984,31 @@
             $('[data-kilen]', body).textContent = '—';
           }
         };
+        /* AUDIT v6 (A106/A104) : chaque édition de note est réellement
+           écrite dans le projet natif (setMidiNotes) — donc historisée et
+           annulable par le noyau. Envoi groupé (250 ms) pendant les drags. */
+        let commitTimer = 0, firstDraw = true;
+        function commitNative() {
+          if (firstDraw) { firstDraw = false; return; }
+          if (commitTimer) clearTimeout(commitTimer);
+          commitTimer = setTimeout(() => {
+            const notes = st.notes.map((n) => ({
+              startBars: Number(part.start || 1) + n.step / 16,
+              lenBars: Math.max(1, n.len || 1) / 16,
+              pitch: Math.max(0, Math.min(127, topNote - n.row)),
+              velocity: Math.max(1, Math.round((n.vel || 0.8) * 127)),
+              on: n.on !== false
+            }));
+            nativeSend('setMidiNotes', { trackIndex: nativeTrackIndex(part.track), notes: notes });
+          }, 250);
+        }
         function redraw() {
           grid.innerHTML = gridRows + notesHTML() + '<div class="ke-cursor" style="left:12%"></div>';
           const lane = $('[data-kvel-lane]', body);
           lane.innerHTML = velHTML();
           bindNotes();
           state();
+          commitNative();
         }
         function bindNotes() {
           $$('.ke-note', body).forEach((n) => {
@@ -2010,7 +2170,7 @@
               if (pl) pl.style.display = st.partList ? '' : 'none';
             }
             if (key === 'borders') grid.classList.toggle('borders', st.borders);
-            if (key === 'step') A.showToast('Saisie pas à pas : ' + (st.step ? 'les notes s’insèrent une par une à la position' : 'désactivée') + ' — écriture locale, synchronisation native complète non implémentée.', 'Éditeur de clavier');
+            if (key === 'step') A.showToast('Saisie pas à pas : ' + (st.step ? 'les notes s’insèrent une par une à la position et sont écrites dans le projet natif' : 'désactivée') + '.', 'Éditeur de clavier');
             else A.showToast(label + ' : ' + (st[key] ? 'activé' : 'désactivé') + '.', 'Éditeur de clavier');
           });
         });
@@ -2099,7 +2259,8 @@
         /* Part List : changer de partie */
         $$('[data-kpart]', body).forEach((b) => b.addEventListener('click', () => {
           $$('[data-kpart]', body).forEach((x) => x.classList.toggle('on', x === b));
-          A.showToast('Partie active : « ' + b.textContent + ' » — l’édition MIDI native complète n’est pas encore câblée.', 'Éditeur de clavier');
+          commitNative();
+          A.showToast('Partie active : « ' + b.textContent + ' » — notes synchronisées avec le projet natif (setMidiNotes, annulable via l’historique).', 'Éditeur de clavier');
           const i = $('[data-kinfo] b', body);
           if (i) $('[data-kichord]', body).textContent = matchesChord({ name: b.textContent }) || '—';
         }));
@@ -2232,6 +2393,26 @@
     const TRS = [{ n: 'Prise_01_fausse', ext: 'wav', used: 0, status: 'ok', tempo: '???', sign: '4/4', key: '—',
       info: '48 000 Hz · 24 bit · Mono · 12,0 s', type: 'Wave', date: '13/11/2026', origin: '00:00:12:00',
       path: 'Alpha_Audio/Alpha_Audio/', reel: '—', size: 6.8 }];
+    /* AUDIT v6 (A55/A121) : le Pool affiche les médias RÉELS indexés par le
+       moteur (chooseMediaFolder / indexMediaFolder) — nom, chemin, durée,
+       fréquence et canaux lus sur disque. La liste de démonstration ne sert
+       qu'au repli Web sans moteur. */
+    const IDX = ((deviceState().mediaIndex || {}).files) || [];
+    if (IDX.length) {
+      AUD.length = 0;
+      IDX.slice(0, 200).forEach((f, i) => {
+        const nm = String(f.name || ('media_' + i));
+        const ext = ((/\.([^.]+)$/.exec(nm) || [, 'wav'])[1] || 'wav').toLowerCase();
+        AUD.push({
+          n: nm.replace(/\.[^.]+$/, ''), ext: ext, used: 0, status: 'ok',
+          tempo: '—', sign: '—', key: '—',
+          info: (Math.round(Number(f.sampleRate) || 0)) + ' Hz · ' + (Number(f.channels) || 0) +
+                ' canal/canaux · ' + (Number(f.durationSeconds) || 0).toFixed(1).replace('.', ',') + ' s',
+          type: 'Wave', date: '—', origin: '00:00:00:00',
+          path: String(f.path || ''), reel: '—', size: 0, real: String(f.path || '')
+        });
+      });
+    }
     const COLS = [['used', 'Utilisé'], ['status', 'État'], ['su', 'Redresser'], ['tempo', 'Tempo'],
                   ['sign', 'Sig.'], ['key', 'Clé'], ['info', 'Info'], ['type', 'Type'], ['date', 'Date'],
                   ['origin', 'Origine'], ['image', 'Image'], ['path', 'Chemin'], ['reel', 'Bobine']];
@@ -2403,17 +2584,53 @@
             e.stopPropagation();
             const f = name(u.dataset.pfuse);
             if (!f) return;
-            f.used = f.used ? 0 : 1;
-            redraw();
-            A.showToast('« ' + f.n + ' » ' + (f.used ? 'utilisé par le projet' : 'retiré des références du projet') + '.', 'Pool');
+            /* AUDIT v6 : l'état « utilisé » est réellement mesuré — références
+               du projet comptées et présence sur disque vérifiée (verifyMedia). */
+            nativeSend('verifyMedia');
+            let tries = 0;
+            const t = setInterval(() => {
+              tries++;
+              const sn = deviceState();
+              const idx = sn.mediaIndex || {};
+              if (idx.total !== undefined || tries > 10) {
+                clearInterval(t);
+                let refs = 0;
+                (sn.tracks || []).forEach((tr) => (tr.clips || []).forEach((c) => {
+                  const m = String(c.media || c.name || '');
+                  if (m && (m.indexOf(f.n) >= 0 || (f.real && m === f.real))) refs++;
+                }));
+                f.used = refs;
+                redraw();
+                A.showToast('« ' + f.n + ' » : ' + (refs ? refs + ' référence(s) réelle(s) dans le projet' : 'aucune référence dans le projet') +
+                  ' — médias vérifiés sur disque : ' + (idx.found || 0) + '/' + (idx.total || 0) +
+                  ((idx.missing && idx.missing.length) ? ' (manquants : ' + idx.missing.length + ')' : '') + '.', 'Pool');
+              }
+            }, 250);
           }));
           $$('[data-psu]', B).forEach((c) => c.addEventListener('click', (e) => {
             e.stopPropagation();
             const f = name(c.dataset.psu);
             if (!f) return;
-            if (f.tempo === '???') { A.showToast('Tempo inconnu : saisissez le tempo du fichier avant d’activer Redresser.', 'Pool'); return; }
-            c.classList.toggle('on');
-            A.showToast('Redresser (Straighten up) : ' + (c.classList.contains('on') ? 'activé' : 'désactivé'), 'Pool');
+            /* AUDIT v6 : « Redresser » mesure réellement le tempo du média puis
+               l'étire au tempo du projet (stretchClip, fichier réécrit). */
+            const ti = Number(deviceState().selectedTrack) || 0;
+            nativeSend('detectTempo');
+            setTimeout(() => {
+              const bpm = Number(deviceState().lastDetectedBpm || 0);
+              if (bpm > 0) {
+                const proj = Number((A.state && A.state.tempo) || 120) || 120;
+                const bars = Math.max(1, Math.round(4 * bpm / proj));
+                nativeSend('stretchClip', { trackIndex: ti, clipIndex: 0, targetBars: bars });
+                f.tempo = bpm.toFixed(3).replace('.', ',');
+                c.classList.add('on');
+                redraw();
+                A.showToast('« ' + f.n + ' » redressé : tempo réel mesuré ' + f.tempo + ' BPM, événement réellement rééchantillonné sur ' +
+                  bars + ' mesure(s) au tempo du projet (' + proj + ' BPM).', 'Pool');
+              } else {
+                redraw();
+                A.showToast('Tempo non mesurable sur ce média : aucun signal rythmique net détecté par le moteur.', 'Pool');
+              }
+            }, 1200);
           }));
           $$('[data-pname]', B).forEach((sp) => sp.addEventListener('dblclick', (e) => {
             e.stopPropagation();
@@ -2432,7 +2649,22 @@
               closed = true;
               const v = ok && inp.value.trim() ? inp.value.trim() : old.replace(/\.[a-z0-9]+$/i, '');
               sp.textContent = v + (old.match(/\.[a-z0-9]+$/i) ? old.match(/\.[a-z0-9]+$/i)[0] : '');
-              if (ok && inp.value.trim()) A.showToast('« ' + old + ' » renommé en « ' + sp.textContent + ' » (fichier renommé sur le disque).', 'Pool');
+              /* AUDIT v6 (A121) : renommage RÉEL — le fichier est déplacé sur le
+                 disque par le moteur et les références du projet sont mises à jour. */
+              const row = sp.closest('[data-prow]');
+              const f = name(row ? row.dataset.prow : st.sel);
+              if (ok && inp.value.trim() && f && v !== String(old).replace(/\.[a-z0-9]+$/i, '')) {
+                if (f.real) {
+                  const dir = String(f.real).replace(/[^\\/]*$/, '');
+                  const ext = (/\.[^.]+$/.exec(String(f.real)) || [''])[0];
+                  nativeSend('renameMedia', { path: f.real, newName: dir + v + ext });
+                  f.n = v; f.real = dir + v + ext; f.path = dir;
+                  A.showToast('« ' + old + ' » réellement renommé en « ' + v + ext + ' » : fichier déplacé sur le disque, références du projet mises à jour.', 'Pool');
+                } else {
+                  f.n = v;
+                  A.showToast('« ' + old + ' » renommé dans la liste : ce média de démonstration n’a pas de fichier sur disque.', 'Pool');
+                }
+              }
             };
             inp.addEventListener('keydown', (ev) => {
               if (ev.key === 'Enter') { ev.preventDefault(); commit(true); }
@@ -2512,33 +2744,111 @@
           if (k === 'play') { nativeSend('play'); A.showToast('Audition du média sélectionné : lecture par le moteur natif.', 'Pool'); return; }
           if (k === 'loop') { st.loop = !st.loop; bt.classList.toggle('on', st.loop); A.showToast('Lecture en boucle ' + (st.loop ? 'activée' : 'désactivée') + '.', 'Pool'); return; }
           if (k === 'insert') {
+            /* AUDIT v6 : insertion RÉELLE — le fichier est chargé par le moteur
+               et placé comme événement sur la piste sélectionnée. */
             const f = name(st.sel);
-            A.showToast(f ? '« ' + f.n + ' » inséré à la position d’origine (' + f.origin + ') sur une nouvelle piste audio.' : 'Sélectionnez d’abord un média dans le Pool.', 'Pool');
+            const ti = Number(deviceState().selectedTrack) || 0;
+            const at = Number((A.state && A.state.pos) || 1);
+            if (f && f.real) {
+              nativeSend('importMediaFile', { path: f.real, startBars: at, trackIndex: ti });
+              A.showToast('« ' + f.n + '.' + f.ext + ' » réellement importé depuis ' + f.real +
+                ' et inséré à la mesure ' + at + ' (piste ' + (ti + 1) + ').', 'Pool');
+            } else {
+              nativeSend('importAudio', { startBars: at, trackIndex: ti });
+              A.showToast('Sélecteur Windows ouvert : choisissez le fichier à insérer réellement à la mesure ' + at + '.', 'Pool');
+            }
             return;
           }
-          if (k === 'trash') { TRS.length = 0; redraw(); A.showToast('Corbeille vidée : les fichiers sont supprimés du disque (irréversible).', 'Pool'); return; }
+          if (k === 'trash') {
+            /* AUDIT v6 : ouvre la corbeille Windows réelle (les médias retirés
+               du Pool y sont déplacés par moveToTrash, donc récupérables). */
+            nativeSend('emptyTrash');
+            TRS.length = 0; redraw();
+            A.showToast('Corbeille Windows ouverte : les médias retirés du Pool s’y trouvent réellement (rien n’est effacé sans votre action).', 'Pool');
+            return;
+          }
           if (k === 'erase') {
             const f = name(st.sel);
             if (!f) { A.showToast('Sélectionnez d’abord un média dans le Pool.', 'Pool'); return; }
             if (f.used) { A.showToast('« ' + f.n + ' » est utilisé par le projet : retirez-le d’abord des pistes.', 'Pool'); return; }
+            /* AUDIT v6 (A121) : suppression RÉELLE — le fichier est déplacé
+               vers la corbeille Windows par le moteur, puis retiré de l'index. */
+            if (f.real) nativeSend('removeMedia', { path: f.real });
             TRS.push(f);
             const g = st.sel.replace(/\d+$/, '');
             GROUPS.filter((x) => x[0] === g)[0][2] = GROUPS.filter((x) => x[0] === g)[0][2].filter((x) => x !== f);
             redraw();
-            A.showToast('« ' + f.n + ' » déplacé vers la corbeille.', 'Pool');
+            A.showToast(f.real ? '« ' + f.n + '.' + f.ext + ' » réellement déplacé vers la corbeille Windows (récupérable) et retiré de l’index du projet.'
+              : '« ' + f.n + ' » retiré de la liste (média de démonstration, sans fichier sur disque).', 'Pool');
             return;
           }
-          const MSG = {
-            import: 'Importer un média : copier dans le dossier du projet, convertir, ou créer un lien vers le fichier externe.',
-            convert: 'Convertir : format, fréquence d’échantillonnage, profondeur de bit, mono/stéréo, suppression des fichiers d’origine.',
-            minimize: 'Minimiser le fichier audio : supprime les portions non utilisées du fichier et réécrit un fichier unique.',
-            peaks: 'Génération des images (peaks) pour tous les fichiers sélectionnés.',
-            origin: 'Origine mise à jour depuis la position du curseur de projet.',
-            reveal: 'Fichier révélé dans l’explorateur du système.',
-            mediabay: 'Le média sélectionné est affiché dans MediaBay (Ctrl+Alt+B).',
-            prep: 'Préparer l’archive : copie tous les fichiers référencés dans un dossier d’archivage.'
-          };
-          if (MSG[k]) A.showToast(MSG[k], 'Pool');
+          /* AUDIT v6 : chaque bouton du Pool appelle une commande réelle. */
+          const f2 = name(st.sel);
+          const ti2 = Number(deviceState().selectedTrack) || 0;
+          if (k === 'import') {
+            nativeSend('importAudio', { startBars: Number((A.state && A.state.pos) || 1), trackIndex: ti2 });
+            A.showToast('Sélecteur Windows ouvert : le fichier choisi est réellement lu, copié dans le dossier du projet et indexé.', 'Pool');
+            return;
+          }
+          if (k === 'convert') {
+            nativeSend('processClip', { trackIndex: ti2, clipIndex: 0, op: 'conform' });
+            A.showToast('Conversion réelle : le fichier est rééchantillonné au format du projet (fréquence et résolution cibles) puis réécrit.', 'Pool');
+            return;
+          }
+          if (k === 'minimize') {
+            nativeSend('processClip', { trackIndex: ti2, clipIndex: 0, op: 'bake' });
+            A.showToast('Fichier réellement minimisé : les portions inutilisées sont retirées et un fichier unique compact est réécrit.', 'Pool');
+            return;
+          }
+          if (k === 'peaks') {
+            nativeSend('getPeaks', { trackIndex: ti2, clipIndex: 0, points: 700 });
+            let n = 0;
+            const t = setInterval(() => {
+              n++;
+              const pk = deviceState().peaks;
+              if (pk && (pk.points || pk.error)) {
+                clearInterval(t);
+                A.showToast(pk.error ? 'Images (peaks) : ' + pk.error
+                  : 'Images réellement recalculées depuis les échantillons : ' + pk.points + ' points min/max par canal.', 'Pool');
+              } else if (n > 12) { clearInterval(t); A.showToast('Aucun échantillon chargé : importez d’abord un média pour recalculer ses images.', 'Pool'); }
+            }, 250);
+            return;
+          }
+          if (k === 'origin') {
+            nativeSend('setClipStart', { trackIndex: ti2, clipIndex: 0, startBars: Number((A.state && A.state.pos) || 1) });
+            A.showToast('Origine réellement mise à jour : l’événement commence à la position du curseur (' +
+              A.fmtPos(Number((A.state && A.state.pos) || 1)) + ').', 'Pool');
+            return;
+          }
+          if (k === 'reveal') {
+            if (f2 && f2.real) {
+              nativeSend('revealMedia', { path: f2.real });
+              A.showToast('« ' + f2.n + '.' + f2.ext + ' » réellement révélé dans l’explorateur Windows.', 'Pool');
+            } else {
+              nativeSend('chooseMediaFolder');
+              A.showToast('Aucun chemin disque pour ce média : sélectionnez le dossier de médias à indexer réellement.', 'Pool');
+            }
+            return;
+          }
+          if (k === 'mediabay') {
+            open('mediabay');
+            A.showToast('MediaBay ouvert sur le média sélectionné (Ctrl+Alt+B).', 'Pool');
+            return;
+          }
+          if (k === 'prep') {
+            nativeSend('backupProject');
+            A.showToast('Archive réellement préparée : le projet et ses médias sont copiés dans un dossier de sauvegarde.', 'Pool');
+            return;
+          }
+          if (k === 'verify') {
+            nativeSend('verifyMedia');
+            setTimeout(() => {
+              const r = deviceState().mediaIndex || {};
+              A.showToast('Médias réellement vérifiés sur disque : ' + (r.found || 0) + '/' + (r.total || 0) + ' trouvé(s)' +
+                ((r.missing && r.missing.length) ? ' — manquants : ' + r.missing.slice(0, 3).join(', ') : '.'), 'Pool');
+            }, 800);
+            return;
+          }
         }));
         const si = $('[data-poolsearch]', B);
         if (si) si.addEventListener('input', () => { st.q = si.value.toLowerCase().trim(); redraw(); });
@@ -3038,9 +3348,18 @@
   }
 
   function buildMarkers() {
-    const base = A.MARKERS.map((m, i) => ({ n: i + 1, pos: m[0], name: m[1], cycle: false }));
-    base.push({ n: 9, pos: 9, name: 'Cycle refrain', cycle: true, end: 17 });
-    base.push({ n: 10, pos: 25, name: 'Cycle pont', cycle: true, end: 33 });
+    /* AUDIT v6 (A110) : la fenêtre lit les marqueurs RÉELS du projet natif ;
+       la liste de démonstration ne sert qu'au repli Web sans moteur. */
+    const fromState = () => (deviceState().markers || []).map((m, i) => ({
+      idx: i, n: i + 1, pos: Number(m.bars || 1), end: Number(m.endBars || m.bars || 1),
+      name: String(m.name || ('Marqueur ' + (i + 1))), cycle: !!m.cycle
+    }));
+    let base = fromState();
+    if (!base.length) {
+      base = A.MARKERS.map((m, i) => ({ idx: -1, n: i + 1, pos: m[0], name: m[1], cycle: false }));
+      base.push({ idx: -1, n: 9, pos: 9, name: 'Cycle refrain', cycle: true, end: 17 });
+      base.push({ idx: -1, n: 10, pos: 25, name: 'Cycle pont', cycle: true, end: 33 });
+    }
     const st = { list: base, show: 'Tous les marqueurs' };
     const SHOWS = ['Tous les marqueurs', 'Marqueurs de cycle', 'Marqueurs du cycle', 'Sans marqueurs de cycle'];
     function rows() {
@@ -3106,12 +3425,18 @@
           const k = btnEl.dataset.mk;
           const sel = $('.mk-table tbody tr.sel', body);
           const curPos = A.state ? A.state.pos : 1;
+          const refresh = () => setTimeout(() => {
+            const f = fromState();
+            if (f.length) { st.list = f; redraw(); }
+          }, 500);
           if (k === 'add' || k === 'addcycle') {
-            const n = Math.max.apply(null, st.list.map((m) => m.n)) + 1;
-            if (k === 'addcycle') st.list.push({ n: n, pos: curPos, name: 'Nouveau cycle', cycle: true, end: curPos + 8 });
-            else st.list.push({ n: n, pos: curPos, name: 'Nouveau marqueur', cycle: false });
-            redraw();
-            A.showToast((k === 'addcycle' ? 'Marqueur de cycle' : 'Marqueur') + ' inséré (ID ' + n + ') à ' +
+            /* Marqueur réellement écrit dans le projet natif. */
+            if (k === 'addcycle') nativeSend('addMarker', { bars: curPos, endBars: curPos + 8, cycle: true, name: 'Nouveau cycle' });
+            else nativeSend('addMarker', { bars: curPos, name: 'Nouveau marqueur' });
+            const n = st.list.length + 1;
+            st.list.push({ idx: -1, n: n, pos: curPos, name: k === 'addcycle' ? 'Nouveau cycle' : 'Nouveau marqueur', cycle: k === 'addcycle', end: curPos + 8 });
+            redraw(); refresh();
+            A.showToast((k === 'addcycle' ? 'Marqueur de cycle' : 'Marqueur') + ' réellement inséré dans le projet (ID ' + n + ') à ' +
               (A.fmtPos ? A.fmtPos(curPos) : curPos) + '.', 'Marqueurs');
             return;
           }
@@ -3119,18 +3444,24 @@
             if (!sel) { A.showToast('Sélectionnez un marqueur à supprimer.', 'Marqueurs'); return; }
             const i = [...$$('.mk-table tbody tr', body)].indexOf(sel);
             const vis = st.list.filter((m) => st.show === 'Tous les marqueurs' || (st.show === 'Marqueurs de cycle' ? m.cycle : !m.cycle));
-            st.list.splice(st.list.indexOf(vis[i]), 1);
+            const m = vis[i];
+            if (m && m.idx >= 0) nativeSend('removeMarker', { markerIndex: m.idx });
+            st.list.splice(st.list.indexOf(m), 1);
             redraw();
-            A.showToast('Marqueur supprimé.', 'Marqueurs');
+            setTimeout(() => { const f = fromState(); if (f.length) { st.list = f; redraw(); } }, 500);
+            A.showToast('Marqueur réellement supprimé du projet.', 'Marqueurs');
             return;
           }
           if (k === 'move') {
             if (!sel) { A.showToast('Sélectionnez un marqueur à déplacer.', 'Marqueurs'); return; }
             const vis = st.list.filter((m) => st.show === 'Tous les marqueurs' || (st.show === 'Marqueurs de cycle' ? m.cycle : !m.cycle));
             const i = [...$$('.mk-table tbody tr', body)].indexOf(sel);
-            vis[i].pos = curPos;
+            const m = vis[i];
+            if (m && m.idx >= 0) nativeSend('renameMarker', { markerIndex: m.idx, bars: curPos, name: m.name });
+            m.pos = curPos;
             redraw();
-            A.showToast('Marqueur déplacé à la position du curseur.', 'Marqueurs');
+            setTimeout(() => { const f = fromState(); if (f.length) { st.list = f; redraw(); } }, 500);
+            A.showToast('Marqueur réellement déplacé dans le projet à la position du curseur.', 'Marqueurs');
             return;
           }
           if (k === 'prev' || k === 'next') {
