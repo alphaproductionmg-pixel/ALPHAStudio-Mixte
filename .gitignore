@@ -57,3 +57,8 @@ coverage/
 
 # Fichiers non retenus par l'outil d'images
 Unselected files/
+
+# Installateur 0.5.0 : artefacts générés par GitHub Actions
+installer/payload/
+installer/MicrosoftEdgeWebview2Setup.exe
+installer/Output/

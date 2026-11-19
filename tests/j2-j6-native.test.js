@@ -263,6 +263,28 @@ test('j2e — les stubs de menu envoient un statut explicite, sans « étape 2 �
   await h.flush();
 });
 
+test('s7 — délai natif, erreur explicite, réponses tardives et nettoyage', async () => {
+  const { h, snapshot } = await readyHarness();
+  const missing = h.window.ALPHA_NATIVE.send('noReply');
+  assert.equal(h.window.ALPHA_NATIVE.pendingCount(), 1);
+  h.runTimers(15000);
+  await h.flush();
+  assert.equal(await missing, null);
+  assert.equal(h.window.ALPHA_NATIVE.pendingCount(), 0);
+  assert.match(h.status.textContent, /Réponse native absente/);
+
+  const failed = h.window.ALPHA_NATIVE.send('nativeError');
+  h.native.failNative('Erreur native simulée');
+  await h.flush();
+  assert.equal(await failed, null);
+  assert.equal(h.window.ALPHA_NATIVE.pendingCount(), 0);
+  assert.match(h.status.textContent, /Erreur native simulée/);
+
+  h.native.completeNative(snapshot); // doublon / réponse tardive : ignoré.
+  await h.flush();
+  assert.equal(h.window.ALPHA_NATIVE.pendingCount(), 0);
+});
+
 test('j2f — sources J2-J6, workflow et livrable cohérents', () => {
   const html = read('UI/AlphaStudio/alpha-studio.html');
   assert.ok(html.includes('__juce__invoke'));
@@ -311,10 +333,14 @@ test('j2f — sources J2-J6, workflow et livrable cohérents', () => {
   assert.doesNotMatch(workflow, /CMAKE_BUILD_TYPE/);
   assert.match(workflow, /Microsoft\.Web\.WebView2/);
   assert.match(workflow, /WebView2Loader\.dll/);
+  assert.match(workflow, /ALPHAStudio-Setup-0\.5\.0-x64/);
+  assert.match(workflow, /ASIO-SDK_2\.3\.4/);
+  assert.match(workflow, /Inno Setup/);
   assert.ok(read('.gitignore').includes('__pycache__/'));
   const runner = read('tests/run.sh');
   assert.match(runner, /g\+\+.*alpha-core\.test\.cpp/);
   assert.match(runner, /j2-j6-native\.test\.js/);
   assert.match(runner, /juce-syntax\.sh/);
+  assert.match(runner, /repair-0\.5\.test\.js/);
   assert.ok(!runner.includes('npm install'));
 });

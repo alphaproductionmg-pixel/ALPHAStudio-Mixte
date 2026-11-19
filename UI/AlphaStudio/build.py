@@ -10,7 +10,7 @@ css_names = ["style.css", "windows.css", "windows2.css", "windows3.css", "window
 # audio-core.js précède le pont natif ; audio.js est chargé après lui pour céder
 # la priorité au moteur JUCE quand WebView2 est présent.
 js_names = ["app.js", "windows.js", "windows2.js", "windows3.js", "windows5.js", "audio-core.js"]
-js_after_bridge = ["audio.js"]
+js_after_bridge = ["audio.js", "layout.js"]
 
 css = "\n".join((src / name).read_text(encoding="utf-8") for name in css_names)
 body = (src / "body.html").read_text(encoding="utf-8")

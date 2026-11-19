@@ -3,12 +3,17 @@
 #pragma once
 #include <JuceHeader.h>
 #include "AlphaProjectCore.h"
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
+#include <cstring>
 #include <limits>
 #include <map>
 #include <memory>
+#include <string>
 #include <utility>
+#include <vector>
 
 using namespace juce;
 
@@ -27,6 +32,22 @@ static inline int64 alphaBarsToSamples (double bars, double bpm, double sr) { re
 static inline int64 alphaBarLengthToSamples (double bars, double bpm, double sr) { return (int64) jmax (0.0, bars * alphaSamplesPerBar (bpm, sr)); }
 static inline double alphaSamplesToBars (int64 samples, double bpm, double sr) { return 1.0 + (double) samples / alphaSamplesPerBar (bpm, sr); }
 static inline double alphaSamplesToBarLength (int64 samples, double bpm, double sr) { return (double) samples / alphaSamplesPerBar (bpm, sr); }
+static inline String alphaAudioSuffix (const String& name, const std::string& bytes)
+{
+    String ext = File (name).getFileExtension().toLowerCase();
+    if (ext == ".aif") ext = ".aiff";
+    if (ext == ".wav" || ext == ".mp3" || ext == ".flac" || ext == ".ogg" || ext == ".aiff") return ext;
+    const auto* p = reinterpret_cast<const unsigned char*> (bytes.data());
+    const auto has = [&] (size_t offset, const char* signature, size_t length)
+    { return bytes.size() >= offset + length && std::memcmp (p + offset, signature, length) == 0; };
+    if (has (0, "RIFF", 4) && has (8, "WAVE", 4)) return ".wav";
+    if (has (0, "OggS", 4)) return ".ogg";
+    if (has (0, "fLaC", 4)) return ".flac";
+    if (has (0, "ID3", 3)) return ".mp3";
+    if (has (0, "FORM", 4) && has (8, "AIFF", 4)) return ".aiff";
+    if (bytes.size() >= 2 && p[0] == 0xffu && (p[1] & 0xe0u) == 0xe0u) return ".mp3";
+    return ".wav";
+}
 
 struct Transport
 {
@@ -85,7 +106,7 @@ inline std::shared_ptr<std::vector<float>> makePeaks (const AudioBuffer<float>& 
 class TrackSource : public AudioProcessor
 {
 public:
-    struct LiveNote { double phase = 0.0; float velocity = 0.8f; int64 end = 0; };
+    struct LiveNote { bool active = false; double phase = 0.0; float velocity = 0.8f; int64 end = 0; };
 
     TrackSource (Transport& t)
         : AudioProcessor (BusesProperties().withOutput ("Out", AudioChannelSet::stereo(), true)), transport (t) {}
@@ -99,11 +120,18 @@ public:
         if (! tl.isLocked()) return;
 
         const int64 p = transport.pos.load();
-        if (p < precountEnd.load()) return;
+        const bool inPrecount = p < precountEnd.load();
         const int n = buf.getNumSamples();
         const double sr = transport.sampleRate.load();
         const double spb = alphaSamplesPerBar (transport.bpm.load(), sr);
         const double twoPi = MathConstants<double>::twoPi;
+
+        if (inPrecount)
+        {
+            // Précompte : seules les pistes musicales sont rendues silencieuses.
+            // Le métronome reste généré séparément par le processeur master.
+            return;
+        }
 
         for (const auto& c : clips)
         {
@@ -142,12 +170,16 @@ public:
             }
         }
 
-        for (auto it = liveNotes.begin(); it != liveNotes.end();)
+        // Tableau de 128 notes préalloué : aucune insertion/effacement de std::map
+        // ni libération mémoire dans le callback audio (audit S1).
+        for (int pitch = 0; pitch < 128; ++pitch)
         {
-            if (it->second.end > 0 && p > it->second.end) { it = liveNotes.erase (it); continue; }
-            const double freq = 440.0 * std::pow (2.0, (it->first - 69) / 12.0);
-            double phase = it->second.phase;
-            const float amp = 0.18f * it->second.velocity;
+            auto& live = liveNotes[(size_t) pitch];
+            if (! live.active) continue;
+            if (live.end > 0 && p > live.end) { live.active = false; continue; }
+            const double freq = 440.0 * std::pow (2.0, (pitch - 69) / 12.0);
+            double phase = live.phase;
+            const float amp = 0.18f * live.velocity;
             for (int i = 0; i < n; ++i)
             {
                 phase += twoPi * freq / sr;
@@ -155,8 +187,7 @@ public:
                 buf.addSample (0, i, v);
                 buf.addSample (1, i, v);
             }
-            it->second.phase = std::fmod (phase, twoPi);
-            ++it;
+            live.phase = std::fmod (phase, twoPi);
         }
     }
 
@@ -169,21 +200,21 @@ public:
     {
         const SpinLock::ScopedLockType sl (lock);
         pitch = jlimit (0, 127, pitch);
-        if (on && velocity > 0) liveNotes[pitch] = { 0.0, (float) jlimit (0.0, 1.0, velocity / 127.0), 0 };
-        else if (auto it = liveNotes.find (pitch); it != liveNotes.end())
-            it->second.end = transport.pos.load() + (int64) (0.04 * sr);
+        auto& live = liveNotes[(size_t) pitch];
+        if (on && velocity > 0) live = { true, 0.0, (float) jlimit (0.0, 1.0, velocity / 127.0), 0 };
+        else if (live.active) live.end = transport.pos.load() + (int64) (0.04 * sr);
     }
     void clearLiveNotes()
     {
         const SpinLock::ScopedLockType sl (lock);
-        liveNotes.clear();
+        for (auto& live : liveNotes) live.active = false;
     }
     void setPrecountEnd (int64 s) { precountEnd.store (s); }
 
     SpinLock lock;
     std::vector<Clip> clips;
     std::vector<alpha::MidiNote> midiNotes;
-    std::map<int, LiveNote> liveNotes;
+    std::array<LiveNote, 128> liveNotes;
     std::atomic<int64> precountEnd { 0 };
 private:
     Transport& transport;
@@ -241,9 +272,9 @@ public:
             {
                 const auto& c = activeAutomation.curves[(size_t) i];
                 const double v = c.valueAt (bars);
-                if (c.param == "Volume") autoGainDb = jlimit (-60.0, 12.0, 20.0 * std::log10 (jmax (1e-4, v)));
-                else if (c.param == "Panoramique") autoPan = jlimit (-1.0, 1.0, v * 2.0 - 1.0);
-                else if (c.param == "Mute") autoMute = v > 0.5;
+                if (c.param == AutoParam::Volume) autoGainDb = jlimit (-60.0, 12.0, 20.0 * std::log10 (jmax (1e-4, v)));
+                else if (c.param == AutoParam::Pan) autoPan = jlimit (-1.0, 1.0, v * 2.0 - 1.0);
+                else if (c.param == AutoParam::Mute) autoMute = v > 0.5;
             }
         }
 
@@ -332,9 +363,25 @@ public:
     }
     void setAutomation (const std::vector<alpha::AutomationCurve>& curves)
     {
+        // Conversion hors thread audio : la copie publiée au processeur ne contient
+        // que des scalaires et des tableaux de taille fixe (aucun std::vector/string).
         AutoConfig cfg;
         cfg.count = jmin (8, (int) curves.size());
-        for (int i = 0; i < cfg.count; ++i) cfg.curves[(size_t) i] = curves[(size_t) i];
+        for (int i = 0; i < cfg.count; ++i)
+        {
+            const auto& source = curves[(size_t) i];
+            auto& target = cfg.curves[(size_t) i];
+            target.param = source.param == "Volume" ? AutoParam::Volume
+                         : source.param == "Panoramique" ? AutoParam::Pan
+                         : source.param == "Mute" ? AutoParam::Mute : AutoParam::None;
+            target.neutral = source.neutral;
+            target.count = jmin (32, (int) source.points.size());
+            for (int j = 0; j < target.count; ++j)
+            {
+                target.bars[(size_t) j] = source.points[(size_t) j].bars;
+                target.values[(size_t) j] = source.points[(size_t) j].value;
+            }
+        }
         { const SpinLock::ScopedLockType sl (configLock); targetAutomation = cfg; }
         automationRevision.fetch_add (1);
     }
@@ -359,10 +406,35 @@ private:
         std::array<alpha::Biquad, 8> coefs;
         alpha::Dynamics dynamics;
     };
+    enum class AutoParam : uint8_t { None, Volume, Pan, Mute };
+    struct AutoCurveRT
+    {
+        AutoParam param = AutoParam::None;
+        double neutral = 1.0;
+        int count = 0;
+        std::array<double, 32> bars {}, values {};
+        double valueAt (double x) const
+        {
+            if (count <= 0) return neutral;
+            if (x <= bars[0]) return values[0];
+            for (int i = 1; i < count; ++i)
+            {
+                const double aX = bars[(size_t) (i - 1)], bX = bars[(size_t) i];
+                if (x <= bX)
+                {
+                    const double span = bX - aX;
+                    if (span <= 0.0) return values[(size_t) i];
+                    const double k = (x - aX) / span;
+                    return values[(size_t) (i - 1)] + (values[(size_t) i] - values[(size_t) (i - 1)]) * k;
+                }
+            }
+            return values[(size_t) (count - 1)];
+        }
+    };
     struct AutoConfig
     {
         int count = 0;
-        std::array<alpha::AutomationCurve, 8> curves;
+        std::array<AutoCurveRT, 8> curves;
     };
 
     Transport* clock = nullptr;
@@ -441,6 +513,92 @@ private:
 };
 
 //==============================================================================
+// Callback audio à découpe de boucle : un bloc qui franchit la fin du cycle est
+// traité en deux segments, sans jouer la portion située après loopEnd (audit S9).
+class AlphaAudioCallback final : public AudioIODeviceCallback
+{
+public:
+    AlphaAudioCallback (AudioProcessorGraph& g, Transport& t) : graph (g), transport (t) {}
+
+    void audioDeviceAboutToStart (AudioIODevice* device) override
+    {
+        sampleRate = device != nullptr && device->getCurrentSampleRate() > 0.0 ? device->getCurrentSampleRate() : 48000.0;
+        blockSize = device != nullptr && device->getCurrentBufferSizeSamples() > 0 ? device->getCurrentBufferSizeSamples() : 512;
+        const int wanted = jmax (2, graph.getTotalNumInputChannels(), graph.getTotalNumOutputChannels());
+        totalChannels = jmin (32, wanted);
+        workBuffer.setSize (totalChannels, blockSize);
+        workBuffer.clear();
+        midi.clear();
+        graph.prepareToPlay (sampleRate, blockSize);
+    }
+
+    void audioDeviceIOCallbackWithContext (const float* const* inputChannelData,
+                                          int numInputChannels,
+                                          float* const* outputChannelData,
+                                          int numOutputChannels,
+                                          int numSamples,
+                                          const AudioIODeviceCallbackContext&) override
+    {
+        if (totalChannels <= 0 || numSamples <= 0 || numSamples > blockSize) return;
+        workBuffer.clear();
+        for (int ch = 0; ch < jmin (totalChannels, numInputChannels); ++ch)
+            if (inputChannelData != nullptr && inputChannelData[ch] != nullptr)
+                FloatVectorOperations::copy (workBuffer.getWritePointer (ch), inputChannelData[ch], numSamples);
+
+        int done = 0, remaining = numSamples, guard = 0;
+        const ScopedLock callbackLock (graph.getCallbackLock());
+        while (remaining > 0 && guard++ < 256)
+        {
+            int chunk = remaining;
+            if (transport.playing.load() && transport.looping.load())
+            {
+                const int64 ls = transport.loopStart.load(), le = transport.loopEnd.load();
+                if (le > ls)
+                {
+                    int64 pos = transport.pos.load();
+                    if (pos >= le) { transport.pos.store (ls); pos = ls; }
+                    const int64 untilEnd = le - pos;
+                    if (untilEnd > 0 && untilEnd < chunk) chunk = (int) untilEnd;
+                }
+            }
+            for (int ch = 0; ch < totalChannels; ++ch)
+                segmentPointers[(size_t) ch] = workBuffer.getWritePointer (ch) + done;
+            AudioBuffer<float> segment (segmentPointers.data(), totalChannels, chunk);
+            midi.clear();
+            graph.processBlock (segment, midi);
+            done += chunk;
+            remaining -= chunk;
+        }
+        if (remaining > 0)
+        {
+            for (int ch = 0; ch < totalChannels; ++ch)
+                segmentPointers[(size_t) ch] = workBuffer.getWritePointer (ch) + done;
+            AudioBuffer<float> segment (segmentPointers.data(), totalChannels, remaining);
+            midi.clear();
+            graph.processBlock (segment, midi);
+        }
+        for (int ch = 0; ch < numOutputChannels; ++ch)
+        {
+            if (outputChannelData == nullptr || outputChannelData[ch] == nullptr) continue;
+            if (ch < totalChannels)
+                FloatVectorOperations::copy (outputChannelData[ch], workBuffer.getReadPointer (ch), numSamples);
+            else FloatVectorOperations::clear (outputChannelData[ch], numSamples);
+        }
+    }
+
+    void audioDeviceStopped() override {}
+
+private:
+    AudioProcessorGraph& graph;
+    Transport& transport;
+    AudioBuffer<float> workBuffer;
+    std::array<float*, 32> segmentPointers {};
+    MidiBuffer midi;
+    int totalChannels = 2, blockSize = 512;
+    double sampleRate = 48000.0;
+};
+
+//==============================================================================
 class AlphaEngine : private ChangeListener
 {
 public:
@@ -471,7 +629,7 @@ public:
     Transport transport;
     AudioDeviceManager deviceManager;
     AudioProcessorGraph graph;
-    AudioProcessorPlayer player;
+    AlphaAudioCallback audioCallback { graph, transport };
     AudioFormatManager basicFormats;
     AudioPluginFormatManager pluginFormats;
     KnownPluginList knownPlugins;
@@ -482,6 +640,8 @@ public:
     std::function<void()> onChanged;
     std::function<void (AudioProcessorGraph::NodeID)> onInsertRemoved;
     String audioError, lastStatus;
+    StringArray audioDeviceTypes;
+    bool asioAvailable = false;
 
     File applicationDataDir() const { return appDataDir(); }
     File templatesDir() const
@@ -524,12 +684,28 @@ public:
         std::unique_ptr<XmlElement> saved = parseXML (appDataDir().getChildFile ("audio.xml"));
         audioError = deviceManager.initialise (2, 2, saved.get(), true);
         if (saved == nullptr)
+        {
+            // JUCE_ASIO=1 expose le type ASIO quand le SDK constructeur est présent.
+            // On le choisit par défaut s'il existe, puis on ouvre le premier pilote.
             for (auto* type : deviceManager.getAvailableDeviceTypes())
-                if (type->getTypeName() == "ASIO")
+            {
+                type->scanForDevices();
+                if (type->getTypeName() == "ASIO" && type->getDeviceNames().size() > 0)
                 {
-                    type->scanForDevices();
-                    if (type->getDeviceNames().size() > 0) deviceManager.setCurrentAudioDeviceType ("ASIO", true);
+                    deviceManager.setCurrentAudioDeviceType ("ASIO", true);
+                    AudioDeviceManager::AudioDeviceSetup setup;
+                    deviceManager.getAudioDeviceSetup (setup);
+                    if (setup.outputDeviceName.isEmpty())
+                    {
+                        setup.outputDeviceName = type->getDeviceNames()[0];
+                        setup.inputDeviceName = setup.outputDeviceName;
+                        setup.sampleRate = 0;
+                        setup.bufferSize = 0;
+                        audioError = deviceManager.setAudioDeviceSetup (setup, true);
+                    }
                 }
+            }
+        }
         updateRate();
 
         using IO = AudioProcessorGraph::AudioGraphIOProcessor;
@@ -552,8 +728,8 @@ public:
         }
         refreshMix();
         rebuildConnections();
-        player.setProcessor (&graph);
-        deviceManager.addAudioCallback (&player);
+        updateAudioDeviceDetails();
+        deviceManager.addAudioCallback (&audioCallback);
         deviceManager.addChangeListener (this);
         loadKnownPlugins();
         core.resetTo (alpha::ProjectState(), "État initial");
@@ -563,8 +739,7 @@ public:
     {
         saveAudioState();
         deviceManager.removeChangeListener (this);
-        deviceManager.removeAudioCallback (&player);
-        player.setProcessor (nullptr);
+        deviceManager.removeAudioCallback (&audioCallback);
         if (recorder) recorder->stop();
         tracks.clear();
         buses.clear();
@@ -576,6 +751,17 @@ public:
 
     double sr() const { return transport.sampleRate.load(); }
     int bs() const { if (auto* d = deviceManager.getCurrentAudioDevice()) return d->getCurrentBufferSizeSamples(); return 512; }
+    void updateAudioDeviceDetails()
+    {
+        audioDeviceTypes.clear();
+        asioAvailable = false;
+        for (auto* type : deviceManager.getAvailableDeviceTypes())
+        {
+            const String name = type->getTypeName();
+            audioDeviceTypes.add (name);
+            if (name.equalsIgnoreCase ("ASIO")) asioAvailable = type->getDeviceNames().size() > 0;
+        }
+    }
     int64 projectLength() const
     {
         int64 m = 0;
@@ -884,7 +1070,7 @@ public:
     void beginOffline()
     {
         stopTransport();
-        deviceManager.removeAudioCallback (&player);
+        deviceManager.removeAudioCallback (&audioCallback);
         savedLoop = transport.looping.load();
         savedMetro = transport.metronome.load();
         savedPos = transport.pos.load();
@@ -915,28 +1101,35 @@ public:
         const int chans = jmax (2, graph.getTotalNumInputChannels(), graph.getTotalNumOutputChannels());
         AudioBuffer<float> buffer (chans, block);
         const double ratio = jmax (0.1, sr() / jmax (8000.0, targetRate));
-        const int outBlock = jmax (1, (int) ((block - 4) / ratio));
+        // A5 : le nombre d'échantillons écrits découle de la durée source et du
+        // ratio, sans retrait arbitraire de quatre échantillons par bloc.
+        const int outBlock = jmax (1, (int) std::ceil ((double) block / ratio));
         AudioBuffer<float> out (2, outBlock);
         std::array<LagrangeInterpolator, 2> interp;
         for (auto& i : interp) i.reset();
         MidiBuffer midi;
         const int64 end = projectLength() + (int64) (3.0 * sr());
+        const int64 totalOut = std::max<int64> (1, (int64) std::llround ((double) end / ratio));
+        int64 written = 0;
         transport.pos.store (0);
         transport.playing.store (true);
         bool ok = true;
         uint32_t ditherSeed = 0x12345678u;
-        while (transport.pos.load() < end)
+        while (written < totalOut)
         {
+            const int thisOut = (int) std::min<int64> ((int64) outBlock, totalOut - written);
             buffer.clear();
             graph.processBlock (buffer, midi);
             out.clear();
             for (int ch = 0; ch < 2; ++ch)
             {
-                interp[(size_t) ch].process (ratio, buffer.getReadPointer (ch), out.getWritePointer (ch), outBlock);
-                for (int i = 0; i < outBlock; ++i) out.addSample (ch, i, alpha::triangularDither (ditherSeed));
+                interp[(size_t) ch].process (ratio, buffer.getReadPointer (ch), out.getWritePointer (ch), thisOut);
+                for (int i = 0; i < thisOut; ++i) out.addSample (ch, i, alpha::triangularDither (ditherSeed));
             }
-            if (! w->writeFromAudioSampleBuffer (out, 0, outBlock)) { ok = false; break; }
-            if (progress && ! progress ((double) transport.pos.load() / (double) std::max<int64> (1, end))) { ok = false; break; }
+            if (! w->writeFromAudioSampleBuffer (out, 0, thisOut)) { ok = false; break; }
+            written += thisOut;
+            const double fraction = (double) std::min<int64> (end, transport.pos.load()) / (double) std::max<int64> (1, end);
+            if (progress && ! progress (fraction)) { ok = false; break; }
         }
         transport.playing.store (false);
         w.reset();
@@ -952,7 +1145,7 @@ public:
         transport.looping.store (savedLoop);
         transport.metronome.store (savedMetro);
         refreshMix();
-        deviceManager.addAudioCallback (&player);
+        deviceManager.addAudioCallback (&audioCallback);
     }
 
     //-------------------------------------------------------------- projet / médias
@@ -1148,45 +1341,135 @@ public:
         lastStatus = TR ("Sauvegarde de secours créée : ") + f.getFullPathName();
         return true;
     }
-    String importAudioData (const String& name, const String& base64, double startBars)
+    String importAudioData (const String& name, const String& base64, double startBars, int trackIndex = -1)
     {
         const auto bytes = alpha::base64Decode (base64.toStdString());
         if (bytes.empty()) return TR ("Fichier importé vide");
+        const String suffix = alphaAudioSuffix (name, bytes);
         auto dir = effectiveRoot().getChildFile ("Media");
         dir.createDirectory();
-        const String clean = name.removeCharacters ("\\/:*?\"<>|");
-        File f = dir.getNonexistentChildFile (clean.isEmpty() ? "Import" : clean, ".wav");
+        const String legal = File::createLegalFileName (name);
+        const String stem = File (legal).getFileNameWithoutExtension();
+        File f = dir.getNonexistentChildFile (stem.isEmpty() ? "Import" : stem, suffix);
         FileOutputStream os (f);
         if (! os.openedOk() || ! os.write (bytes.data(), bytes.size())) return TR ("Écriture du média impossible");
         os.flush();
         Clip probe; String err;
         if (! loadClipAudio (f, probe, err)) return err;
-        alpha::JsonValue addTrack (alpha::JsonValue::Type::Object);
-        addTrack["name"] = alpha::JsonValue (f.getFileNameWithoutExtension().toStdString());
-        core.command ("addTrack", addTrack);
+        int target = -1;
+        if (trackIndex >= 0 && trackIndex < (int) core.state.tracks.size())
+        {
+            target = trackIndex;
+        }
+        else
+        {
+            alpha::JsonValue addTrack (alpha::JsonValue::Type::Object);
+            addTrack["name"] = alpha::JsonValue (f.getFileNameWithoutExtension().toStdString());
+            if (! core.command ("addTrack", addTrack)) return alphaString (core.lastError);
+            target = (int) core.state.tracks.size() - 1;
+        }
         alpha::JsonValue addClip (alpha::JsonValue::Type::Object);
-        addClip["trackIndex"] = alpha::JsonValue ((int) core.state.tracks.size() - 1);
+        addClip["trackIndex"] = alpha::JsonValue (target);
         addClip["name"] = alpha::JsonValue (f.getFileNameWithoutExtension().toStdString());
         addClip["media"] = alpha::JsonValue (relativeMedia (f, effectiveRoot()).toStdString());
         addClip["startBars"] = alpha::JsonValue (jmax (1.0, startBars));
         addClip["lenBars"] = alpha::JsonValue (alphaSamplesToBarLength (probe.len, core.state.bpm, sr()));
-        core.command ("addClip", addClip);
+        if (! core.command ("addClip", addClip)) return alphaString (core.lastError);
         applyCoreState (true);
         markDirty();
-        lastStatus = TR ("Audio importé par glisser-déposer.");
+        lastStatus = TR ("Audio importé sur la piste ") + String (target + 1) + TR (" avec l'extension réelle ") + suffix + ".";
         return {};
     }
-    bool importProjectData (const String& base64)
+    bool importProjectData (const String& base64, const File& sourceRoot = File())
     {
         const auto text = alpha::base64Decode (base64.toStdString());
-        if (! core.load (text)) return false;
-        projectRoot = appDataDir();
-        projectFile = File();
+        std::string parseError;
+        const auto json = alpha::JsonValue::parse (text, parseError);
+        if (! parseError.empty() || ! json.isObject() || alpha::jString (json, "format", "") != "ALPHAPROJ")
+        {
+            core.lastError = parseError.empty() ? "Format .alphaproj invalide" : parseError;
+            return false;
+        }
+        auto state = alpha::stateFromJson (json);
+        auto imports = appDataDir().getChildFile ("Imports");
+        imports.createDirectory();
+        File destination = imports.getNonexistentChildFile ("Projet-" + Time::getCurrentTime().formatted ("%Y%m%d-%H%M%S"), "");
+        destination.createDirectory();
+        auto mediaDir = destination.getChildFile ("Media");
+        mediaDir.createDirectory();
+
+        std::vector<File> roots;
+        if (sourceRoot != File()) roots.push_back (sourceRoot);
+        roots.push_back (File::getSpecialLocation (File::userDocumentsDirectory));
+        roots.push_back (File::getSpecialLocation (File::userDesktopDirectory));
+        roots.push_back (File::getSpecialLocation (File::userMusicDirectory));
+        roots.push_back (File::getSpecialLocation (File::userHomeDirectory));
+        roots.push_back (appDataDir());
+        roots.push_back (effectiveRoot());
+        auto findMedia = [&] (const std::string& media) -> File
+        {
+            if (media.empty()) return {};
+            const File direct (alphaString (media));
+            if (direct.existsAsFile()) return direct;
+            const String base = direct.getFileName();
+            for (const auto& root : roots)
+            {
+                if (root == File()) continue;
+                const File relative = root.getChildFile (alphaString (media));
+                if (relative.existsAsFile()) return relative;
+                const File inMedia = root.getChildFile ("Media").getChildFile (base);
+                if (inMedia.existsAsFile()) return inMedia;
+                const File byName = root.getChildFile (base);
+                if (byName.existsAsFile()) return byName;
+            }
+            return {};
+        };
+
+        int missing = 0, copied = 0;
+        state.media.clear();
+        for (auto& track : state.tracks)
+        {
+            for (auto& clip : track.clips)
+            {
+                const File src = findMedia (clip.media);
+                if (! src.existsAsFile())
+                {
+                    ++missing;
+                    clip.media.clear();
+                    continue;
+                }
+                const File dst = mediaDir.getNonexistentChildFile (src.getFileNameWithoutExtension(), src.getFileExtension());
+                if (! src.copyFileTo (dst))
+                {
+                    ++missing;
+                    clip.media.clear();
+                    continue;
+                }
+                ++copied;
+                clip.media = relativeMedia (dst, destination).toStdString();
+                if (std::find (state.media.begin(), state.media.end(), clip.media) == state.media.end())
+                    state.media.push_back (clip.media);
+            }
+        }
+        state.videoEnabled = false;
+        auto document = alpha::stateToJson (state);
+        document["format"] = alpha::JsonValue ("ALPHAPROJ");
+        document["schema"] = alpha::JsonValue (2);
+        document["videoPolicy"] = alpha::JsonValue ("after_final_confirmed_test");
+        const std::string saved = document.dump();
+        if (! core.load (saved)) return false;
+        projectRoot = destination;
+        projectFile = destination.getChildFile ("Projet importé.alphaproj");
+        if (! projectFile.replaceWithText (alphaString (saved))) return false;
+        core.markSaved();
         applyCoreState (true);
         markDirty();
-        lastStatus = TR ("Document de projet importé.");
+        lastStatus = TR ("Projet importé : ") + String (copied) + TR (" média(s) recopiés dans ") + destination.getFullPathName();
+        if (missing > 0) lastStatus += TR (" · ") + String (missing) + TR (" référence(s) introuvable(s), à relocaliser.");
+        if (onChanged) onChanged();
         return true;
     }
+
     String importMidiData (const String& base64, int trackIndex, double startBars)
     {
         const auto bytes = alpha::base64Decode (base64.toStdString());
@@ -1571,13 +1854,16 @@ public:
         {
             const auto e = importAudioData (alphaString (alpha::jString (p, "name", "Import.wav")),
                                             alphaString (alpha::jString (p, "base64")),
-                                            alpha::jNumber (p, "startBars", alphaSamplesToBars (transport.pos.load(), transport.bpm.load(), sr())));
+                                            alpha::jNumber (p, "startBars", alphaSamplesToBars (transport.pos.load(), transport.bpm.load(), sr())),
+                                            alpha::jInt (p, "trackIndex", -1));
             if (e.isNotEmpty()) { lastStatus = e; return e; }
             return {};
         }
         if (cmd == "importProjectData")
         {
-            if (! importProjectData (alphaString (alpha::jString (p, "base64")))) { lastStatus = alphaString (core.lastError); return lastStatus; }
+            const String sourceName = alphaString (alpha::jString (p, "name", ""));
+            const File sourceHint = sourceName.isNotEmpty() ? File (sourceName).getParentDirectory() : File();
+            if (! importProjectData (alphaString (alpha::jString (p, "base64")), sourceHint)) { lastStatus = alphaString (core.lastError); return lastStatus; }
             return {};
         }
         if (cmd == "importMidiData")
@@ -1596,7 +1882,7 @@ public:
         return dispatchCore (cmd, p, structural);
     }
 
-    std::string stateJson() const
+    std::string stateJson()
     {
         auto j = core.apiState();
         j["positionBars"] = alpha::JsonValue (alphaSamplesToBars (transport.pos.load(), transport.bpm.load(), sr()));
@@ -1606,6 +1892,27 @@ public:
         j["metronome"] = alpha::JsonValue (transport.metronome.load());
         j["sampleRate"] = alpha::JsonValue (sr());
         j["device"] = alpha::JsonValue (deviceInfo().toStdString());
+        alpha::JsonValue types (alpha::JsonValue::Type::Array);
+        for (const auto& name : audioDeviceTypes)
+            types.array.push_back (alpha::JsonValue (name.toStdString()));
+        j["audioDeviceTypes"] = types;
+        j["asioAvailable"] = alpha::JsonValue (asioAvailable);
+        j["currentDeviceType"] = alpha::JsonValue (deviceManager.getCurrentAudioDeviceType().toStdString());
+        j["audioError"] = alpha::JsonValue (audioError.toStdString());
+        AudioDeviceManager::AudioDeviceSetup setup;
+        deviceManager.getAudioDeviceSetup (setup);
+        j["inputDeviceName"] = alpha::JsonValue (setup.inputDeviceName.toStdString());
+        j["outputDeviceName"] = alpha::JsonValue (setup.outputDeviceName.toStdString());
+        if (auto* d = deviceManager.getCurrentAudioDevice())
+        {
+            j["deviceName"] = alpha::JsonValue (d->getName().toStdString());
+            j["deviceTypeName"] = alpha::JsonValue (d->getTypeName().toStdString());
+            j["deviceSampleRate"] = alpha::JsonValue (d->getCurrentSampleRate());
+            j["bufferSizeSamples"] = alpha::JsonValue (d->getCurrentBufferSizeSamples());
+            j["inputLatencySamples"] = alpha::JsonValue (d->getInputLatencyInSamples());
+            j["outputLatencySamples"] = alpha::JsonValue (d->getOutputLatencyInSamples());
+            j["hasControlPanel"] = alpha::JsonValue (d->hasControlPanel());
+        }
         j["status"] = alpha::JsonValue (lastStatus.toStdString());
         j["projectPath"] = alpha::JsonValue (projectFile.getFullPathName().toStdString());
         j["autosavePath"] = alpha::JsonValue (autosaveFile().getFullPathName().toStdString());
@@ -1713,6 +2020,7 @@ private:
     void changeListenerCallback (ChangeBroadcaster*) override
     {
         updateRate();
+        updateAudioDeviceDetails();
         saveAudioState();
         rebuildConnections();
         refreshMix();

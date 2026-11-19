@@ -81,9 +81,10 @@
     </div>
     <div class="win-title"><b>Démo_Alpha_01</b> — Fenêtre de projet&nbsp;&nbsp;·&nbsp;&nbsp;ALPHA Studio 1.0 (interface)</div>
     <div class="winbtns">
-      <button class="winbtn" title="Réduire"><svg><use href="#i-min"/></svg></button>
-      <button class="winbtn" title="Agrandir"><svg><use href="#i-max"/></svg></button>
-      <button class="winbtn close" id="btnQuit" title="Fermer"><svg><use href="#i-x"/></svg></button>
+      <button class="winbtn alpha-fit" data-alpha-command="windowFitToScreen" title="Adapter à l'écran">⤢</button>
+      <button class="winbtn" data-alpha-command="windowMinimize" title="Réduire"><svg><use href="#i-min"/></svg></button>
+      <button class="winbtn" data-alpha-command="windowMaximize" title="Agrandir / restaurer"><svg><use href="#i-max"/></svg></button>
+      <button class="winbtn close" id="btnQuit" data-alpha-command="quit" title="Fermer"><svg><use href="#i-x"/></svg></button>
     </div>
   </div>
 
@@ -364,6 +365,15 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
     <div class="sb-cell"><span class="sb-k">Fréq.</span><span class="sb-v">48 000 Hz</span><span class="sb-sep"></span><span class="sb-k">Résolution</span><span class="sb-v">24 bit</span><span class="sb-sep"></span><span class="sb-k">Piste</span><span class="sb-v" id="sbTrack">07 · Voix Lead</span></div>
     <div class="sb-cell"><span class="sb-k">Outil</span><span class="sb-v" id="sbTool">Flèche</span><span class="sb-sep"></span><span class="sb-k">Accrochage</span><span class="sb-v" id="sbSnap">Grille · Barre</span></div>
     <div class="sb-cell"><span class="sb-k">Espace de travail</span><span class="sb-v" id="sbWorkspace">—</span><span class="sb-sep"></span><span class="sb-k">Fenêtres</span><span class="sb-v" id="sbWins">0</span></div>
+    <div class="sb-cell alpha-ui-controls">
+      <button data-alpha-ui-command="uiZoomOut" title="Réduire l'interface">UI−</button>
+      <button data-alpha-ui-command="uiZoomIn" title="Agrandir l'interface">UI+</button>
+      <button data-alpha-ui-command="textZoomOut" title="Réduire le texte">A−</button>
+      <button data-alpha-ui-command="textZoomIn" title="Agrandir le texte">A+</button>
+      <button data-alpha-ui-command="resetLayout" title="Réinitialiser l'affichage">⟲</button>
+      <button data-alpha-ui-command="audioSettings" title="Réglages audio réels">Audio</button>
+      <button data-alpha-ui-command="asioPanel" title="Panneau du pilote ASIO">ASIO</button>
+    </div>
     <div class="sb-cell grow"></div>
     <div class="sb-cell right"><span class="sb-k">CPU</span><span class="sb-v">4 %</span><span class="sb-sep"></span><span class="sb-k">Disque</span><span class="sb-v">2 %</span></div>
     <div class="sb-cell right"><span class="sb-phase"><i></i>ÉTAPE 1 — INTERFACE</span></div>

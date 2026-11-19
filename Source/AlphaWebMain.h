@@ -23,15 +23,24 @@ private:
         }
     };
 
-    juce::var buildState() const;
+    juce::var buildState();
+    void addDisplayMetrics (juce::var& state) const;
     void publishState();
     void handleCommand (const juce::Array<juce::var>&,
                         juce::WebBrowserComponent::NativeFunctionCompletion);
     void openDialog (const juce::String& kind, const juce::var& payload);
     void exportWav (bool stems);
+    void showAudioSettings();
+    void showAsioPanel();
+    void fitWindowToScreen();
     void timerCallback() override;
 
-    AlphaEngine engine;
+    double uiScaleOverride = 1.0;
+    double fontScaleOverride = 1.0;
+    // L'export asynchrone conserve une propriété partagée du moteur : le
+    // composant ne peut pas être détruit avant la fin réelle du worker (A2).
+    std::shared_ptr<AlphaEngine> engineOwner;
+    AlphaEngine& engine;
     std::unique_ptr<Browser> browser;
     std::unique_ptr<juce::FileChooser> chooser;
     std::shared_ptr<std::atomic<bool>> alive = std::make_shared<std::atomic<bool>> (true);

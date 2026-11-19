@@ -5,17 +5,17 @@
 
 [class^="w3-"]{box-sizing:border-box}
 .w3-pi,.w3-le,.w3-md,.w3-tp,.w3-qs,.w3-bc,.w3-im,.w3-omf,.w3-batch,.w3-sur,.w3-sync,.w3-mc,.w3-sl,.w3-rw{
-  flex:1;min-height:0;display:flex;flex-direction:column;font-size:8.5px;color:#33322d
+  flex:1;min-height:0;display:flex;flex-direction:column;font-size:calc(8.5px * var(--alpha-font-scale));color:#33322d
 }
 .w3-scroll{flex:1;min-height:0;overflow:auto}
 .w3-table{width:100%;border-collapse:collapse;table-layout:fixed;background:#f0eeea}
 .w3-table th{
-  background:linear-gradient(#e4e2dd,#d3d1cb);text-align:left;font-weight:400;color:#3a3934;font-size:8px;
+  background:linear-gradient(#e4e2dd,#d3d1cb);text-align:left;font-weight:400;color:#3a3934;font-size:calc(8px * var(--alpha-font-scale));
   padding:3px 6px;border-right:1px solid #b3b1ab;border-bottom:1px solid #96948e;white-space:nowrap;overflow:hidden
 }
 .w3-table td{padding:2.5px 6px;border-bottom:1px solid #dedcd7;border-right:1px solid #e6e4df;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.w3-table td.num{font-family:Consolas,monospace;font-size:7.5px;color:#4a4842}
-.w3-table td.pth{font-family:Consolas,monospace;font-size:7.5px;color:#5c5a54;text-overflow:ellipsis}
+.w3-table td.num{font-family:Consolas,monospace;font-size:calc(7.5px * var(--alpha-font-scale));color:#4a4842}
+.w3-table td.pth{font-family:Consolas,monospace;font-size:calc(7.5px * var(--alpha-font-scale));color:#5c5a54;text-overflow:ellipsis}
 .w3-table tr:nth-child(even) td{background:#eae8e3}
 .w3-table tbody tr:hover td{background:#dbe6f1}
 .w3-table tbody tr.sel td{background:#3f6c98;color:#fff}
@@ -30,14 +30,14 @@
 .w3-ok{color:#2f7b2a}
 
 .w3-foot{
-  display:flex;align-items:center;gap:6px;padding:4px 7px;font-size:8px;color:#4a4842;
+  display:flex;align-items:center;gap:6px;padding:4px 7px;font-size:calc(8px * var(--alpha-font-scale));color:#4a4842;
   background:linear-gradient(#dcdad5,#ceccc6);border-top:1px solid #a3a19b
 }
 .w3-sec{
-  margin:9px 0 5px;font-size:8.5px;letter-spacing:.7px;text-transform:uppercase;color:#33322d;
+  margin:9px 0 5px;font-size:calc(8.5px * var(--alpha-font-scale));letter-spacing:.7px;text-transform:uppercase;color:#33322d;
   border-bottom:1px solid #c9c7c1;padding-bottom:2px
 }
-.w3-note{font-size:7.5px;color:#5c5a54;line-height:1.5;margin:6px 0 2px;padding:5px 7px;background:#e6e4de;border:1px solid #c9c7c1;border-radius:2px}
+.w3-note{font-size:calc(7.5px * var(--alpha-font-scale));color:#5c5a54;line-height:1.5;margin:6px 0 2px;padding:5px 7px;background:#e6e4de;border:1px solid #c9c7c1;border-radius:2px}
 
 /* menu flottant partagé */
 .w3-pop{
@@ -45,17 +45,17 @@
   background:linear-gradient(#4a4f54,#3a3f44);border:1px solid #22262a;border-radius:3px;
   box-shadow:0 6px 18px rgba(0,0,0,.55);font:9px/1.7 Verdana,Tahoma,sans-serif;color:#e2e7ea
 }
-.w3-pop .ph{padding:1px 6px 3px;color:#9fb3c4;letter-spacing:.6px;text-transform:uppercase;font-size:7.5px;border-bottom:1px solid #2b2f33;margin-bottom:2px}
+.w3-pop .ph{padding:1px 6px 3px;color:#9fb3c4;letter-spacing:.6px;text-transform:uppercase;font-size:calc(7.5px * var(--alpha-font-scale));border-bottom:1px solid #2b2f33;margin-bottom:2px}
 .w3-pop [data-pick]{padding:1px 6px;display:flex;align-items:center;gap:6px;cursor:default;white-space:nowrap}
 .w3-pop [data-pick]:hover{background:#33506b}
 .w3-pop [data-pick] i{width:8px;height:8px;display:inline-block;border:1px solid #6b7178}
 .w3-pop [data-pick] i.on{background:#8fb2d4;border-color:#cfe3f4}
 
 /* champs compacts */
-.w3-mini{height:15px;font-size:8px}
+.w3-mini{height:15px;font-size:calc(8px * var(--alpha-font-scale))}
 .w3-sel{
   display:inline-flex;align-items:center;gap:5px;height:17px;padding:0 5px;min-width:70px;
-  background:linear-gradient(#f6f4f0,#e2e0db);border:1px solid #a3a19b;border-radius:2px;font-size:8px;color:#2c2b26
+  background:linear-gradient(#f6f4f0,#e2e0db);border:1px solid #a3a19b;border-radius:2px;font-size:calc(8px * var(--alpha-font-scale));color:#2c2b26
 }
 
 /* ---------------------------------------------- 1. Informations sur les plug-ins */
@@ -66,10 +66,10 @@
 /* ---------------------------------------------- 2. Éditeurs logiques */
 .w3-lebody{padding:2px 8px 8px}
 .le-sec{margin-bottom:8px}
-.le-sec h6{margin:7px 0 4px;font-size:8px;letter-spacing:.7px;text-transform:uppercase;color:#3a3934}
+.le-sec h6{margin:7px 0 4px;font-size:calc(8px * var(--alpha-font-scale));letter-spacing:.7px;text-transform:uppercase;color:#3a3934}
 .le-bar{display:flex;align-items:center;gap:6px;margin-bottom:5px;flex-wrap:wrap}
-.le-hint{font-size:7.5px;color:#5c5a54}
-.le-hint2{font-size:7.5px}
+.le-hint{font-size:calc(7.5px * var(--alpha-font-scale));color:#5c5a54}
+.le-hint2{font-size:calc(7.5px * var(--alpha-font-scale))}
 .le-table{background:#f4f2ee}
 .le-table td{padding:2px 4px}
 .le-table td.on{width:26px;text-align:center}
@@ -79,38 +79,38 @@
 .le-table td.fld{padding-left:8px}
 .le-table{touch-action:manipulation}
 .le-table td{background:transparent}
-.w3-x{padding:0 4px;height:14px;min-width:0;font-size:8px;line-height:1}
+.w3-x{padding:0 4px;height:14px;min-width:0;font-size:calc(8px * var(--alpha-font-scale));line-height:1}
 
 /* ---------------------------------------------- 3. MIDI Device Manager */
 .md-table{flex:0 0 auto}
 .w3-patch{padding:6px 8px}
-.w3-patch h6{margin:0 0 5px;font-size:8px;letter-spacing:.6px;text-transform:uppercase;color:#3a3934}
+.w3-patch h6{margin:0 0 5px;font-size:calc(8px * var(--alpha-font-scale));letter-spacing:.6px;text-transform:uppercase;color:#3a3934}
 .pgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:2px}
-.pgrid .pn{display:flex;gap:5px;align-items:center;padding:2px 5px;background:#eceae5;border:1px solid #c9c7c1;font-size:8px;overflow:hidden;white-space:nowrap}
-.pgrid .pn span{color:#6b6961;font-family:Consolas,monospace;font-size:7px;min-width:14px;text-align:right}
+.pgrid .pn{display:flex;gap:5px;align-items:center;padding:2px 5px;background:#eceae5;border:1px solid #c9c7c1;font-size:calc(8px * var(--alpha-font-scale));overflow:hidden;white-space:nowrap}
+.pgrid .pn span{color:#6b6961;font-family:Consolas,monospace;font-size:calc(7px * var(--alpha-font-scale));min-width:14px;text-align:right}
 .pgrid .pn.sel{background:#3f6c98;color:#fff;border-color:#2c4d6d}
 .pgrid .pn.sel span{color:#cfe3f4}
 
 /* ---------------------------------------------- 4. Presets de piste */
 .w3-tpbody{flex:1;min-height:0;display:flex}
 .w3-cats{width:132px;flex:0 0 132px;background:linear-gradient(#e6e4df,#d8d6d1);border-right:1px solid #a3a19b;overflow:auto;padding:4px 0}
-.w3-cats .c{display:flex;justify-content:space-between;padding:3px 8px;font-size:8px;color:#3a3934}
+.w3-cats .c{display:flex;justify-content:space-between;padding:3px 8px;font-size:calc(8px * var(--alpha-font-scale));color:#3a3934}
 .w3-cats .c:hover{background:#dbe6f1}
 .w3-cats .c.on{background:#3f6c98;color:#fff}
-.w3-cats .c span{font-family:Consolas,monospace;font-size:7px;color:#6b6961}
+.w3-cats .c span{font-family:Consolas,monospace;font-size:calc(7px * var(--alpha-font-scale));color:#6b6961}
 .w3-cats .c.on span{color:#cfe3f4}
 .w3-detail{width:210px;flex:0 0 210px;border-left:1px solid #a3a19b;background:#e9e7e2;padding:6px 8px;overflow:auto}
-.w3-detail h6{margin:0 0 5px;font-size:8.5px;color:#22303c;border-bottom:1px solid #c9c7c1;padding-bottom:3px}
-.w3-detail .row{display:flex;justify-content:space-between;gap:8px;font-size:7.5px;color:#4a4842;padding:1.5px 0;border-bottom:1px dotted #c9c7c1}
+.w3-detail h6{margin:0 0 5px;font-size:calc(8.5px * var(--alpha-font-scale));color:#22303c;border-bottom:1px solid #c9c7c1;padding-bottom:3px}
+.w3-detail .row{display:flex;justify-content:space-between;gap:8px;font-size:calc(7.5px * var(--alpha-font-scale));color:#4a4842;padding:1.5px 0;border-bottom:1px dotted #c9c7c1}
 .w3-detail .row b{color:#2c2b26;text-align:right;font-weight:700}
 
 /* ---------------------------------------------- 5. Setup de quantize */
 .w3-qsbody{flex:1;min-height:0;display:flex;padding:8px}
 .qs-grid{flex:1;min-width:0;padding:2px 8px 0 0}
 .qs-ctl{width:250px;flex:0 0 250px;border-left:1px solid #a3a19b;padding-left:9px}
-.qs-ctl .row{display:flex;align-items:center;gap:5px;margin-bottom:6px;font-size:8px;color:#3a3934}
+.qs-ctl .row{display:flex;align-items:center;gap:5px;margin-bottom:6px;font-size:calc(8px * var(--alpha-font-scale));color:#3a3934}
 .qs-ctl .row label{width:104px;flex:0 0 104px}
-.qs-ctl .row b{font-family:Consolas,monospace;font-size:7.5px;color:#2c2b26;min-width:36px}
+.qs-ctl .row b{font-family:Consolas,monospace;font-size:calc(7.5px * var(--alpha-font-scale));color:#2c2b26;min-width:36px}
 .qs-ctl input[type=range]{width:74px}
 
 /* ---------------------------------------------- 6. Beat Calculator */
@@ -119,11 +119,11 @@
   width:150px;flex:0 0 150px;background:#171a1b;border:1px solid #6e6c66;border-radius:3px;padding:8px 10px;
   box-shadow:inset 0 2px 8px rgba(0,0,0,.85);text-align:center
 }
-.bc-lcd .t{font-size:6.5px;letter-spacing:1px;color:#8f9aa2;text-transform:uppercase}
-.bc-lcd .v{font-family:Consolas,monospace;font-size:23px;color:#ffb445;letter-spacing:1px;line-height:1.25}
-.bc-lcd .u{font-size:7px;color:#8f9aa2}
+.bc-lcd .t{font-size:calc(6.5px * var(--alpha-font-scale));letter-spacing:1px;color:#8f9aa2;text-transform:uppercase}
+.bc-lcd .v{font-family:Consolas,monospace;font-size:calc(23px * var(--alpha-font-scale));color:#ffb445;letter-spacing:1px;line-height:1.25}
+.bc-lcd .u{font-size:calc(7px * var(--alpha-font-scale));color:#8f9aa2}
 .bc-fields{flex:1;min-width:0}
-.bc-fields .dlg-row{font-size:8px}
+.bc-fields .dlg-row{font-size:calc(8px * var(--alpha-font-scale))}
 .bc-row{display:flex;align-items:center;gap:8px;margin:5px 0}
 
 /* ---------------------------------------------- 7. Import Medium */
@@ -131,7 +131,7 @@
 .w3-imr{width:210px;flex:0 0 210px;border-left:1px solid #a3a19b;padding:0 8px 8px;overflow:auto;background:#e9e7e2}
 .im-wave{width:100%;height:40px;background:#2d3033;border:1px solid #7a7871;margin:2px 0 6px}
 .im-meta{margin-bottom:4px}
-.im-meta .r{display:flex;justify-content:space-between;gap:6px;font-size:7.5px;color:#4a4842;border-bottom:1px dotted #c9c7c1;padding:1px 0}
+.im-meta .r{display:flex;justify-content:space-between;gap:6px;font-size:calc(7.5px * var(--alpha-font-scale));color:#4a4842;border-bottom:1px dotted #c9c7c1;padding:1px 0}
 .im-meta .r b{color:#2c2b26;text-align:right}
 .im-meta .r.warn b{color:#a8641e}
 .im-opt .dlg-check{margin:2px 0}
@@ -144,25 +144,25 @@
 /* ---------------------------------------------- 9. Traitement par lot */
 .w3-batchbody{flex:1;min-height:0;display:flex}
 .bl{width:270px;flex:0 0 270px;border-right:1px solid #a3a19b;overflow:auto;background:#e9e7e2}
-.bl h6,.br h6{margin:6px 8px 4px;font-size:8px;letter-spacing:.6px;text-transform:uppercase;color:#3a3934}
-.bi-row{display:flex;justify-content:space-between;gap:6px;padding:3px 8px;font-size:8px;border-bottom:1px solid #dedcd7}
+.bl h6,.br h6{margin:6px 8px 4px;font-size:calc(8px * var(--alpha-font-scale));letter-spacing:.6px;text-transform:uppercase;color:#3a3934}
+.bi-row{display:flex;justify-content:space-between;gap:6px;padding:3px 8px;font-size:calc(8px * var(--alpha-font-scale));border-bottom:1px solid #dedcd7}
 .bi-row:hover{background:#dbe6f1}
 .bi-row.sel{background:#3f6c98;color:#fff}
-.bi-row em{font-style:normal;color:#6b6961;font-size:7px}
+.bi-row em{font-style:normal;color:#6b6961;font-size:calc(7px * var(--alpha-font-scale))}
 .bi-row.sel em{color:#cfe3f4}
 .br{flex:1;min-width:0;padding:0 8px 8px;overflow:auto}
 .ops{margin-top:4px}
-.op{display:flex;gap:6px;align-items:center;padding:3px 6px;background:#eceae5;border:1px solid #c9c7c1;margin-bottom:2px;font-size:8px}
-.op span{font-family:Consolas,monospace;font-size:7px;color:#6b6961;min-width:14px}
+.op{display:flex;gap:6px;align-items:center;padding:3px 6px;background:#eceae5;border:1px solid #c9c7c1;margin-bottom:2px;font-size:calc(8px * var(--alpha-font-scale))}
+.op span{font-family:Consolas,monospace;font-size:calc(7px * var(--alpha-font-scale));color:#6b6961;min-width:14px}
 
 /* ---------------------------------------------- 10. Surround Panner */
 .w3-surbody{flex:1;min-height:0;display:flex}
 .svp{flex:1;min-width:0;padding:6px;background:linear-gradient(#cfcdc7,#c1bfb9)}
 .svr{width:216px;flex:0 0 216px;border-left:1px solid #a3a19b;padding:0 8px 8px;overflow:auto;background:#e6e4df}
-.svr .dlg-row{font-size:7.5px}
-.svr .row{display:flex;align-items:center;gap:5px;margin:4px 0;font-size:7.5px;color:#3a3934}
+.svr .dlg-row{font-size:calc(7.5px * var(--alpha-font-scale))}
+.svr .row{display:flex;align-items:center;gap:5px;margin:4px 0;font-size:calc(7.5px * var(--alpha-font-scale));color:#3a3934}
 .svr .row label{width:104px;flex:0 0 104px}
-.svr .row b{font-family:Consolas,monospace;font-size:7px;min-width:36px}
+.svr .row b{font-family:Consolas,monospace;font-size:calc(7px * var(--alpha-font-scale));min-width:36px}
 
 /* ---------------------------------------------- 11. Synchronisation */
 .w3-syncbody{flex:1;min-height:0;overflow:auto;padding:8px 10px}
@@ -175,8 +175,8 @@
   background:#171a1b;border:1px solid #6e6c66;border-radius:3px;padding:6px 10px;margin-bottom:8px;
   box-shadow:inset 0 2px 8px rgba(0,0,0,.85);display:flex;align-items:baseline;gap:10px
 }
-.mc-lcd .t{font-size:6.5px;letter-spacing:1px;color:#8f9aa2;text-transform:uppercase}
-.mc-lcd .v{font-family:Consolas,monospace;font-size:20px;color:#8fd06a;letter-spacing:1px}
+.mc-lcd .t{font-size:calc(6.5px * var(--alpha-font-scale));letter-spacing:1px;color:#8f9aa2;text-transform:uppercase}
+.mc-lcd .v{font-family:Consolas,monospace;font-size:calc(20px * var(--alpha-font-scale));color:#8fd06a;letter-spacing:1px}
 .w3-mcbody .row{display:flex;gap:8px;flex-wrap:wrap;margin:4px 0}
 
 /* ---------------------------------------------- 13. VST System Link */

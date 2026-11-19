@@ -286,4 +286,36 @@ Cette section est la **source de vérité active** avec le § 0.0 et `docs/J2-J6
 
 ### 6.3 Limites avant le test final
 
-Aucune exécution Windows/WebView2, aucune carte son, aucun microphone, aucun audit Chromium des 59 fenêtres, aucune acceptation utilisateur. La compilation GitHub finale n'a pas encore eu lieu : elle doit rester **la dernière étape de code**, conformément à la décision `github_timing=at_end`. Les pourcentages de progression ne doivent pas atteindre 100 % avant le test intégral et la liste de bugs / défauts.
+Aucune exécution Windows/WebView2, aucune carte son, aucun microphone, aucun audit Chromium des 59 fenêtres, aucune acceptation utilisateur. La compilation GitHub initiale a réussi, mais son artefact était un ZIP portable : l'utilisateur a demandé une **version installable** pour pouvoir faire le test complet. La passe corrective ci-dessous garde le même verrou : tests internes locaux verts, puis **une seule** compilation/push GitHub finale, conformément à `github_timing=at_end`. Les pourcentages de progression ne doivent pas atteindre 100 % avant le test intégral et la liste de bugs / défauts.
+
+---
+
+## 7. Passe corrective 0.5.0 — version installable et réparation (19 novembre 2026)
+
+L'utilisateur a signalé : pas d'installateur, interface non adaptée au Full HD, fenêtres impossibles à déplacer / réduire / redimensionner convenablement, police non alignée sur le réglage Windows, réglages du pilote ASIO invisibles et test intégral non terminé. Le rapport d'audit statique joint a été pris en compte. Le plan d'action a été présenté puis approuvé ; aucune autre validation de cadrage n'est demandée.
+
+### 7.1 Choix actifs
+
+- **Inno Setup léger** : `installer/ALPHAStudio.iss` produit `ALPHAStudio-Setup-0.5.0-x64.exe`.
+- **WebView2 Evergreen en ligne** : bootstrapper officiel Microsoft exécuté seulement si le runtime est absent ; pas de runtime 100 % hors ligne.
+- **Version `0.5.0`**, Windows x64, `windows-2022`.
+- **ASIO réel** : `JUCE_ASIO=1`, SDK Steinberg 2.3.4 téléchargé par GitHub Actions, jamais vendored ; sélecteur JUCE et panneau constructeur.
+- **Vidéo toujours exclue** jusqu'après le test final confirmé. J1 Web Audio reste une référence.
+
+### 7.2 Réparations codées
+
+| Domaine | Réparation |
+|---|---|
+| Installateur | payload installable, menu Démarrer, désinstalleur, notices tiers, bootstrapper WebView2, test CI installation/désinstallation silencieuses, artefact dédié |
+| Fenêtre / Full HD / DPI | dimension initiale depuis `Display::userArea`, limites 800×500 → 3840×2160, état de fenêtre mémorisé, adapter / réduire / agrandir / restaurer, glisser la barre de titre, `TextScaleFactor` Windows, zoom UI et zoom texte séparés |
+| Interface | `min-width:1080px` supprimé, zoom WebView2 piloté par `--alpha-ui-scale`, toutes les tailles de police absolues converties en `calc(... * var(--alpha-font-scale))`, commandes visibles dans la barre d'état |
+| ASIO | types et périphériques réels dans `stateJson()`, `AudioDeviceSelectorComponent`, `showControlPanel()`, valeurs dynamiques dans la fenêtre Périphériques, plus de « Alpha ASIO Driver » statique |
+| Audit A1 / S1 / S8 | automation aplatie en tableaux fixes hors callback audio, 128 notes live préallouées, précompte explicitement silencieux pour les pistes avec métronome master séparé |
+| Audit A2 / A5 | moteur retenu par `shared_ptr` pendant l'export, annulation coopérative, attente réelle sans 5 s arbitraire, longueur WAV calculée depuis la durée source et le ratio |
+| Audit A3 / A4 / A6 | import audio sur `trackIndex`, extension réelle conservée/détectée, import `.alphaproj` avec recopie des médias et réécriture des chemins |
+| Audit S2 / S3 / S4 / S5 / S6 | SMF borné, formats 0/1 et PPQN réel, Note Off avant Note On, JSON numérique strict, paires UTF-16 validées |
+| Audit S7 / S9 | promesses natives avec délai / erreur / nettoyage, découpe du callback audio à la frontière exacte de boucle |
+
+### 7.3 État et verrou final
+
+Les tests locaux couvrent le noyau C++17, le pont WebView2 simulé, le livrable HTML autonome, l'installateur, le workflow, la fenêtre / DPI / ASIO et les corrections d'audit. Ils ne remplacent ni MSVC/WebView2 réel, ni le matériel audio, ni le test visuel intégral. Le push/compile GitHub final de cette passe corrective reste **la dernière étape après tests locaux verts**. Test intégral utilisateur, moteur complet validé visuellement, liste détaillée de bugs / défauts et acceptation finale restent à 0 % ; aucun élément n'est à 100 % avant acceptation.

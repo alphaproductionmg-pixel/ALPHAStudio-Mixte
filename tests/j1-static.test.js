@@ -30,7 +30,7 @@ test('build — livrable unique, autosuffisant, contenant tout J1', () => {
 test('sources — une seule vérité, pont natif préservé, archive d’origine intacte', () => {
   const build = read('UI/AlphaStudio/build.py');
   assert.ok(build.includes('"audio-core.js"'));
-  assert.ok(build.includes('js_after_bridge = ["audio.js"]'));
+  assert.ok(build.includes('js_after_bridge = ["audio.js", "layout.js"]'));
   assert.ok(build.includes('assert "window.ALPHA_AUDIO" in html'));
 
   const app = read('UI/AlphaStudio/src/app.js');

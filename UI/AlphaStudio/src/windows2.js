@@ -16,6 +16,29 @@
   if (!W) { console.warn('ALPHAWIN absent : fenêtres du lot 2 non chargées'); return; }
 
   const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const deviceState = () => {
+    const n = window.ALPHA_NATIVE;
+    return (n && typeof n.getState === 'function' && n.getState()) || {};
+  };
+  const deviceType = () => String(deviceState().currentDeviceType || deviceState().deviceTypeName || 'Périphérique système');
+  const deviceLabel = () => String(deviceState().deviceName || deviceState().outputDeviceName || deviceState().device || deviceType());
+  const deviceRate = () => Number(deviceState().deviceSampleRate || deviceState().sampleRate || 48000);
+  const deviceHz = () => Math.round(deviceRate()).toLocaleString('fr-FR') + ' Hz';
+  const deviceBuffer = () => Math.round(Number(deviceState().bufferSizeSamples || 256)) + ' échantillons';
+  const deviceLatency = () => {
+    const st = deviceState();
+    const samples = Number(st.inputLatencySamples || 0) + Number(st.outputLatencySamples || 0);
+    return (1000 * samples / Math.max(1, deviceRate())).toFixed(1).replace('.', ',') + ' ms';
+  };
+  const deviceTypeList = () => {
+    const st = deviceState();
+    return Array.isArray(st.audioDeviceTypes) && st.audioDeviceTypes.length ? st.audioDeviceTypes.join(' · ') : deviceType();
+  };
+  const nativeSend = (command) => {
+    const n = window.ALPHA_NATIVE;
+    if (n && typeof n.send === 'function') { n.send(command); return true; }
+    return false;
+  };
   const track = (id) => (A.trackById ? A.trackById(id) : null);
   const parts = () => (A.PARTS || []);
   const fmt = (p) => (A.fmtPos ? A.fmtPos(p) : String(p));
@@ -69,10 +92,10 @@
       '<div class="pf-led" data-pfdiskled><i></i>Overload</div></div>' +
       '<div class="pf-foot">' +
       '<div class="pf-grid">' +
-      '<div><span class="w-lbl">Moteur</span><b>Alpha ASIO Driver</b></div>' +
-      '<div><span class="w-lbl">Échantillons / tampon</span><b>256</b></div>' +
-      '<div><span class="w-lbl">Fréquence</span><b>48 000 Hz</b></div>' +
-      '<div><span class="w-lbl">Latence du pilote</span><b>5,3 ms</b></div>' +
+      '<div><span class=\"w-lbl\">Pilote actif</span><b>' + esc(deviceLabel()) + '</b></div>' +
+      '<div><span class=\"w-lbl\">Échantillons / tampon</span><b>' + esc(String(deviceState().bufferSizeSamples || 256)) + '</b></div>' +
+      '<div><span class=\"w-lbl\">Fréquence</span><b>' + esc(deviceHz()) + '</b></div>' +
+      '<div><span class=\"w-lbl\">Latence du pilote</span><b>' + esc(deviceLatency()) + '</b></div>' +
       '</div></div>' +
       '</div>' +
       '<div class="aw-foot"><span>Performances VST — F12</span><span style="flex:1"></span><span>Charge CPU et disque · voyants de surcharge</span></div>';
@@ -634,7 +657,7 @@
         ['Normaliser les fondus enchaînés', null, 'check', true]
       ], ''],
       ['VST', [
-        ['Périphérique audio', 'Alpha ASIO Driver', true],
+        ['Périphérique audio', deviceLabel(), true],
         ['Taille de la mémoire tampon', '256 échantillons', true],
         ['Sauvegarde automatique des éditeurs de plug-ins', null, 'check', true],
         ['Plug-in Editors Always on Top', null, 'check', false]
@@ -725,18 +748,22 @@
     const B = (l, k) => ({ t: 'btn', l: l, k: k });
     const DEV = [
       { name: 'VST Audio System', rows: [
-        R('Pilote ASIO', 'Alpha ASIO Driver'), R('Fréquence d’échantillonnage', '48 000 Hz'),
-        R('Taille de mémoire tampon', '256 échantillons'), R('Latence d’entrée', '5,333 ms'),
-        R('Latence de sortie', '5,333 ms'), R('Horloge', 'Interne'),
+        R('Type de pilote', deviceType()), R('Types disponibles', deviceTypeList()),
+        R('Périphérique', deviceLabel()), R('Fréquence d’échantillonnage', deviceHz()),
+        R('Taille de mémoire tampon', deviceBuffer()), R('Latence mesurée', deviceLatency()),
+        R('ASIO disponible', deviceState().asioAvailable ? 'Oui' : 'Non / pilote non détecté'),
         C('Relâcher le pilote en arrière-plan', false), C('Priorité audio (Boost)', true),
-        C('Multi Processing', true), C('Monitoring direct', false),
-        B('Panneau de configuration ASIO…', 'asio'), B('Réinitialiser', 'reset')
+        B('Ouvrir les réglages audio JUCE…', 'audioSettings'),
+        B('Panneau du pilote ASIO…', 'asio'), B('Réinitialiser', 'reset')
       ] },
-      { name: 'Alpha ASIO Driver', rows: [
-        R('Ports d’entrée', 'IN 1 – IN 8'), R('Ports de sortie', 'OUT 1 – OUT 8'),
-        R('Entrée active', 'Analog 1–8'), R('Sortie active', 'Analog 1–8'),
-        R('Source d’horloge', 'Word Clock'), R('Statut', 'Verrouillé'),
-        C('Monitoring direct', true), B('Panneau de configuration…', 'asio')
+      { name: 'Pilote actif', rows: [
+        R('Nom', deviceLabel()), R('Type', deviceType()),
+        R('Entrée', deviceState().inputDeviceName || 'Canaux par défaut'),
+        R('Sortie', deviceState().outputDeviceName || 'Canaux par défaut'),
+        R('Tampon', deviceBuffer()), R('Latence entrée', String(deviceState().inputLatencySamples || 0) + ' échantillons'),
+        R('Latence sortie', String(deviceState().outputLatencySamples || 0) + ' échantillons'),
+        R('Panneau constructeur', deviceState().hasControlPanel ? 'Disponible' : 'Non exposé par le pilote'),
+        B('Ouvrir le panneau constructeur…', 'asio')
       ] },
       { name: 'Alpha MIDI Input', rows: [
         R('Port d’entrée', 'Alpha MIDI In 1'), R('Filtre de canaux', 'Tous'),
@@ -798,6 +825,8 @@
           $$('[data-devchk]', body).forEach((c) => c.addEventListener('click', () => c.classList.toggle('on')));
           $$('[data-devbtn]', body).forEach((b) => b.addEventListener('click', () => {
             const k = b.dataset.devbtn;
+            if (k === 'asio' && nativeSend('asioPanel')) return;
+            if (k === 'audioSettings' && nativeSend('audioSettings')) return;
             A.showToast(k === 'asio' ? 'Panneau de configuration du pilote ASIO (fourni par la carte).'
               : k === 'reset' ? 'Pilote réinitialisé (interface).'
               : k === 'video' ? 'Réglages vidéo : sortie, format, Frame Offset (Device Setup ▸ Video Player).'

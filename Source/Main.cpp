@@ -1,7 +1,53 @@
 #include "AlphaWebMain.h"
+#include <cstdint>
+#include <cstring>
 using namespace juce;
 
+static double alphaDisplayScale()
+{
+    const auto* display = Desktop::getInstance().getDisplays().getPrimaryDisplay();
+    return display != nullptr ? jlimit (0.75, 3.0, display->scale) : 1.0;
+}
+
+static double alphaWindowsTextScale()
+{
+   #if JUCE_WINDOWS
+    // Windows « Agrandir le texte » : REG_DWORD 100 = 100 %, 150 = 150 %.
+    const String raw = WindowsRegistry::getValue ("HKEY_CURRENT_USER\\Software\\Microsoft\\Accessibility\\TextScaleFactor", "100");
+    const int percent = raw.getIntValue();
+    if (percent >= 75 && percent <= 250)
+        return jlimit (0.8, 2.5, (double) percent / 100.0);
+   #endif
+    return 1.0;
+}
+
+static Rectangle<int> alphaInitialWindowBounds()
+{
+    const auto* display = Desktop::getInstance().getDisplays().getPrimaryDisplay();
+    const auto area = display != nullptr ? display->userArea : Rectangle<int> (0, 0, 1920, 1080);
+    const int availableW = jmax (800, area.getWidth() - 40);
+    const int availableH = jmax (500, area.getHeight() - 40);
+    const int w = jmax (800, jmin (1840, availableW));
+    const int h = jmax (500, jmin (1000, availableH));
+    return { area.getX() + (area.getWidth() - w) / 2,
+             area.getY() + (area.getHeight() - h) / 2, w, h };
+}
+
+static File alphaWindowStateFile()
+{
+    auto dir = File::getSpecialLocation (File::userApplicationDataDirectory).getChildFile ("ALPHA Studio");
+    dir.createDirectory();
+    return dir.getChildFile ("window.xml");
+}
+
+struct AlphaExportDoneSignal
+{
+    std::shared_ptr<WaitableEvent> event;
+    ~AlphaExportDoneSignal() { if (event != nullptr) event->signal(); }
+};
+
 AlphaWebMainComponent::AlphaWebMainComponent()
+    : engineOwner (std::make_shared<AlphaEngine>()), engine (*engineOwner)
 {
     auto options = WebBrowserComponent::Options{}
         .withNativeIntegrationEnabled()
@@ -34,15 +80,16 @@ AlphaWebMainComponent::AlphaWebMainComponent()
     else engine.loadDemo();
     engine.setNativeStatus (TR ("Moteur Windows/JUCE prêt : projet, édition, enregistrement, mixage, MIDI et export WAV."));
 
-    setSize (1600, 900);
+    const auto initial = alphaInitialWindowBounds();
+    setSize (initial.getWidth(), initial.getHeight());
     startTimerHz (20);
 }
 
 AlphaWebMainComponent::~AlphaWebMainComponent()
 {
     stopTimer();
-    alive->store (false);
-    if (exporting.load()) exportDone->wait (5000.0);
+    alive->store (false); // annulation coopérative de l'export en cours.
+    if (exporting.load()) exportDone->wait(); // attente réelle, sans limite arbitraire.
     engine.onChanged = nullptr;
     browser.reset();
 }
@@ -50,18 +97,90 @@ AlphaWebMainComponent::~AlphaWebMainComponent()
 void AlphaWebMainComponent::resized()
 {
     if (browser != nullptr) browser->setBounds (getLocalBounds());
+    publishState();
 }
 
-var AlphaWebMainComponent::buildState() const
+var AlphaWebMainComponent::buildState()
 {
-    return JSON::parse (alphaString (engine.stateJson()));
+    auto state = JSON::parse (alphaString (engine.stateJson()));
+    addDisplayMetrics (state);
+    return state;
+}
+
+void AlphaWebMainComponent::addDisplayMetrics (var& state) const
+{
+    auto* object = state.getDynamicObject();
+    if (object == nullptr) return;
+    const double dpiScale = alphaDisplayScale();
+    const double fontScale = jlimit (0.8, 2.0, alphaWindowsTextScale() * fontScaleOverride);
+    const double widthScale = (double) jmax (1, getWidth()) / 1600.0;
+    const double heightScale = (double) jmax (1, getHeight()) / 900.0;
+    const double fittedScale = jlimit (0.65, 1.0, jmin (widthScale, heightScale));
+    const double uiScale = jlimit (0.60, 1.25, fittedScale * uiScaleOverride);
+    object->setProperty ("dpiScale", dpiScale);
+    object->setProperty ("devicePixelRatio", dpiScale);
+    object->setProperty ("fontScale", fontScale);
+    object->setProperty ("uiScale", uiScale);
+    object->setProperty ("appVersion", "0.5.0");
+    auto* safeArea = new DynamicObject();
+    safeArea->setProperty ("x", 0);
+    safeArea->setProperty ("y", 0);
+    safeArea->setProperty ("width", jmax (1, getWidth()));
+    safeArea->setProperty ("height", jmax (1, getHeight()));
+    object->setProperty ("safeArea", var (safeArea));
 }
 
 void AlphaWebMainComponent::publishState()
 {
     if (browser == nullptr || ! pageReady) return;
-    browser->evaluateJavascript ("window.ALPHA_NATIVE && window.ALPHA_NATIVE.applyState("
-                                 + alphaString (engine.stateJson()) + ");");
+    const String script = String ("window.ALPHA_NATIVE && window.ALPHA_NATIVE.applyState(")
+                          + JSON::toString (buildState()) + ");";
+    browser->evaluateJavascript (script);
+}
+
+void AlphaWebMainComponent::showAudioSettings()
+{
+    auto* selector = new AudioDeviceSelectorComponent (engine.deviceManager, 0, 2, 0, 2,
+                                                       true, false, true, false);
+    selector->setSize (680, 540);
+    DialogWindow::LaunchOptions options;
+    options.dialogTitle = TR ("Périphériques audio / ASIO");
+    options.dialogBackgroundColour = Colours::darkgrey;
+    options.content.setOwned (selector);
+    options.componentToCentreAround = this;
+    options.escapeKeyTriggersCloseButton = true;
+    options.useNativeTitleBar = true;
+    options.resizable = true;
+    options.launchAsync();
+}
+
+void AlphaWebMainComponent::showAsioPanel()
+{
+    if (auto* device = engine.deviceManager.getCurrentAudioDevice())
+    {
+        if (device->hasControlPanel() && device->showControlPanel())
+            engine.setNativeStatus (TR ("Panneau de configuration du pilote ASIO ouvert."));
+        else
+            engine.setNativeStatus (TR ("Aucun panneau constructeur ASIO disponible pour ce périphérique."));
+    }
+    else
+    {
+        engine.setNativeStatus (TR ("Aucun périphérique audio actif : ouvrir les réglages audio."));
+    }
+    publishState();
+}
+
+void AlphaWebMainComponent::fitWindowToScreen()
+{
+    if (auto* window = findParentComponentOfClass<DocumentWindow>())
+    {
+        const auto* display = Desktop::getInstance().getDisplays().getPrimaryDisplay();
+        const auto area = display != nullptr ? display->userArea : Rectangle<int> (0, 0, 1920, 1080);
+        window->setMinimised (false);
+        window->setFullScreen (false);
+        window->setBounds (area.reduced (20));
+    }
+    publishState();
 }
 
 void AlphaWebMainComponent::handleCommand (const Array<var>& args,
@@ -91,6 +210,70 @@ void AlphaWebMainComponent::handleCommand (const Array<var>& args,
     if (command == "exportWav" || command == "exportTrack" || command == "exportStems")
     {
         exportWav (command == "exportStems" || command == "exportTrack");
+        complete (buildState());
+        return;
+    }
+
+    if (command == "audioSettings")
+    {
+        showAudioSettings();
+        complete (buildState());
+        return;
+    }
+    if (command == "asioPanel")
+    {
+        showAsioPanel();
+        complete (buildState());
+        return;
+    }
+    if (command == "getDisplayMetrics")
+    {
+        complete (buildState());
+        return;
+    }
+    if (command == "windowMinimize" || command == "windowMaximize" ||
+        command == "windowRestore" || command == "windowFitToScreen")
+    {
+        if (auto* window = findParentComponentOfClass<DocumentWindow>())
+        {
+            if (command == "windowMinimize") window->minimiseButtonPressed();
+            else if (command == "windowMaximize") window->maximiseButtonPressed();
+            else if (command == "windowRestore") { window->setMinimised (false); window->setFullScreen (false); }
+            else fitWindowToScreen();
+        }
+        publishState();
+        complete (buildState());
+        return;
+    }
+    if (command == "windowDrag")
+    {
+        if (auto* window = findParentComponentOfClass<DocumentWindow>())
+        {
+            const double scale = jmax (0.75, alphaDisplayScale());
+            const int dx = roundToInt ((double) payload.getProperty (Identifier ("dx"), var (0.0)) / scale);
+            const int dy = roundToInt ((double) payload.getProperty (Identifier ("dy"), var (0.0)) / scale);
+            const auto* display = Desktop::getInstance().getDisplays().getPrimaryDisplay();
+            const auto area = display != nullptr ? display->userArea : Rectangle<int> (0, 0, 1920, 1080);
+            if (! window->isMinimised())
+            {
+                if (window->isFullScreen()) window->setFullScreen (false);
+                const auto bounds = window->getBounds();
+                const int x = jlimit (area.getX() - bounds.getWidth() + 120, area.getRight() - 120, bounds.getX() + dx);
+                const int y = jlimit (area.getY(), area.getBottom() - 40, bounds.getY() + dy);
+                window->setTopLeftPosition (x, y);
+            }
+        }
+        complete (buildState());
+        return;
+    }
+    if (command == "uiScale" || command == "fontScale" || command == "resetLayout")
+    {
+        if (command == "uiScale")
+            uiScaleOverride = jlimit (0.70, 1.25, uiScaleOverride + (double) payload.getProperty (Identifier ("delta"), var (0.0)));
+        else if (command == "fontScale")
+            fontScaleOverride = jlimit (0.80, 2.00, fontScaleOverride + (double) payload.getProperty (Identifier ("delta"), var (0.0)));
+        else { uiScaleOverride = 1.0; fontScaleOverride = 1.0; }
+        publishState();
         complete (buildState());
         return;
     }
@@ -210,7 +393,7 @@ void AlphaWebMainComponent::openDialog (const String& kind, const var& payload)
                 if (file.hasFileExtension (".alphaproj") || file.hasFileExtension (".json"))
                 {
                     MemoryBlock mb;
-                    if (file.loadFileAsData (mb)) eng.importProjectData (mb.toBase64Encoding());
+                    if (file.loadFileAsData (mb)) eng.importProjectData (mb.toBase64Encoding(), file.getParentDirectory());
                     continue;
                 }
                 if (kind == "importOmf" || kind == "importAaf" || kind == "importXml" || kind == "importCd")
@@ -220,7 +403,7 @@ void AlphaWebMainComponent::openDialog (const String& kind, const var& payload)
                 }
                 MemoryBlock mb;
                 if (! file.loadFileAsData (mb)) continue;
-                eng.importAudioData (file.getFileName(), mb.toBase64Encoding(), startBars);
+                eng.importAudioData (file.getFileName(), mb.toBase64Encoding(), startBars, trackIndex);
             }
         }
         safe->publishState();
@@ -242,11 +425,11 @@ void AlphaWebMainComponent::exportWav (bool stems)
     const int exportFlags = stems ? (FileBrowserComponent::openMode | FileBrowserComponent::canSelectDirectories)
                                   : (FileBrowserComponent::saveMode | FileBrowserComponent::warnAboutOverwriting);
     Component::SafePointer<AlphaWebMainComponent> safe (this);
-    auto* self = this;
     auto aliveFlag = alive;
     auto done = exportDone;
+    auto engineRef = engineOwner;
 
-    chooser->launchAsync (exportFlags, [safe, self, aliveFlag, done, stems] (const FileChooser& fc)
+    chooser->launchAsync (exportFlags, [safe, aliveFlag, done, stems, engineRef] (const FileChooser& fc)
     {
         const File target = fc.getResult();
         if (safe == nullptr || target == File())
@@ -255,36 +438,34 @@ void AlphaWebMainComponent::exportWav (bool stems)
             done->signal();
             return;
         }
-        const bool launched = Thread::launch ([safe, self, aliveFlag, done, stems, target]
+        const bool launched = Thread::launch ([safe, aliveFlag, done, stems, target, engineRef]
         {
+            AlphaExportDoneSignal completion { done };
+            if (! aliveFlag->load()) return;
+            std::function<bool (double)> progress = [aliveFlag] (double) { return aliveFlag->load(); };
             bool ok = false;
-            if (aliveFlag->load() && self != nullptr)
+            engineRef->beginOffline();
+            if (stems)
             {
-                std::function<bool (double)> progress = [] (double) { return true; };
-                self->engine.beginOffline();
-                if (stems)
+                target.createDirectory();
+                ok = true;
+                for (size_t i = 0; i < engineRef->tracks.size() && aliveFlag->load(); ++i)
                 {
-                    target.createDirectory();
-                    ok = true;
-                    for (size_t i = 0; i < self->engine.tracks.size(); ++i)
-                    {
-                        const String name = self->engine.tracks[i]->name.removeCharacters ("\\/:*?\"<>|");
-                        const File f = target.getNonexistentChildFile (name.isEmpty() ? "Stem" : name, ".wav");
-                        ok = self->engine.renderOffline (f, 48000.0, 24, progress, (int) i) && ok;
-                    }
+                    const String name = engineRef->tracks[i]->name.removeCharacters ("\\/:*?\"<>|");
+                    const File f = target.getNonexistentChildFile (name.isEmpty() ? "Stem" : name, ".wav");
+                    ok = engineRef->renderOffline (f, 48000.0, 24, progress, (int) i) && ok;
                 }
-                else
-                {
-                    ok = self->engine.renderOffline (target.withFileExtension ("wav"), 48000.0, 24, progress, -1);
-                }
-                self->engine.endOffline();
-                self->engine.setNativeStatus (ok ? TR ("Export WAV 48 kHz / 24 bits terminé.") : TR ("Export WAV interrompu."));
             }
-            MessageManager::callAsync ([safe, done]
+            else
+            {
+                ok = engineRef->renderOffline (target.withFileExtension ("wav"), 48000.0, 24, progress, -1);
+            }
+            engineRef->endOffline();
+            engineRef->setNativeStatus (ok ? TR ("Export WAV 48 kHz / 24 bits terminé.") : TR ("Export WAV interrompu."));
+            MessageManager::callAsync ([safe]
             {
                 if (safe != nullptr) { safe->exporting.store (false); safe->publishState(); }
             });
-            done->signal();
         });
         if (! launched)
         {
@@ -305,7 +486,7 @@ class AlphaApp final : public JUCEApplication
 {
 public:
     const String getApplicationName() override { return "ALPHA Studio"; }
-    const String getApplicationVersion() override { return "0.4.0"; }
+    const String getApplicationVersion() override { return "0.5.0"; }
     bool moreThanOneInstanceAllowed() override { return true; }
     void initialise (const String&) override { window = std::make_unique<MainWindow>(); }
     void shutdown() override { window.reset(); }
@@ -319,11 +500,42 @@ public:
             setUsingNativeTitleBar (true);
             setContentOwned (new AlphaWebMainComponent(), true);
             setResizable (true, true);
-            setResizeLimits (1100, 650, 3840, 2160);
-            centreWithSize (1600, 900);
+            setResizeLimits (800, 500, 3840, 2160);
+            if (! restoreWindowState())
+                setBounds (alphaInitialWindowBounds());
             setVisible (true);
         }
-        void closeButtonPressed() override { JUCEApplication::getInstance()->systemRequestedQuit(); }
+        ~MainWindow() override { saveWindowState(); }
+        void closeButtonPressed() override
+        {
+            saveWindowState();
+            JUCEApplication::getInstance()->systemRequestedQuit();
+        }
+    private:
+        bool restoreWindowState()
+        {
+            auto xml = parseXML (alphaWindowStateFile());
+            if (xml == nullptr || ! xml->hasTagName ("ALPHA_WINDOW")) return false;
+            const Rectangle<int> bounds (xml->getIntAttribute ("x", 0), xml->getIntAttribute ("y", 0),
+                                         xml->getIntAttribute ("w", 0), xml->getIntAttribute ("h", 0));
+            const auto* display = Desktop::getInstance().getDisplays().getPrimaryDisplay();
+            const auto area = display != nullptr ? display->userArea : Rectangle<int> (0, 0, 1920, 1080);
+            if (bounds.getWidth() < 800 || bounds.getHeight() < 500 || ! area.intersects (bounds)) return false;
+            setBounds (bounds);
+            if (xml->getBoolAttribute ("maximised", false)) setFullScreen (true);
+            return true;
+        }
+        void saveWindowState()
+        {
+            const auto bounds = getBounds();
+            auto xml = std::make_unique<XmlElement> ("ALPHA_WINDOW");
+            xml->setAttribute ("x", bounds.getX());
+            xml->setAttribute ("y", bounds.getY());
+            xml->setAttribute ("w", bounds.getWidth());
+            xml->setAttribute ("h", bounds.getHeight());
+            xml->setAttribute ("maximised", isFullScreen());
+            xml->writeTo (alphaWindowStateFile());
+        }
     };
 private:
     std::unique_ptr<MainWindow> window;

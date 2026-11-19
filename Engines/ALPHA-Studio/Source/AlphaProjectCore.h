@@ -197,16 +197,30 @@ private:
         {
             const size_t start = pos;
             if (peek() == '-') ++pos;
-            while (pos < text.size() && text[pos] >= '0' && text[pos] <= '9') ++pos;
-            if (peek() == '.') { ++pos; while (pos < text.size() && text[pos] >= '0' && text[pos] <= '9') ++pos; }
+            if (peek() == '0') ++pos;
+            else if (peek() >= '1' && peek() <= '9')
+            {
+                while (pos < text.size() && text[pos] >= '0' && text[pos] <= '9') ++pos;
+            }
+            else { fail ("nombre JSON invalide"); return {}; }
+            if (peek() == '.')
+            {
+                ++pos;
+                if (pos >= text.size() || text[pos] < '0' || text[pos] > '9') { fail ("partie décimale incomplète"); return {}; }
+                while (pos < text.size() && text[pos] >= '0' && text[pos] <= '9') ++pos;
+            }
             if (peek() == 'e' || peek() == 'E')
             {
                 ++pos;
                 if (peek() == '+' || peek() == '-') ++pos;
+                if (pos >= text.size() || text[pos] < '0' || text[pos] > '9') { fail ("exposant incomplet"); return {}; }
                 while (pos < text.size() && text[pos] >= '0' && text[pos] <= '9') ++pos;
             }
-            if (start == pos) { fail ("nombre invalide"); return {}; }
-            return JsonValue (std::strtod (text.substr (start, pos - start).c_str(), nullptr));
+            const std::string token = text.substr (start, pos - start);
+            char* end = nullptr;
+            const double value = std::strtod (token.c_str(), &end);
+            if (end != token.c_str() + token.size() || ! std::isfinite (value)) { fail ("nombre JSON non fini ou invalide"); return {}; }
+            return JsonValue (value);
         }
         static void appendUtf8 (uint32_t cp, std::string& out)
         {
@@ -270,11 +284,24 @@ private:
                     case 'u':
                     {
                         uint32_t cp = readHex4();
-                        if (cp >= 0xd800 && cp <= 0xdbff && pos + 1 < text.size() && text[pos] == '\\' && text[pos + 1] == 'u')
+                        if (! error.empty()) return out;
+                        if (cp >= 0xd800 && cp <= 0xdbff)
                         {
+                            if (pos + 5 >= text.size() || text[pos] != '\\' || text[pos + 1] != 'u')
+                            {
+                                fail ("paire de substituts UTF-16 incomplète");
+                                return out;
+                            }
                             pos += 2;
                             const uint32_t low = readHex4();
-                            if (low >= 0xdc00 && low <= 0xdfff) cp = 0x10000 + ((cp - 0xd800) << 10) + (low - 0xdc00);
+                            if (! error.empty()) return out;
+                            if (low < 0xdc00 || low > 0xdfff) { fail ("substitut bas UTF-16 invalide"); return out; }
+                            cp = 0x10000u + ((cp - 0xd800u) << 10) + (low - 0xdc00u);
+                        }
+                        else if (cp >= 0xdc00 && cp <= 0xdfff)
+                        {
+                            fail ("substitut bas UTF-16 isolé");
+                            return out;
                         }
                         appendUtf8 (cp, out);
                         break;
@@ -1597,10 +1624,10 @@ inline void appendBE32 (std::string& b, uint32_t v)
     b += static_cast<char> ((v >> 8) & 0xff);
     b += static_cast<char> (v & 0xff);
 }
-inline uint32_t readVarLen (const std::string& b, size_t& p, bool& ok)
+inline uint32_t readVarLen (const std::string& b, size_t& p, size_t end, bool& ok)
 {
     uint32_t v = 0;
-    for (int i = 0; i < 4 && p < b.size(); ++i)
+    for (int i = 0; i < 4 && p < end; ++i)
     {
         const uint8_t c = static_cast<uint8_t> (b[p++]);
         v = (v << 7) | (c & 0x7f);
@@ -1632,18 +1659,26 @@ inline SmfResult parseSmf (const std::string& b)
     SmfResult out;
     if (b.size() < 14 || b.compare (0, 4, "MThd") != 0) { out.error = "En-tête MThd absent"; return out; }
     const uint32_t headerLen = readBE32 (b, 4);
+    const uint16_t format = readBE16 (b, 8);
     const uint16_t tracks = readBE16 (b, 10);
     const uint16_t division = readBE16 (b, 12);
-    if (headerLen < 6 || tracks == 0 || division == 0) { out.error = "En-tête SMF invalide"; return out; }
-    out.ticksPerQuarter = division < 0x8000 ? division : 480;
-    const double ticksPerBar = 4.0 * out.ticksPerQuarter;
-    size_t p = 8 + headerLen;
+    if (headerLen != 6 || (size_t) 8 + headerLen > b.size() || tracks == 0 || division == 0)
+    { out.error = "En-tête SMF invalide ou tronqué"; return out; }
+    if (format > 1) { out.error = "Format SMF 2 non pris en charge"; return out; }
+    if ((division & 0x8000) != 0) { out.error = "Division SMPTE non prise en charge"; return out; }
+    out.ticksPerQuarter = division;
+    const double ticksPerBar = 4.0 * (double) out.ticksPerQuarter;
+    size_t p = (size_t) 8 + headerLen;
     struct Active { uint32_t tick; int velocity; };
-    for (uint16_t tr = 0; tr < tracks && p + 8 <= b.size(); ++tr)
+    for (uint16_t tr = 0; tr < tracks; ++tr)
     {
-        if (b.compare (p, 4, "MTrk") != 0) { out.error = "Piste MTrk absente"; return out; }
+        if (p + 8 > b.size() || b.compare (p, 4, "MTrk") != 0)
+        { out.error = "Piste MTrk absente ou tronquée"; out.notes.clear(); return out; }
         const uint32_t len = readBE32 (b, p + 4);
-        const size_t start = p + 8, end = std::min (b.size(), start + (size_t) len);
+        const size_t start = p + 8;
+        if (start > b.size() || (size_t) len > b.size() - start)
+        { out.error = "Longueur MTrk supérieure aux données"; out.notes.clear(); return out; }
+        const size_t end = start + (size_t) len;
         p = end;
         size_t q = start;
         uint32_t tick = 0;
@@ -1652,8 +1687,8 @@ inline SmfResult parseSmf (const std::string& b)
         bool ok = true;
         while (q < end && ok)
         {
-            tick += readVarLen (b, q, ok);
-            if (! ok || q >= end) break;
+            tick += readVarLen (b, q, end, ok);
+            if (! ok || q >= end) { ok = false; break; }
             int status = static_cast<uint8_t> (b[q]);
             if (status < 0x80)
             {
@@ -1663,24 +1698,24 @@ inline SmfResult parseSmf (const std::string& b)
             else { ++q; runningStatus = status < 0xf0 ? status : -1; }
             if (status == 0xff)
             {
-                if (q >= end) break;
+                if (q >= end) { ok = false; break; }
                 const int type = static_cast<uint8_t> (b[q++]);
-                const uint32_t l = readVarLen (b, q, ok);
-                if (! ok) break;
-                q += l;
+                const uint32_t l = readVarLen (b, q, end, ok);
+                if (! ok || (size_t) l > end - q) { ok = false; break; }
+                q += (size_t) l;
                 if (type == 0x2f) break;
                 continue;
             }
             if (status == 0xf0 || status == 0xf7)
             {
-                const uint32_t l = readVarLen (b, q, ok);
-                if (! ok) break;
-                q += l;
+                const uint32_t l = readVarLen (b, q, end, ok);
+                if (! ok || (size_t) l > end - q) { ok = false; break; }
+                q += (size_t) l;
                 continue;
             }
             const int hi = status & 0xf0;
             const int dataBytes = (hi == 0xc0 || hi == 0xd0) ? 1 : 2;
-            if (q + (size_t) dataBytes > end) break;
+            if (q + (size_t) dataBytes > end) { ok = false; break; }
             const int d1 = static_cast<uint8_t> (b[q]);
             const int d2 = dataBytes > 1 ? static_cast<uint8_t> (b[q + 1]) : 0;
             q += (size_t) dataBytes;
@@ -1691,7 +1726,7 @@ inline SmfResult parseSmf (const std::string& b)
             else if (hi == 0x80 || (hi == 0x90 && d2 == 0))
             {
                 const auto key = std::make_pair (status & 0x0f, d1);
-                auto it = active.find (key);
+                const auto it = active.find (key);
                 if (it != active.end())
                 {
                     MidiNote n;
@@ -1702,6 +1737,12 @@ inline SmfResult parseSmf (const std::string& b)
                     active.erase (it);
                 }
             }
+        }
+        if (! ok)
+        {
+            out.error = "Événement MIDI incomplet ou longueur excessive";
+            out.notes.clear();
+            return out;
         }
         for (const auto& kv : active)
         {
@@ -1716,17 +1757,25 @@ inline SmfResult parseSmf (const std::string& b)
 }
 inline std::string makeSmf (const std::vector<MidiNote>& notes, uint16_t ticksPerQuarter = 480)
 {
-    struct Ev { uint32_t tick; uint8_t status, d1, d2; };
+    struct Ev { uint32_t tick; uint8_t priority, status, d1, d2; };
     std::vector<Ev> events;
     const double tpb = 4.0 * ticksPerQuarter;
     for (const auto& n : notes)
     {
         const uint32_t a = (uint32_t) std::llround ((n.startBars - 1.0) * tpb);
-        const uint32_t b = (uint32_t) std::llround (n.lenBars * tpb);
-        events.push_back ({ a, 0x90, (uint8_t) n.pitch, (uint8_t) n.velocity });
-        events.push_back ({ a + b, 0x80, (uint8_t) n.pitch, 0 });
+        const uint32_t b = (uint32_t) std::llround (std::max (0.001, n.lenBars) * tpb);
+        events.push_back ({ a, 1, 0x90, (uint8_t) n.pitch, (uint8_t) n.velocity });
+        events.push_back ({ a + b, 0, 0x80, (uint8_t) n.pitch, 0 });
     }
-    std::sort (events.begin(), events.end(), [] (const Ev& a, const Ev& b) { return a.tick < b.tick; });
+    // À tick égal, Note Off est toujours écrit avant Note On : une réarticulation
+    // immédiate ne peut pas laisser une note bloquée ni dépendre de std::sort.
+    std::sort (events.begin(), events.end(), [] (const Ev& a, const Ev& b)
+    {
+        if (a.tick != b.tick) return a.tick < b.tick;
+        if (a.priority != b.priority) return a.priority < b.priority;
+        if (a.status != b.status) return a.status < b.status;
+        return a.d1 < b.d1;
+    });
     std::string track;
     uint32_t last = 0;
     for (const auto& e : events)

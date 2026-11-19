@@ -8,6 +8,7 @@ on:
       - "Source/**"
       - "Engines/ALPHA-Studio/Source/**"
       - "UI/AlphaStudio/**"
+      - "installer/**"
       - "tests/**"
       - "ETAPES.md"
       - "docs/**"
@@ -19,6 +20,7 @@ on:
       - "Source/**"
       - "Engines/ALPHA-Studio/Source/**"
       - "UI/AlphaStudio/**"
+      - "installer/**"
       - "tests/**"
       - "ETAPES.md"
       - "docs/**"
@@ -71,8 +73,31 @@ jobs:
           Expand-Archive -Path $zip -DestinationPath $dest -Force
           if (-not (Test-Path (Join-Path $dest 'build/native/include/WebView2.h'))) { throw 'WebView2.h absent du package NuGet' }
           if (-not (Test-Path (Join-Path $dest 'build/native/x64/WebView2LoaderStatic.lib'))) { throw 'WebView2LoaderStatic.lib absent du package NuGet' }
+      - name: Télécharger le SDK ASIO Steinberg (non redistribué)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = Join-Path $env:RUNNER_TEMP 'ASIO-SDK_2.3.4_2025-10-15.zip'
+          Invoke-WebRequest -Uri 'https://download.steinberg.net/sdk_downloads/ASIO-SDK_2.3.4_2025-10-15.zip' -OutFile $zip
+          $root = Join-Path $env:RUNNER_TEMP 'Steinberg-ASIO-SDK'
+          Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
+          Expand-Archive -Path $zip -DestinationPath $root -Force
+          $common = Get-ChildItem -Path $root -Recurse -Directory -Filter 'common' |
+            Where-Object { Test-Path (Join-Path $_.FullName 'iasiodrv.h') } |
+            Select-Object -First 1
+          if (-not $common) { throw 'iasiodrv.h absent du SDK ASIO Steinberg' }
+          $sdk = Split-Path $common.FullName -Parent
+          "ALPHA_ASIO_SDK_DIR=$sdk" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "SDK ASIO : $sdk"
+      - name: Télécharger le bootstrapper WebView2 Evergreen
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $target = Join-Path $PWD 'installer/MicrosoftEdgeWebview2Setup.exe'
+          Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile $target
+          if ((Get-Item $target).Length -lt 100000) { throw 'Bootstrapper WebView2 invraisemblablement petit' }
       - name: Configurer CMake / Visual Studio 2022
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DJUCE_WEBVIEW2_PACKAGE_LOCATION="${env:RUNNER_TEMP}/NuGetPackages"
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DJUCE_WEBVIEW2_PACKAGE_LOCATION="${env:RUNNER_TEMP}/NuGetPackages" -DALPHA_ASIO_SDK_DIR="$env:ALPHA_ASIO_SDK_DIR"
       - name: Compiler ALPHA Studio
         run: cmake --build build --config Release --parallel 4
       - name: Copier WebView2Loader.dll près de l'exécutable
@@ -81,6 +106,68 @@ jobs:
           $dll = Join-Path $env:RUNNER_TEMP 'NuGetPackages/Microsoft.Web.WebView2.1.0.1901.177/build/native/x64/WebView2Loader.dll'
           if (-not (Test-Path $dll)) { throw 'WebView2Loader.dll absent du package NuGet' }
           Get-ChildItem -Path build -Recurse -Directory -Filter Release | ForEach-Object { Copy-Item $dll $_.FullName -Force }
+      - name: Préparer le dossier installable
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $release = Get-ChildItem -Path build -Recurse -Directory -Filter Release |
+            Where-Object { Test-Path (Join-Path $_.FullName 'ALPHA Studio.exe') } |
+            Select-Object -First 1
+          if (-not $release) { throw 'ALPHA Studio.exe introuvable dans build/**/Release' }
+          $stage = Join-Path $PWD 'installer/payload'
+          Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Get-ChildItem -Path $release.FullName | Copy-Item -Destination $stage -Recurse -Force
+          $dll = Join-Path $env:RUNNER_TEMP 'NuGetPackages/Microsoft.Web.WebView2.1.0.1901.177/build/native/x64/WebView2Loader.dll'
+          if (-not (Test-Path $dll)) { throw 'WebView2Loader.dll absent du package NuGet' }
+          Copy-Item $dll $stage -Force
+          Copy-Item 'installer/THIRD_PARTY_NOTICES.md' $stage -Force
+          if (-not (Test-Path (Join-Path $stage 'ALPHA Studio.exe'))) { throw 'EXE absent du payload' }
+          if (-not (Test-Path (Join-Path $stage 'UI/AlphaStudio/alpha-studio.html'))) { throw 'Interface absente du payload' }
+      - name: Construire l'installateur Inno Setup 0.5.0
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $candidates = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles}\Inno Setup 6\ISCC.exe",
+            "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          )
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            if (-not (Get-Command choco -ErrorAction SilentlyContinue)) { throw 'Inno Setup et Chocolatey absents du runner' }
+            choco install innosetup --no-progress -y
+            $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          if (-not $iscc) { throw 'ISCC.exe introuvable après installation Inno Setup' }
+          & $iscc 'installer/ALPHAStudio.iss' /Q
+          if ($LASTEXITCODE -ne 0) { throw "ISCC a échoué avec le code $LASTEXITCODE" }
+          $setup = Join-Path $PWD 'installer/ALPHAStudio-Setup-0.5.0-x64.exe'
+          if (-not (Test-Path $setup)) { throw 'Installateur ALPHAStudio-Setup-0.5.0-x64.exe absent' }
+          Write-Host "Installateur : $setup ($((Get-Item $setup).Length) octets)"
+      - name: Test silencieux installation / désinstallation
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = (Resolve-Path 'installer/ALPHAStudio-Setup-0.5.0-x64.exe').Path
+          $install = Join-Path $env:RUNNER_TEMP 'ALPHAStudio-SilentTest'
+          $log = Join-Path $env:RUNNER_TEMP 'alpha-install.log'
+          Remove-Item -Recurse -Force $install -ErrorAction SilentlyContinue
+          $installArgs = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/DIR="' + $install + '"', '/LOG="' + $log + '"')
+          $p = Start-Process -FilePath $setup -ArgumentList $installArgs -Wait -PassThru
+          if ($p.ExitCode -ne 0) {
+            if (Test-Path $log) { Get-Content $log -Tail 80 }
+            throw "Installation silencieuse : code $($p.ExitCode)"
+          }
+          $exe = Join-Path $install 'ALPHA Studio.exe'
+          if (-not (Test-Path $exe)) { throw 'EXE absent après installation silencieuse' }
+          $uninstall = Join-Path $install 'unins000.exe'
+          if (-not (Test-Path $uninstall)) { throw 'Désinstalleur absent après installation silencieuse' }
+          $p2 = Start-Process -FilePath $uninstall -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -PassThru
+          Start-Sleep -Seconds 2
+          if ($p2.ExitCode -ne 0) { throw "Désinstallation silencieuse : code $($p2.ExitCode)" }
+          if (Test-Path $exe) { throw 'EXE encore présent après désinstallation silencieuse' }
+          Write-Host 'Installation et désinstallation silencieuses : OK'
       - name: Publier l'exécutable et l'interface
         uses: actions/upload-artifact@v4
         with:
@@ -90,3 +177,9 @@ jobs:
             build/**/Release/*.dll
             build/**/Release/UI/AlphaStudio/**
           if-no-files-found: warn
+      - name: Publier l'installateur Windows 0.5.0
+        uses: actions/upload-artifact@v4
+        with:
+          name: ALPHAStudio-Setup-0.5.0-x64
+          path: installer/ALPHAStudio-Setup-0.5.0-x64.exe
+          if-no-files-found: error

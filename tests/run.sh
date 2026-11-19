@@ -15,12 +15,14 @@ for f in \
   UI/AlphaStudio/src/app.js \
   UI/AlphaStudio/src/audio-core.js \
   UI/AlphaStudio/src/audio.js \
+  UI/AlphaStudio/src/layout.js \
   UI/AlphaStudio/native-bridge.js \
   tests/support/harness.js \
   tests/j1-core.test.js \
   tests/j1-runtime.test.js \
   tests/j1-static.test.js \
-  tests/j2-j6-native.test.js; do
+  tests/j2-j6-native.test.js \
+  tests/repair-0.5.test.js; do
   node --check "$f"
 done
 
@@ -29,7 +31,7 @@ g++ -std=c++17 -Wall -Wextra -O1 -o /tmp/alpha-core-tests tests/alpha-core.test.
 /tmp/alpha-core-tests
 
 echo "== 4/5 : tests J1, livraison et pont WebView2 J2 → J6 =="
-node --test tests/j1-core.test.js tests/j1-runtime.test.js tests/j1-static.test.js tests/j2-j6-native.test.js
+node --test tests/j1-core.test.js tests/j1-runtime.test.js tests/j1-static.test.js tests/j2-j6-native.test.js tests/repair-0.5.test.js
 
 echo "== 5/5 : syntaxe C++17/JUCE, propreté et grep de contrôle =="
 python3 - <<'PY'
@@ -50,4 +52,4 @@ grep -q '__juce__invoke' UI/AlphaStudio/alpha-studio.html
 grep -q 'if (A.setPlayhead) A.setPlayhead(A.state.pos);' UI/AlphaStudio/native-bridge.js
 ! grep -q '<script src=' UI/AlphaStudio/alpha-studio.html
 
-echo "OK — J1 → J6 : build, horloge, noyau C++, pont WebView2, sources et livrable vérifiés."
+echo "OK — J1 → J6 + réparation 0.5.0 : installateur, ASIO, fenêtre, DPI, audit, sources et livrable vérifiés."

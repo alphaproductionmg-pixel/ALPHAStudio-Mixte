@@ -187,6 +187,89 @@ static void testJ5J6MidiPrefsVideo()
     std::cout << "j5/j6 modèle, MIDI, préférences, Control Room, vidéo verrouillée : PASS\n";
 }
 
+static void testAuditHardening()
+{
+    // S5 : grammaire numérique JSON stricte, sans valeur non finie.
+    std::string err;
+    JsonValue strict = JsonValue::parse ("{\"x\":-2.5e+1,\"y\":0,\"z\":1.25}", err);
+    assert (err.empty());
+    assert (std::abs (jNumber (strict, "x") + 25.0) < 1e-12);
+    assert (std::abs (jNumber (strict, "y")) < 1e-12);
+    const char* invalidNumbers[] = {
+        "{\"x\":1.}", "{\"x\":1e}", "{\"x\":1e+}", "{\"x\":01}",
+        "{\"x\":+1}", "{\"x\":1e999}", "{\"x\":NaN}", "{\"x\":.5}"
+    };
+    for (const char* text : invalidNumbers)
+    {
+        err.clear();
+        const auto bad = JsonValue::parse (text, err);
+        (void) bad;
+        assert (! err.empty());
+    }
+
+    // S6 : paire UTF-16 valide, substituts isolés ou mal appariés rejetés.
+    err.clear();
+    JsonValue unicode = JsonValue::parse ("{\"a\":\"\\uD83D\\uDE00\"}", err);
+    assert (err.empty());
+    assert (jString (unicode, "a") == "\xf0\x9f\x98\x80");
+    const char* invalidUnicode[] = {
+        "{\"a\":\"\\uD83D\"}", "{\"a\":\"\\uDE00\"}",
+        "{\"a\":\"\\uD83D\\uD83D\"}", "{\"a\":\"\\uD83Dx\"}"
+    };
+    for (const char* text : invalidUnicode)
+    {
+        err.clear();
+        const auto bad = JsonValue::parse (text, err);
+        (void) bad;
+        assert (! err.empty());
+    }
+
+    // S2/S3/S4 : SMF borné, formats 0/1, PPQN réel, Note Off avant Note On au même tick.
+    std::vector<MidiNote> repeat;
+    repeat.push_back ({ 1.0, 0.25, 60, 100, true });
+    repeat.push_back ({ 1.25, 0.25, 60, 110, true });
+    const auto smf = makeSmf (repeat, 480);
+    size_t p = 22; // MThd 14 octets + en-tête MTrk 8 octets.
+    bool ok = true;
+    std::vector<int> statuses;
+    std::vector<uint32_t> deltas;
+    while (p < smf.size())
+    {
+        const uint32_t delta = readVarLen (smf, p, smf.size(), ok);
+        assert (ok && p < smf.size());
+        const int status = static_cast<uint8_t> (smf[p++]);
+        if (status == 0xff)
+        {
+            p += 1;
+            const uint32_t l = readVarLen (smf, p, smf.size(), ok);
+            assert (ok && (size_t) l <= smf.size() - p);
+            p += (size_t) l;
+            break;
+        }
+        statuses.push_back (status);
+        deltas.push_back (delta);
+        p += 2;
+    }
+    assert (statuses.size() >= 4);
+    assert (statuses[1] == 0x80);
+    assert (statuses[2] == 0x90);
+    assert (deltas[2] == 0);
+
+    const auto smf960 = makeSmf (repeat, 960);
+    const auto parsed960 = parseSmf (smf960);
+    assert (parsed960.error.empty());
+    assert (parsed960.ticksPerQuarter == 960);
+    std::string bad = smf;
+    bad[9] = 2;
+    assert (! parseSmf (bad).error.empty()); // format SMF 2 rejeté
+    bad = smf; bad[12] = static_cast<char> (0x80); bad[13] = 0;
+    assert (! parseSmf (bad).error.empty()); // division SMPTE rejetée explicitement
+    bad = smf; bad[18] = 0x7f; bad[19] = static_cast<char> (0xff); bad[20] = static_cast<char> (0xff); bad[21] = static_cast<char> (0xff);
+    assert (! parseSmf (bad).error.empty()); // longueur MTrk excessive
+    assert (! parseSmf (smf.substr (0, smf.size() - 2)).error.empty()); // piste tronquée
+    std::cout << "audit S2/S3/S4/S5/S6 : PASS\n";
+}
+
 int main()
 {
     testJ2JsonAndProject();
@@ -194,6 +277,7 @@ int main()
     testJ2EditingAndPersistence();
     testJ3J4AutomationAndDsp();
     testJ5J6MidiPrefsVideo();
-    std::cout << "OK — noyau C++ J2→J6 : 5 groupes de tests PASS.\n";
+    testAuditHardening();
+    std::cout << "OK — noyau C++ J2→J6 : 6 groupes de tests PASS.\n";
     return 0;
 }

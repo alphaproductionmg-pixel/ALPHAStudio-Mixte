@@ -13,25 +13,39 @@
   /* Protocole natif JUCE 8 : un événement __juce__invoke avec params=[commande, données],
      puis un événement __juce__complete { promiseId, result }. Le module JS JUCE n'est pas
      importé dans le HTML autonome : le pont implémente ici son petit gestionnaire de promesses. */
+  const NATIVE_TIMEOUT_MS = 15000;
   const pending = new Map();
   let promiseId = 0;
   backend.addEventListener('__juce__complete', (event) => {
     if (!event) return;
     const id = Number(event.promiseId);
-    const resolve = pending.get(id);
-    if (resolve) {
-      pending.delete(id);
-      resolve(event.result);
-    }
+    const entry = pending.get(id);
+    if (!entry) return; // réponse tardive, doublon ou identifiant inconnu.
+    pending.delete(id);
+    if (entry.timer !== null && typeof clearTimeout === 'function') clearTimeout(entry.timer);
+    if (event.error) entry.reject(new Error(String(event.error)));
+    else entry.resolve(event.result);
   });
-  const nativeCall = (name, data) => new Promise((resolve) => {
+  const nativeCall = (name, data) => new Promise((resolve, reject) => {
     const id = promiseId++;
-    pending.set(id, resolve);
-    backend.emitEvent('__juce__invoke', {
-      name: 'alphaCommand',
-      params: [name, data || {}],
-      resultId: id
-    });
+    const entry = { resolve, reject, timer: null };
+    if (typeof setTimeout === 'function') {
+      entry.timer = setTimeout(() => {
+        if (!pending.delete(id)) return;
+        reject(new Error('Réponse native absente pour « ' + name + ' ».'));
+      }, NATIVE_TIMEOUT_MS);
+    }
+    pending.set(id, entry);
+    try {
+      backend.emitEvent('__juce__invoke', {
+        name: 'alphaCommand',
+        params: [name, data || {}],
+        resultId: id
+      });
+    } catch (error) {
+      if (pending.delete(id) && entry.timer !== null && typeof clearTimeout === 'function') clearTimeout(entry.timer);
+      reject(error);
+    }
   });
 
   const num = (value, fallback) => {
@@ -189,7 +203,33 @@
       const snapshot = parseSnapshot(result);
       if (snapshot && typeof snapshot === 'object') applyState(snapshot);
       return snapshot;
+    }).catch((error) => {
+      const message = 'Commande native « ' + name + ' » indisponible : ' +
+                      ((error && error.message) || String(error));
+      const status = document.getElementById('sbStatus');
+      if (status) status.textContent = message;
+      if (A.showToast) A.showToast(message, 'ALPHA Studio');
+      return null;
     });
+  }
+
+  function applyDisplayMetrics(snapshot) {
+    const root = document.documentElement;
+    if (!root || !root.style || typeof root.style.setProperty !== 'function') return;
+    const fontScale = clamp(snapshot.fontScale, 0.8, 2.0, 1);
+    const uiScale = clamp(snapshot.uiScale, 0.60, 1.25, 1);
+    const dpiScale = clamp(snapshot.dpiScale, 0.75, 3.0, 1);
+    root.style.setProperty('--alpha-font-scale', String(fontScale / uiScale));
+    root.style.setProperty('--alpha-ui-scale', String(uiScale));
+    root.style.setProperty('--alpha-dpi-scale', String(dpiScale));
+    const safe = snapshot.safeArea || {};
+    const viewportW = Math.max(1, Number(window.innerWidth || safe.width || 1600));
+    const viewportH = Math.max(1, Number(window.innerHeight || safe.height || 900));
+    root.style.setProperty('--alpha-viewport-w', Math.ceil(viewportW / uiScale) + 'px');
+    root.style.setProperty('--alpha-viewport-h', Math.ceil(viewportH / uiScale) + 'px');
+    root.dataset.alphaNative = '1';
+    root.dataset.alphaAsio = snapshot.asioAvailable ? '1' : '0';
+    root.dataset.alphaVersion = String(snapshot.appVersion || '0.5.0');
   }
 
   function applyState(snapshot) {
@@ -198,6 +238,7 @@
     applyingState = true;
     try {
       lastSnapshot = clone(snapshot);
+      applyDisplayMetrics(snapshot);
       lastProjectSignature = JSON.stringify(normaliseProject(snapshot));
       const signature = JSON.stringify(snapshot.tracks.map(t => ({
         name: t.name, volumeDb: t.volumeDb, pan: t.pan, mute: t.mute,
@@ -370,6 +411,7 @@
     getState: () => lastSnapshot,
     getHistory: () => (lastSnapshot && lastSnapshot.history) || [],
     commitUiState,
+    pendingCount: () => pending.size,
     videoEnabled: false,
     state: null
   });
@@ -437,6 +479,21 @@
   actions.saveAs = () => send('saveAs');
   actions.saveNewVersion = () => send('saveNewVersion');
   actions.clearRecent = () => send('setStatus', { status: 'Liste des projets récents : fonction non persistée.' });
+
+  /* Fenêtre native, affichage Full HD/DPI et vrais réglages audio/ASIO. */
+  actions.audioSettings = () => send('audioSettings');
+  actions.asioPanel = () => send('asioPanel');
+  actions.devices = () => send('audioSettings');
+  actions.windowMinimize = () => send('windowMinimize');
+  actions.windowMaximize = () => send('windowMaximize');
+  actions.windowRestore = () => send('windowRestore');
+  actions.windowFitToScreen = () => send('windowFitToScreen');
+  actions.getDisplayMetrics = () => send('getDisplayMetrics');
+  actions.uiZoomIn = () => send('uiScale', { delta: 0.05 });
+  actions.uiZoomOut = () => send('uiScale', { delta: -0.05 });
+  actions.textZoomIn = () => send('fontScale', { delta: 0.10 });
+  actions.textZoomOut = () => send('fontScale', { delta: -0.10 });
+  actions.resetLayout = () => send('resetLayout');
 
   /* Les stubs documentaires ne doivent plus répondre « étape 2 » sous WebView2 :
      ceux qui n'ont pas d'équivalent moteur envoient un statut explicite. */

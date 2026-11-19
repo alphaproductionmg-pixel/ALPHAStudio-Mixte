@@ -35,9 +35,9 @@ L'interface appelle le moteur pour transport, tempo, création / duplication / s
 
 Le glisser-déposer envoie les fichiers WAV / MIDI / `.alphaproj` au moteur en base64 ; les boîtes de dialogue JUCE gèrent les import/export par menu. `Source/Main.cpp` publie `stateJson()` à 20 Hz et après chaque commande.
 
-## ASIO et dépendances
+## ASIO, installateur et dépendances
 
-JUCE 8.0.4 est récupéré par CMake `FetchContent`. La prise en charge ASIO est facultative et nécessite le SDK Steinberg fourni légalement par l'utilisateur ; ce SDK n'est pas recopié ici. WASAPI et DirectSound restent les chemins Windows configurés par défaut. WebView2 est demandé par `NEEDS_WEBVIEW2 TRUE` et `JUCE_USE_WIN_WEBVIEW2=1` ; le workflow télécharge le package NuGet `Microsoft.Web.WebView2 1.0.1901.177` attendu par JUCE et copie `WebView2Loader.dll` près de l’exécutable.
+JUCE 8.0.4 est récupéré par CMake `FetchContent`. La prise en charge ASIO est activée par `JUCE_ASIO=1` : le SDK Steinberg 2.3.4 est téléchargé sur le runner Windows par `.github/workflows/windows-build.yml`, référencé via `ALPHA_ASIO_SDK_DIR` et jamais recopié dans le dépôt. Le sélecteur natif `AudioDeviceSelectorComponent` et `AudioIODevice::showControlPanel()` exposent les réglages réels ; WASAPI / DirectSound restent disponibles si aucun pilote ASIO n'est détecté. WebView2 est demandé par `NEEDS_WEBVIEW2 TRUE` et `JUCE_USE_WIN_WEBVIEW2=1` ; le workflow télécharge le package NuGet `Microsoft.Web.WebView2 1.0.1901.177`, copie `WebView2Loader.dll` près de l'exécutable, puis construit `ALPHAStudio-Setup-0.5.0-x64.exe` avec Inno Setup. L'installateur lance le bootstrapper WebView2 Evergreen uniquement si le runtime manque. Détails : `installer/ALPHAStudio.iss`, `installer/THIRD_PARTY_NOTICES.md`, `docs/INSTALLATION-0.5.0.md`.
 
 ## Construction et vérification
 
@@ -47,10 +47,10 @@ Configuration CMake : Windows, Visual Studio 2022, CMake 3.22+, Python 3, WebVie
 bash tests/run.sh
 ```
 
-Le lanceur vérifie la syntaxe du builder, reconstruit le livrable, vérifie la syntaxe JavaScript, exécute les tests J1, compile/exécute le noyau C++17 J2 → J6, exécute les tests du pont WebView2 simulé et refait les `grep` de contrôle. `bash tests/juce-syntax.sh` avec `JUCE_MODULES_DIR` optionnel vérifie aussi la syntaxe C++17 de `Engine.h`, de l'hôte mixte et de l'application de référence avec les en-têtes JUCE 8.0.4 ; l'étape est ignorée si les modules ne sont pas présents. Ce n'est pas une compilation MSVC.
+Le lanceur vérifie la syntaxe du builder, reconstruit le livrable, vérifie la syntaxe JavaScript, exécute les tests J1, compile/exécute le noyau C++17 J2 → J6, exécute les tests du pont WebView2 simulé, la suite de réparation 0.5.0 et refait les `grep` de contrôle. `bash tests/juce-syntax.sh` avec `JUCE_MODULES_DIR` optionnel vérifie aussi la syntaxe C++17 de `Engine.h`, de l'hôte mixte et de l'application de référence avec les en-têtes JUCE 8.0.4 ; l'étape est ignorée si les modules ne sont pas présents. Ce n'est pas une compilation MSVC. La CI Windows ajoute le SDK ASIO, compile en Release, prépare le payload, construit l'installateur et exécute une installation/désinstallation silencieuse.
 
 Prévisualisation du repli navigateur : `python3 tests/serve.py`, puis Espace, C, / et F3.
 
 ## Limites avant acceptation
 
-Aucune compilation Windows réelle, aucune exécution WebView2, aucune validation audio/micro sur matériel, aucun audit `pageerror` des 59 fenêtres dans un vrai Chromium, aucun test visuel intégral de l'utilisateur et aucune liste de bugs / défauts reçue. Le push/compile GitHub final doit rester la dernière étape de code. Aucun élément n'est à 100 % avant le test intégral Windows et l'acceptation explicite.
+La compilation Windows initiale a réussi, mais l'artefact portable ne permettait pas le test intégral demandé. La passe 0.5.0 ajoute l'installateur et les réparations, avec un seul push/compile GitHub final après tests locaux verts. Aucune exécution WebView2 réelle, aucune validation audio/micro sur matériel, aucun audit `pageerror` des 59 fenêtres dans un vrai Chromium, aucun test visuel intégral de l'utilisateur et aucune liste de bugs / défauts reçue. Aucun élément n'est à 100 % avant le test intégral Windows et l'acceptation explicite.

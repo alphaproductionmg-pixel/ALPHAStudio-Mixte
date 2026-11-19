@@ -448,6 +448,13 @@ function createHarness(options) {
         });
         return invokes.map((invoke) => ({ name: invoke.params[0], data: invoke.params[1] || {} }));
       },
+      failNative(error) {
+        const invokes = pending.splice(0);
+        invokes.forEach((invoke) => {
+          (listeners.__juce__complete || []).forEach((fn) => fn({ promiseId: invoke.resultId, error: error || 'Erreur native simulée' }));
+        });
+        return invokes.map((invoke) => ({ name: invoke.params[0], data: invoke.params[1] || {} }));
+      },
       async flush() { await Promise.resolve(); await Promise.resolve(); }
     };
   }

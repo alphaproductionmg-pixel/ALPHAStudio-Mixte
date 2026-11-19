@@ -4063,10 +4063,22 @@
     $('#aboutClose').addEventListener('click', closeAbout);
     $('#aboutOk').addEventListener('click', closeAbout);
     $('#overlay').addEventListener('click', (e) => { if (e.target.id === 'overlay') closeAbout(); });
-    $('#btnQuit').addEventListener('click', () => toast('Fermeture désactivée : ce prototype d\u2019interface reste ouvert. Fermez l\u2019onglet pour quitter.', 'ALPHA Studio'));
+    const nativeWindow = (command) => {
+      const bridge = window.ALPHA_NATIVE;
+      if (bridge && typeof bridge.send === 'function') { bridge.send(command); return true; }
+      return false;
+    };
+    $('#btnQuit').addEventListener('click', () => {
+      if (nativeWindow('quit')) return;
+      toast('Fermeture désactivée : ce prototype d\u2019interface reste ouvert. Fermez l\u2019onglet pour quitter.', 'ALPHA Studio');
+    });
     $$('#titlebar .winbtn').forEach((b) => {
       if (b.id === 'btnQuit') return;
-      b.addEventListener('click', () => toast('Gestion de fenêtres simulée dans le prototype.'));
+      b.addEventListener('click', () => {
+        const command = b.dataset.alphaCommand;
+        if (command && nativeWindow(command)) return;
+        toast('Gestion de fenêtres simulée dans le prototype.');
+      });
     });
   }
 
