@@ -14,6 +14,10 @@ FetchContent_Declare(JUCE
     GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(JUCE)
 
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/UI/AlphaStudio/alpha-studio.html")
+    message(FATAL_ERROR "UI source manquante : transférer l'archive ALPHA-Studio dans UI/AlphaStudio avant de compiler.")
+endif()
+
 juce_add_gui_app(AlphaStudio
     PRODUCT_NAME "ALPHA Studio"
     COMPANY_NAME "ALPHA"
