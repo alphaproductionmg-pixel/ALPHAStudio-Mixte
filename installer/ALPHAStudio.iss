@@ -52,7 +52,7 @@ Name: "{group}\Désinstaller ALPHA Studio"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\ALPHA Studio"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon; WorkingDir: "{app}"
 
 [Run]
-Filename: "{tmp}\MicrosoftEdgeWebview2Setup.exe"; Parameters: "/silent /install"; StatusMsg: "Installation du runtime Microsoft WebView2 Evergreen..."; Flags: waituntilterminated; Check: WebView2BootstrapNeeded
+Filename: "{tmp}\MicrosoftEdgeWebview2Setup.exe"; Parameters: "/silent /install"; StatusMsg: "Installation du runtime Microsoft WebView2 Evergreen..."; Flags: waituntilterminated skipifsilent; Check: WebView2BootstrapNeeded
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,ALPHA Studio}"; Flags: nowait postinstall skipifsilent
 
 [Code]

@@ -10,7 +10,7 @@ Cible : Windows 10/11 x64, Visual C++ Runtime correspondant à la compilation `w
 
 1. Télécharger `ALPHAStudio-Setup-0.5.0-x64.exe` depuis l'artefact ou la release GitHub.
 2. L'exécuter, choisir le dossier (par défaut `%ProgramFiles%\ALPHA Studio` ou dossier utilisateur selon les droits).
-3. Si WebView2 Runtime n'est pas présent, l'installateur lance le bootstrapper officiel Microsoft en mode silencieux. Une connexion Internet peut être nécessaire à ce moment.
+3. Si WebView2 Runtime n'est pas présent, l'installation interactive lance le bootstrapper officiel Microsoft en mode silencieux. Une connexion Internet peut être nécessaire à ce moment. Le test silencieux automatisé de la CI ne l'exécute pas afin de ne pas modifier l'environnement du runner.
 4. L'application est disponible dans le menu Démarrer sous **ALPHA Studio** ; l'icône Bureau est optionnelle.
 5. Désinstallation : **Paramètres Windows → Applications** ou `Désinstaller ALPHA Studio` dans le menu Démarrer.
 

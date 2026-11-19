@@ -145,29 +145,6 @@ jobs:
           $setup = Join-Path $PWD 'installer/ALPHAStudio-Setup-0.5.0-x64.exe'
           if (-not (Test-Path $setup)) { throw 'Installateur ALPHAStudio-Setup-0.5.0-x64.exe absent' }
           Write-Host "Installateur : $setup ($((Get-Item $setup).Length) octets)"
-      - name: Test silencieux installation / désinstallation
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $setup = (Resolve-Path 'installer/ALPHAStudio-Setup-0.5.0-x64.exe').Path
-          $install = Join-Path $env:RUNNER_TEMP 'ALPHAStudio-SilentTest'
-          $log = Join-Path $env:RUNNER_TEMP 'alpha-install.log'
-          Remove-Item -Recurse -Force $install -ErrorAction SilentlyContinue
-          $installArgs = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/DIR="' + $install + '"', '/LOG="' + $log + '"')
-          $p = Start-Process -FilePath $setup -ArgumentList $installArgs -Wait -PassThru
-          if ($p.ExitCode -ne 0) {
-            if (Test-Path $log) { Get-Content $log -Tail 80 }
-            throw "Installation silencieuse : code $($p.ExitCode)"
-          }
-          $exe = Join-Path $install 'ALPHA Studio.exe'
-          if (-not (Test-Path $exe)) { throw 'EXE absent après installation silencieuse' }
-          $uninstall = Join-Path $install 'unins000.exe'
-          if (-not (Test-Path $uninstall)) { throw 'Désinstalleur absent après installation silencieuse' }
-          $p2 = Start-Process -FilePath $uninstall -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -PassThru
-          Start-Sleep -Seconds 2
-          if ($p2.ExitCode -ne 0) { throw "Désinstallation silencieuse : code $($p2.ExitCode)" }
-          if (Test-Path $exe) { throw 'EXE encore présent après désinstallation silencieuse' }
-          Write-Host 'Installation et désinstallation silencieuses : OK'
       - name: Publier l'exécutable et l'interface
         uses: actions/upload-artifact@v4
         with:
@@ -183,3 +160,27 @@ jobs:
           name: ALPHAStudio-Setup-0.5.0-x64
           path: installer/ALPHAStudio-Setup-0.5.0-x64.exe
           if-no-files-found: error
+      - name: Test silencieux installation / désinstallation
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = (Resolve-Path 'installer/ALPHAStudio-Setup-0.5.0-x64.exe').Path
+          $install = Join-Path $env:RUNNER_TEMP 'ALPHAStudio-SilentTest'
+          $log = Join-Path $env:RUNNER_TEMP 'alpha-install.log'
+          Remove-Item -Recurse -Force $install -ErrorAction SilentlyContinue
+          $installArgs = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$install", "/LOG=$log")
+          $p = Start-Process -FilePath $setup -ArgumentList $installArgs -Wait -PassThru
+          if ($p.ExitCode -ne 0) {
+            if (Test-Path $log) { Get-Content $log -Tail 80 }
+            throw "Installation silencieuse : code $($p.ExitCode)"
+          }
+          $exe = Join-Path $install 'ALPHA Studio.exe'
+          if (-not (Test-Path $exe)) { throw 'EXE absent après installation silencieuse' }
+          $uninstall = Join-Path $install 'unins000.exe'
+          if (-not (Test-Path $uninstall)) { throw 'Désinstalleur absent après installation silencieuse' }
+          $p2 = Start-Process -FilePath $uninstall -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -PassThru
+          $uninstallCode = if ($null -eq $p2.ExitCode) { 0 } else { [int] $p2.ExitCode }
+          if ($uninstallCode -ne 0) { throw "Désinstallation silencieuse : code $uninstallCode" }
+          for ($i = 0; $i -lt 10 -and (Test-Path $exe); ++$i) { Start-Sleep -Milliseconds 500 }
+          if (Test-Path $exe) { throw 'EXE encore présent après désinstallation silencieuse' }
+          Write-Host 'Installation et désinstallation silencieuses : OK'

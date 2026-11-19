@@ -16,6 +16,7 @@ test('réparation 0.5.0 — installateur Inno Setup, WebView2 Evergreen et CI Wi
   assert.match(iss, /MicrosoftEdgeWebview2Setup\.exe/);
   assert.match(iss, /IsWebView2Installed/);
   assert.match(iss, /\/silent \/install/);
+  assert.match(iss, /waituntilterminated skipifsilent; Check: WebView2BootstrapNeeded/);
   assert.match(iss, /uninstallexe|unins000\.exe/);
 
   const workflow = read('.github/workflows/windows-build.yml');
@@ -27,6 +28,9 @@ test('réparation 0.5.0 — installateur Inno Setup, WebView2 Evergreen et CI Wi
   assert.match(workflow, /ISCC\.exe/);
   assert.match(workflow, /Installation silencieuse/);
   assert.match(workflow, /Désinstallation silencieuse/);
+  assert.match(workflow, /\/DIR=\$install/);
+  assert.doesNotMatch(workflow, /DIR=\\\"/);
+  assert.ok(workflow.indexOf("name: Publier l'installateur Windows 0.5.0") < workflow.indexOf('name: Test silencieux installation / désinstallation'));
   assert.match(workflow, /ALPHAStudio-Setup-0\.5\.0-x64\.exe/);
   assert.match(workflow, /name: ALPHAStudio-Setup-0\.5\.0-x64/);
   assert.doesNotMatch(workflow, /CMAKE_BUILD_TYPE/);
