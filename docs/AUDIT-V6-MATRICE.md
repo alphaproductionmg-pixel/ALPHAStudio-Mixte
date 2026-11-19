@@ -214,10 +214,10 @@ lieu de simuler un résultat.
 
 | Statut | Nombre |
 |---|---|
-| CORRIGÉ (code) | 87 |
-| PARTIEL | 51 |
-| NON RÉSOLU | 5 |
-| **Total (points v6, doublons inclus)** | **130 lignes de triage couvrant les 140 intitulés du rapport v6** |
+| CORRIGÉ (code) | 86 |
+| PARTIEL | 50 |
+| NON RÉSOLU | 4 (A19 VST2 — abandonné par JUCE 8 ; A85/A126 ReWire — technologie morte ; A124 routage surround) |
+| **Total (points v6, doublons inclus)** | **140 lignes de triage pour les 140 intitulés du rapport v6 (séries A112–A121 dédoublées en « bis »)** |
 
 > Rappel : **Aucune acceptation finale.** Chaque « CORRIGÉ (code) » doit être
 > confirmé par le test intégral Windows de l'utilisateur (audio ASIO réel,
