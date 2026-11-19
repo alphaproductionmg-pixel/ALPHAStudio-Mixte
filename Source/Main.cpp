@@ -115,7 +115,7 @@ void AlphaWebMainComponent::openDialog (const String& kind, const var& payload)
     String filters = "*.alphaproj;*.alpha";
     String title = "Ouvrir un projet";
     File initial = File::getSpecialLocation (File::userDocumentsDirectory);
-    int flags = FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles;
+    int dialogFlags = FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles;
 
     if (save)
     {
@@ -125,7 +125,7 @@ void AlphaWebMainComponent::openDialog (const String& kind, const var& payload)
                     ? eng.templatesDir().getChildFile ("Nouveau modèle.alphaproj")
                     : File::getSpecialLocation (File::userDocumentsDirectory).getChildFile (kind == "exportMidi" ? "Export.mid" : "Projet.alphaproj");
         filters = kind == "exportMidi" ? "*.mid;*.midi" : "*.alphaproj;*.alpha";
-        flags = FileBrowserComponent::saveMode | FileBrowserComponent::warnAboutOverwriting;
+        dialogFlags = FileBrowserComponent::saveMode | FileBrowserComponent::warnAboutOverwriting;
     }
     else if (kind == "loadTemplateFile")
     {
@@ -141,12 +141,12 @@ void AlphaWebMainComponent::openDialog (const String& kind, const var& payload)
     {
         title = "Importer des fichiers audio ou un document";
         filters = "*.wav;*.mp3;*.flac;*.ogg;*.aif;*.aiff;*.alphaproj;*.json;*.mid;*.midi";
-        flags |= FileBrowserComponent::canSelectMultipleItems;
+        dialogFlags |= FileBrowserComponent::canSelectMultipleItems;
     }
 
     chooser = std::make_unique<FileChooser> (title, initial, filters);
     Component::SafePointer<AlphaWebMainComponent> safe (this);
-    chooser->launchAsync (flags, [safe, kind, payload] (const FileChooser& fc)
+    chooser->launchAsync (dialogFlags, [safe, kind, payload] (const FileChooser& fc)
     {
         if (safe == nullptr) return;
         auto& eng = safe->engine;
@@ -239,14 +239,14 @@ void AlphaWebMainComponent::exportWav (bool stems)
     const auto title = stems ? "Choisir le dossier des stems" : "Exporter le mixage WAV 48 kHz / 24 bits";
     const auto initial = File::getSpecialLocation (File::userDocumentsDirectory).getChildFile (stems ? "Stems" : "Mixage.wav");
     chooser = std::make_unique<FileChooser> (title, initial, stems ? "" : "*.wav");
-    const int flags = stems ? (FileBrowserComponent::openMode | FileBrowserComponent::canSelectDirectories)
-                            : (FileBrowserComponent::saveMode | FileBrowserComponent::warnAboutOverwriting);
+    const int exportFlags = stems ? (FileBrowserComponent::openMode | FileBrowserComponent::canSelectDirectories)
+                                  : (FileBrowserComponent::saveMode | FileBrowserComponent::warnAboutOverwriting);
     Component::SafePointer<AlphaWebMainComponent> safe (this);
     auto* self = this;
     auto aliveFlag = alive;
     auto done = exportDone;
 
-    chooser->launchAsync (flags, [safe, self, aliveFlag, done, stems] (const FileChooser& fc)
+    chooser->launchAsync (exportFlags, [safe, self, aliveFlag, done, stems] (const FileChooser& fc)
     {
         const File target = fc.getResult();
         if (safe == nullptr || target == File())

@@ -308,6 +308,7 @@ test('j2f — sources J2-J6, workflow et livrable cohérents', () => {
   assert.match(workflow, /windows-2022/);
   assert.match(workflow, /cmake -S \. -B build/);
   assert.match(workflow, /cmake --build build/);
+  assert.doesNotMatch(workflow, /CMAKE_BUILD_TYPE/);
   assert.match(workflow, /Microsoft\.Web\.WebView2/);
   assert.match(workflow, /WebView2Loader\.dll/);
   assert.ok(read('.gitignore').includes('__pycache__/'));

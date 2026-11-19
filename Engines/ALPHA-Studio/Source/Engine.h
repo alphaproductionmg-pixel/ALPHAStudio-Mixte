@@ -282,7 +282,7 @@ public:
         for (int i = 0; i < n; ++i) meter.add (b.getSample (0, i), b.getSample (1, i));
         levelL.store (jmax (b.getMagnitude (0, 0, n), levelL.load() * 0.9f));
         levelR.store (jmax (b.getMagnitude (1, 0, n), levelR.load() * 0.9f));
-        peak.store (meter.peakValue());
+        peak.store (static_cast<float> (meter.peakValue()));
         lufs.store ((float) meter.lufs());
 
         if (masterProcessor && clock != nullptr)
