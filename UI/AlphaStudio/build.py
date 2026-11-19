@@ -25,6 +25,7 @@ html = f"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ALPHA Studio — Fenêtre de projet</title>
 <meta name="description" content="ALPHA Studio — interface native reliée au moteur audio JUCE.">
+<script>if (window.__JUCE__ && window.__JUCE__.backend) document.documentElement.dataset.alphaNative = '1';</script>
 <style>
 {css}
 </style>

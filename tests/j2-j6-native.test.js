@@ -263,6 +263,31 @@ test('j2e — les stubs de menu envoient un statut explicite, sans « étape 2 �
   await h.flush();
 });
 
+test('audit-ui — closeProject, addFX et midiLogical ne sont plus détournés', async () => {
+  const h = createHarness({
+    nativeBridge: true,
+    menuStubs: {
+      closeProject: ['Fermer le projet', 'Message historique.'],
+      addFX: ['Ajouter un canal FX', 'Message historique.'],
+      midiLogical: ['Éditeur logique MIDI', 'Message historique.']
+    }
+  });
+  h.runTimers(0);
+  const snapshot = makeSnapshot();
+  h.native.completeNative(snapshot);
+  await h.flush();
+  ['closeProject', 'addFX', 'midiLogical'].forEach((key) => {
+    h.A.ACTIONS[key]();
+    const call = h.native.calls[h.native.calls.length - 1];
+    assert.equal(call.name, 'setStatus');
+    assert.match(call.data.status, /non implémentée/);
+    assert.match(call.data.status, /non disponible/);
+    assert.ok(!/étape 2/i.test(call.data.status));
+    h.native.completeNative(snapshot);
+  });
+  await h.flush();
+});
+
 test('s7 — délai natif, erreur explicite, réponses tardives et nettoyage', async () => {
   const { h, snapshot } = await readyHarness();
   const missing = h.window.ALPHA_NATIVE.send('noReply');

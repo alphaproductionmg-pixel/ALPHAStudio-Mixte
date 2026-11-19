@@ -318,4 +318,17 @@ L'utilisateur a signalé : pas d'installateur, interface non adaptée au Full HD
 
 ### 7.3 État et verrou final
 
-Les tests locaux couvrent le noyau C++17, le pont WebView2 simulé, le livrable HTML autonome, l'installateur, le workflow, la fenêtre / DPI / ASIO et les corrections d'audit. Ils ne remplacent ni MSVC/WebView2 réel, ni le matériel audio, ni le test visuel intégral. Le push/compile GitHub final de cette passe corrective reste **la dernière étape après tests locaux verts**. Test intégral utilisateur, moteur complet validé visuellement, liste détaillée de bugs / défauts et acceptation finale restent à 0 % ; aucun élément n'est à 100 % avant acceptation.
+Les tests locaux couvrent le noyau C++17, le pont WebView2 simulé, le livrable HTML autonome, l'installateur, le workflow, la fenêtre / DPI / ASIO et les corrections d'audit. Ils ne remplacent ni MSVC/WebView2 réel, ni le matériel audio, ni le test visuel intégral. Le push/compile GitHub de cette passe corrective a été exécuté après tests locaux verts. L'utilisateur a ensuite pu installer la version, mais son premier retour a ouvert une nouvelle passe corrective ci-dessous ; le test intégral n'est donc pas terminé. Aucun élément n'est à 100 % avant acceptation.
+
+### 7.4 Correctif d'interface après premier retour utilisateur
+
+L'utilisateur a signalé une impression de « fenêtre dans une fenêtre », des commandes de type navigateur et des entrées de menu peu claires. L'audit statique joint, basé sur `d1e81fb` / `0.4.0`, a été trié dans `docs/TRIAGE-AUDIT-UTILISATEUR-0.5.0.md`. Ce correctif :
+
+- garde uniquement la barre de titre Windows, masque la fausse barre HTML et supprime le liseré / fond navigateur ;
+- désactive le menu contextuel WebView2, sa barre d'état, sa page d'erreur et les raccourcis Retour / Suivant / Recharger / Rechercher ;
+- marque les commandes non implémentées « non disponible » et cesse de détourner `closeProject`, `addFX` et `midiLogical` ;
+- corrige `exportTrack` avec `trackIndex` et `renderOffline(..., onlyTrack)` ;
+- déplace « adapter à l'écran » dans la barre d'état ;
+- documente les points d'audit déjà corrigés côté source et ceux qui restent ouverts.
+
+Cette passe ne corrige pas tous les A01→A136, ne valide pas le matériel audio ni les 59 fenêtres. Test intégral Windows, moteur complet validé visuellement, liste détaillée de bugs / défauts et acceptation finale restent ouverts.

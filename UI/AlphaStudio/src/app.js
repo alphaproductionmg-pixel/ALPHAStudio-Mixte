@@ -1662,6 +1662,10 @@
       if (item) {
         if (item.classList.contains('has-sub')) { e.stopPropagation(); return; }
         $$('.menu').forEach((m) => m.classList.remove('open'));
+        if (item.classList.contains('alpha-unavailable')) {
+          toast('Fonction non disponible dans ALPHA Studio 0.5.0.', item.dataset.label || 'Commande');
+          return;
+        }
         const act = item.dataset.act;
         let raw = item.dataset.arg;
         if (raw === undefined || raw === '') raw = item.dataset.val;

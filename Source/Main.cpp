@@ -60,7 +60,10 @@ AlphaWebMainComponent::AlphaWebMainComponent()
    #if JUCE_WEB_BROWSER && JUCE_USE_WIN_WEBVIEW2
     options = options.withBackend (WebBrowserComponent::Options::Backend::webview2)
                      .withWinWebView2Options (WebBrowserComponent::Options::WinWebView2{}
-                         .withUserDataFolder (engine.applicationDataDir().getChildFile ("WebView2")));
+                         .withUserDataFolder (engine.applicationDataDir().getChildFile ("WebView2"))
+                         .withStatusBarDisabled()
+                         .withBuiltInErrorPageDisabled()
+                         .withBackgroundColour (Colour (0xff1f2022)));
    #endif
 
     browser = std::make_unique<Browser> (options);
@@ -209,7 +212,9 @@ void AlphaWebMainComponent::handleCommand (const Array<var>& args,
     }
     if (command == "exportWav" || command == "exportTrack" || command == "exportStems")
     {
-        exportWav (command == "exportStems" || command == "exportTrack");
+        int singleTrack = (int) payload.getProperty (Identifier ("trackIndex"), -1);
+        if (singleTrack < 0 || singleTrack >= (int) engine.tracks.size()) singleTrack = -1;
+        exportWav (command == "exportStems", command == "exportTrack" ? singleTrack : -1);
         complete (buildState());
         return;
     }
@@ -410,7 +415,7 @@ void AlphaWebMainComponent::openDialog (const String& kind, const var& payload)
     });
 }
 
-void AlphaWebMainComponent::exportWav (bool stems)
+void AlphaWebMainComponent::exportWav (bool stems, int singleTrack)
 {
     if (exporting.exchange (true))
     {
@@ -419,8 +424,12 @@ void AlphaWebMainComponent::exportWav (bool stems)
         return;
     }
     exportDone->reset();
-    const auto title = stems ? "Choisir le dossier des stems" : "Exporter le mixage WAV 48 kHz / 24 bits";
-    const auto initial = File::getSpecialLocation (File::userDocumentsDirectory).getChildFile (stems ? "Stems" : "Mixage.wav");
+    const bool single = ! stems && singleTrack >= 0;
+    const auto title = stems ? "Choisir le dossier des stems"
+                            : single ? "Exporter la piste sélectionnée WAV 48 kHz / 24 bits"
+                                     : "Exporter le mixage WAV 48 kHz / 24 bits";
+    const auto initial = File::getSpecialLocation (File::userDocumentsDirectory)
+                             .getChildFile (stems ? "Stems" : single ? "Piste.wav" : "Mixage.wav");
     chooser = std::make_unique<FileChooser> (title, initial, stems ? "" : "*.wav");
     const int exportFlags = stems ? (FileBrowserComponent::openMode | FileBrowserComponent::canSelectDirectories)
                                   : (FileBrowserComponent::saveMode | FileBrowserComponent::warnAboutOverwriting);
@@ -429,7 +438,7 @@ void AlphaWebMainComponent::exportWav (bool stems)
     auto done = exportDone;
     auto engineRef = engineOwner;
 
-    chooser->launchAsync (exportFlags, [safe, aliveFlag, done, stems, engineRef] (const FileChooser& fc)
+    chooser->launchAsync (exportFlags, [safe, aliveFlag, done, stems, singleTrack, engineRef] (const FileChooser& fc)
     {
         const File target = fc.getResult();
         if (safe == nullptr || target == File())
@@ -438,7 +447,7 @@ void AlphaWebMainComponent::exportWav (bool stems)
             done->signal();
             return;
         }
-        const bool launched = Thread::launch ([safe, aliveFlag, done, stems, target, engineRef]
+        const bool launched = Thread::launch ([safe, aliveFlag, done, stems, singleTrack, target, engineRef]
         {
             AlphaExportDoneSignal completion { done };
             if (! aliveFlag->load()) return;
@@ -458,7 +467,16 @@ void AlphaWebMainComponent::exportWav (bool stems)
             }
             else
             {
-                ok = engineRef->renderOffline (target.withFileExtension ("wav"), 48000.0, 24, progress, -1);
+                const int onlyTrack = singleTrack >= 0 && singleTrack < (int) engineRef->tracks.size() ? singleTrack : -1;
+                if (! stems && singleTrack >= 0 && onlyTrack < 0)
+                {
+                    ok = false;
+                    engineRef->setNativeStatus (TR ("Export de piste annulé : la piste sélectionnée est introuvable."));
+                }
+                else
+                {
+                    ok = engineRef->renderOffline (target.withFileExtension ("wav"), 48000.0, 24, progress, onlyTrack);
+                }
             }
             engineRef->endOffline();
             engineRef->setNativeStatus (ok ? TR ("Export WAV 48 kHz / 24 bits terminé.") : TR ("Export WAV interrompu."));

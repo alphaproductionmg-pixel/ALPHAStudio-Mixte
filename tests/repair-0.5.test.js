@@ -151,3 +151,48 @@ test('réparation 0.5.0 — corrections du rapport d’audit A1→S9', () => {
   assert.match(main, /engineRef->renderOffline/);
   assert.match(main, /return aliveFlag->load\(\)/);
 });
+
+test('correctif interface — une seule fenêtre native, menus honnêtes et export de piste', () => {
+  const css = read('UI/AlphaStudio/src/style.css');
+  assert.match(css, /html\[data-alpha-native="1"\] #titlebar\{display:none\}/);
+  assert.match(css, /html\[data-alpha-native="1"\] body\{background:var\(--chrome-3\)\}/);
+  assert.match(css, /html\[data-alpha-native="1"\] #app\{border-top:0\}/);
+  assert.match(css, /alpha-unavailable/);
+  assert.match(css, /non disponible/);
+
+  const html = read('UI/AlphaStudio/src/body.html');
+  assert.match(html, /ALPHA Studio 0\.5\.0/);
+  assert.doesNotMatch(html, /ALPHA Studio 1\.0 \(interface\)/);
+  assert.match(html, /data-alpha-ui-command="windowFitToScreen"/);
+
+  const app = read('UI/AlphaStudio/src/app.js');
+  assert.match(app, /alpha-unavailable/);
+  assert.match(app, /Fonction non disponible dans ALPHA Studio 0\.5\.0/);
+
+  const bridge = read('UI/AlphaStudio/native-bridge.js');
+  assert.match(bridge, /installNativeShell/);
+  assert.match(bridge, /contextmenu/);
+  assert.match(bridge, /browserNavigation/);
+  assert.match(bridge, /unavailableActions/);
+  assert.match(bridge, /actions\.exportTrack = \(\) => send\('exportTrack', \{ trackIndex: selectedIndex\(\) \}\)/);
+  assert.doesNotMatch(bridge, /actions\.closeProject = \(\) => send\('newProject'\)/);
+  assert.doesNotMatch(bridge, /actions\.addFX = \(\) => send\('uiControl'/);
+  assert.doesNotMatch(bridge, /actions\.midiLogical = \(\) => send\('quantizeMidi'/);
+
+  const builder = read('UI/AlphaStudio/build.py');
+  assert.match(builder, /document\.documentElement\.dataset\.alphaNative/);
+
+  const main = read('Source/Main.cpp');
+  assert.match(main, /withStatusBarDisabled/);
+  assert.match(main, /withBuiltInErrorPageDisabled/);
+  assert.match(main, /withBackgroundColour/);
+  assert.match(main, /payload\.getProperty \(Identifier \("trackIndex"\), -1\)/);
+  assert.match(main, /renderOffline \(target\.withFileExtension \("wav"\), 48000\.0, 24, progress, onlyTrack\)/);
+  assert.match(read('Source/AlphaWebMain.h'), /exportWav \(bool stems, int singleTrack = -1\)/);
+
+  assert.ok(exists('docs/TRIAGE-AUDIT-UTILISATEUR-0.5.0.md'));
+  const triage = read('docs/TRIAGE-AUDIT-UTILISATEUR-0.5.0.md');
+  assert.match(triage, /A01/);
+  assert.match(triage, /W01/);
+  assert.match(triage, /Aucune acceptation finale/);
+});

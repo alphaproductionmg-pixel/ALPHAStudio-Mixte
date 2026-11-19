@@ -10,6 +10,32 @@
       typeof backend.emitEvent !== 'function' ||
       typeof backend.addEventListener !== 'function') return;
 
+  /* Mode application native : une seule barre de titre (Windows), pas de menu
+     contextuel navigateur ni de raccourcis Retour/Suivant/Imprimer/Enregistrer sous. */
+  function installNativeShell() {
+    document.documentElement.dataset.alphaNative = '1';
+    document.addEventListener('contextmenu', function (event) {
+      if (event && event.preventDefault) event.preventDefault();
+    }, true);
+    window.addEventListener('keydown', function (event) {
+      if (!event) return;
+      const key = String(event.key || '').toLowerCase();
+      const editable = !!(event.target && event.target.closest &&
+        event.target.closest('input,textarea,select,[contenteditable="true"]'));
+      const browserNavigation = event.altKey && (key === 'arrowleft' || key === 'arrowright');
+      const browserReload = (event.ctrlKey || event.metaKey) && key === 'r';
+      const browserFind = (event.ctrlKey || event.metaKey) && key === 'f';
+      const browserDevTools = key === 'f12';
+      const browserBackspace = key === 'backspace' && !editable &&
+        !event.altKey && !(event.ctrlKey || event.metaKey);
+      if (browserNavigation || browserReload || browserFind || browserDevTools || browserBackspace) {
+        if (event.preventDefault) event.preventDefault();
+        if (!browserBackspace && event.stopImmediatePropagation) event.stopImmediatePropagation();
+      }
+    }, true);
+  }
+  installNativeShell();
+
   /* Protocole natif JUCE 8 : un événement __juce__invoke avec params=[commande, données],
      puis un événement __juce__complete { promiseId, result }. Le module JS JUCE n'est pas
      importé dans le HTML autonome : le pont implémente ici son petit gestionnaire de promesses. */
@@ -472,13 +498,10 @@
   });
   actions.fixedTempo = () => send('tempo', { bpm: 120 });
   actions.quantize = () => send('quantizeMidi', { trackIndex: selectedIndex(), grid: '1/16' });
-  actions.midiLogical = () => send('quantizeMidi', { trackIndex: selectedIndex(), grid: '1/16' });
-  actions.addFX = () => send('uiControl', { control: 'bus', index: 0, field: 'mute', value: false });
   actions.removeEmpty = () => send('setStatus', { status: 'Retirer les pistes vides : à vérifier dans le test intégral Windows.' });
-  actions.closeProject = () => send('newProject');
   actions.saveAs = () => send('saveAs');
   actions.saveNewVersion = () => send('saveNewVersion');
-  actions.clearRecent = () => send('setStatus', { status: 'Liste des projets récents : fonction non persistée.' });
+  /* closeProject, addFX et midiLogical ne sont plus détournés : voir unavailableActions. */
 
   /* Fenêtre native, affichage Full HD/DPI et vrais réglages audio/ASIO. */
   actions.audioSettings = () => send('audioSettings');
@@ -494,6 +517,49 @@
   actions.textZoomIn = () => send('fontScale', { delta: 0.10 });
   actions.textZoomOut = () => send('fontScale', { delta: -0.10 });
   actions.resetLayout = () => send('resetLayout');
+
+  /* A02 / A08 / A11 / A14 : les commandes non implémentées sont désactivées
+     et signalées, au lieu d'être détournées vers newProject, quantizeMidi ou un mute de bus. */
+  const unavailableActions = new Set([
+    'newLibrary', 'newFolder', 'clearRecent', 'closeProject', 'addFX', 'midiLogical',
+    'print', 'pageSetup', 'exportScore', 'exportOmf', 'omf', 'exportXml',
+    'exportCd', 'exportPerf', 'importOmf', 'importAaf', 'importXml', 'importCd'
+  ]);
+  const unavailableLabel = (key) =>
+    ((A.MENU_STUBS && A.MENU_STUBS[key] && A.MENU_STUBS[key][0]) || key);
+  unavailableActions.forEach((key) => {
+    actions[key] = () => send('setStatus', {
+      status: 'Commande « ' + unavailableLabel(key) + ' » : non implémentée / non disponible dans ALPHA Studio 0.5.0.'
+    });
+  });
+  actions.exportTrack = () => send('exportTrack', { trackIndex: selectedIndex() });
+  if (window.ALPHA_NATIVE) window.ALPHA_NATIVE.unavailableActions = Array.from(unavailableActions);
+
+  function markUnavailableMenus() {
+    const bar = document.getElementById('menubar');
+    if (!bar) return;
+    Array.prototype.forEach.call(bar.querySelectorAll('.dd-item[data-act]'), (item) => {
+      if (!unavailableActions.has(item.dataset.act)) return;
+      item.classList.add('alpha-unavailable');
+      item.setAttribute('aria-disabled', 'true');
+      item.setAttribute('title', 'Non disponible dans ALPHA Studio 0.5.0');
+    });
+  }
+  function installMenuAvailability() {
+    const start = () => {
+      markUnavailableMenus();
+      const bar = document.getElementById('menubar');
+      if (bar && typeof MutationObserver === 'function') {
+        const observer = new MutationObserver(markUnavailableMenus);
+        observer.observe(bar, { childList: true, subtree: true });
+      }
+    };
+    if (document.readyState === 'loading')
+      document.addEventListener('DOMContentLoaded', () => setTimeout(start, 0), { once: true });
+    else
+      setTimeout(start, 0);
+  }
+  installMenuAvailability();
 
   /* Les stubs documentaires ne doivent plus répondre « étape 2 » sous WebView2 :
      ceux qui n'ont pas d'équivalent moteur envoient un statut explicite. */

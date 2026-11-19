@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ALPHA Studio — Fenêtre de projet</title>
 <meta name="description" content="ALPHA Studio — interface native reliée au moteur audio JUCE.">
+<script>if (window.__JUCE__ && window.__JUCE__.backend) document.documentElement.dataset.alphaNative = '1';</script>
 <style>
 /* ============================================================
    ALPHA Studio — Interface inspirée de Nuendo 4 (2007)
@@ -57,6 +58,15 @@ body{
 button{font-family:inherit;font-size:inherit;color:inherit}
 html[data-alpha-native="1"] #titlebar{cursor:move}
 html[data-alpha-native="1"] #titlebar button{cursor:default}
+html[data-alpha-native="1"] body{background:var(--chrome-3)}
+html[data-alpha-native="1"] #app{border-top:0}
+html[data-alpha-native="1"] #titlebar{display:none}
+html[data-alpha-native="1"] #menubar{border-top:1px solid #14161a}
+html[data-alpha-native="1"] .dd-item.alpha-unavailable{opacity:.52;cursor:not-allowed}
+html[data-alpha-native="1"] .dd-item.alpha-unavailable:hover{background:#2b2b29;color:#8f8f89}
+html[data-alpha-native="1"] .dd-item.alpha-unavailable .dd-t::after{
+  content:" — non disponible";color:#d8a8a8;font-size:calc(9px * var(--alpha-font-scale));
+}
 .alpha-ui-controls{gap:2px}
 .alpha-ui-controls button{
   border:1px solid #777570;border-radius:2px;background:linear-gradient(#eceae5,#c8c6c0);
@@ -2864,7 +2874,7 @@ input[type=range]{accent-color:#5d86ad;height:13px;cursor:pointer}
       </svg>
       <span class="lg-name">ALPHA<em>&nbsp;STUDIO</em></span>
     </div>
-    <div class="win-title"><b>Démo_Alpha_01</b> — Fenêtre de projet&nbsp;&nbsp;·&nbsp;&nbsp;ALPHA Studio 1.0 (interface)</div>
+    <div class="win-title"><b>Démo_Alpha_01</b> — Fenêtre de projet&nbsp;&nbsp;·&nbsp;&nbsp;ALPHA Studio 0.5.0</div>
     <div class="winbtns">
       <button class="winbtn alpha-fit" data-alpha-command="windowFitToScreen" title="Adapter à l'écran">⤢</button>
       <button class="winbtn" data-alpha-command="windowMinimize" title="Réduire"><svg><use href="#i-min"/></svg></button>
@@ -3156,6 +3166,7 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
       <button data-alpha-ui-command="textZoomOut" title="Réduire le texte">A−</button>
       <button data-alpha-ui-command="textZoomIn" title="Agrandir le texte">A+</button>
       <button data-alpha-ui-command="resetLayout" title="Réinitialiser l'affichage">⟲</button>
+      <button data-alpha-ui-command="windowFitToScreen" title="Adapter la fenêtre à l'écran">⤢</button>
       <button data-alpha-ui-command="audioSettings" title="Réglages audio réels">Audio</button>
       <button data-alpha-ui-command="asioPanel" title="Panneau du pilote ASIO">ASIO</button>
     </div>
@@ -4940,6 +4951,10 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
       if (item) {
         if (item.classList.contains('has-sub')) { e.stopPropagation(); return; }
         $$('.menu').forEach((m) => m.classList.remove('open'));
+        if (item.classList.contains('alpha-unavailable')) {
+          toast('Fonction non disponible dans ALPHA Studio 0.5.0.', item.dataset.label || 'Commande');
+          return;
+        }
         const act = item.dataset.act;
         let raw = item.dataset.arg;
         if (raw === undefined || raw === '') raw = item.dataset.val;
@@ -15978,6 +15993,32 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
       typeof backend.emitEvent !== 'function' ||
       typeof backend.addEventListener !== 'function') return;
 
+  /* Mode application native : une seule barre de titre (Windows), pas de menu
+     contextuel navigateur ni de raccourcis Retour/Suivant/Imprimer/Enregistrer sous. */
+  function installNativeShell() {
+    document.documentElement.dataset.alphaNative = '1';
+    document.addEventListener('contextmenu', function (event) {
+      if (event && event.preventDefault) event.preventDefault();
+    }, true);
+    window.addEventListener('keydown', function (event) {
+      if (!event) return;
+      const key = String(event.key || '').toLowerCase();
+      const editable = !!(event.target && event.target.closest &&
+        event.target.closest('input,textarea,select,[contenteditable="true"]'));
+      const browserNavigation = event.altKey && (key === 'arrowleft' || key === 'arrowright');
+      const browserReload = (event.ctrlKey || event.metaKey) && key === 'r';
+      const browserFind = (event.ctrlKey || event.metaKey) && key === 'f';
+      const browserDevTools = key === 'f12';
+      const browserBackspace = key === 'backspace' && !editable &&
+        !event.altKey && !(event.ctrlKey || event.metaKey);
+      if (browserNavigation || browserReload || browserFind || browserDevTools || browserBackspace) {
+        if (event.preventDefault) event.preventDefault();
+        if (!browserBackspace && event.stopImmediatePropagation) event.stopImmediatePropagation();
+      }
+    }, true);
+  }
+  installNativeShell();
+
   /* Protocole natif JUCE 8 : un événement __juce__invoke avec params=[commande, données],
      puis un événement __juce__complete { promiseId, result }. Le module JS JUCE n'est pas
      importé dans le HTML autonome : le pont implémente ici son petit gestionnaire de promesses. */
@@ -16440,13 +16481,10 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
   });
   actions.fixedTempo = () => send('tempo', { bpm: 120 });
   actions.quantize = () => send('quantizeMidi', { trackIndex: selectedIndex(), grid: '1/16' });
-  actions.midiLogical = () => send('quantizeMidi', { trackIndex: selectedIndex(), grid: '1/16' });
-  actions.addFX = () => send('uiControl', { control: 'bus', index: 0, field: 'mute', value: false });
   actions.removeEmpty = () => send('setStatus', { status: 'Retirer les pistes vides : à vérifier dans le test intégral Windows.' });
-  actions.closeProject = () => send('newProject');
   actions.saveAs = () => send('saveAs');
   actions.saveNewVersion = () => send('saveNewVersion');
-  actions.clearRecent = () => send('setStatus', { status: 'Liste des projets récents : fonction non persistée.' });
+  /* closeProject, addFX et midiLogical ne sont plus détournés : voir unavailableActions. */
 
   /* Fenêtre native, affichage Full HD/DPI et vrais réglages audio/ASIO. */
   actions.audioSettings = () => send('audioSettings');
@@ -16462,6 +16500,49 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
   actions.textZoomIn = () => send('fontScale', { delta: 0.10 });
   actions.textZoomOut = () => send('fontScale', { delta: -0.10 });
   actions.resetLayout = () => send('resetLayout');
+
+  /* A02 / A08 / A11 / A14 : les commandes non implémentées sont désactivées
+     et signalées, au lieu d'être détournées vers newProject, quantizeMidi ou un mute de bus. */
+  const unavailableActions = new Set([
+    'newLibrary', 'newFolder', 'clearRecent', 'closeProject', 'addFX', 'midiLogical',
+    'print', 'pageSetup', 'exportScore', 'exportOmf', 'omf', 'exportXml',
+    'exportCd', 'exportPerf', 'importOmf', 'importAaf', 'importXml', 'importCd'
+  ]);
+  const unavailableLabel = (key) =>
+    ((A.MENU_STUBS && A.MENU_STUBS[key] && A.MENU_STUBS[key][0]) || key);
+  unavailableActions.forEach((key) => {
+    actions[key] = () => send('setStatus', {
+      status: 'Commande « ' + unavailableLabel(key) + ' » : non implémentée / non disponible dans ALPHA Studio 0.5.0.'
+    });
+  });
+  actions.exportTrack = () => send('exportTrack', { trackIndex: selectedIndex() });
+  if (window.ALPHA_NATIVE) window.ALPHA_NATIVE.unavailableActions = Array.from(unavailableActions);
+
+  function markUnavailableMenus() {
+    const bar = document.getElementById('menubar');
+    if (!bar) return;
+    Array.prototype.forEach.call(bar.querySelectorAll('.dd-item[data-act]'), (item) => {
+      if (!unavailableActions.has(item.dataset.act)) return;
+      item.classList.add('alpha-unavailable');
+      item.setAttribute('aria-disabled', 'true');
+      item.setAttribute('title', 'Non disponible dans ALPHA Studio 0.5.0');
+    });
+  }
+  function installMenuAvailability() {
+    const start = () => {
+      markUnavailableMenus();
+      const bar = document.getElementById('menubar');
+      if (bar && typeof MutationObserver === 'function') {
+        const observer = new MutationObserver(markUnavailableMenus);
+        observer.observe(bar, { childList: true, subtree: true });
+      }
+    };
+    if (document.readyState === 'loading')
+      document.addEventListener('DOMContentLoaded', () => setTimeout(start, 0), { once: true });
+    else
+      setTimeout(start, 0);
+  }
+  installMenuAvailability();
 
   /* Les stubs documentaires ne doivent plus répondre « étape 2 » sous WebView2 :
      ceux qui n'ont pas d'équivalent moteur envoient un statut explicite. */

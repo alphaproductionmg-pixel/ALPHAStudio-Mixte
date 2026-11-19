@@ -29,7 +29,7 @@ private:
     void handleCommand (const juce::Array<juce::var>&,
                         juce::WebBrowserComponent::NativeFunctionCompletion);
     void openDialog (const juce::String& kind, const juce::var& payload);
-    void exportWav (bool stems);
+    void exportWav (bool stems, int singleTrack = -1);
     void showAudioSettings();
     void showAsioPanel();
     void fitWindowToScreen();

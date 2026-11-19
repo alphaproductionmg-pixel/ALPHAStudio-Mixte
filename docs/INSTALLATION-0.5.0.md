@@ -37,3 +37,19 @@ L'interface et `WebView2Loader.dll` sont installés avec l'exécutable ; aucun f
 Le test utilisateur doit vérifier visuellement et fonctionnellement : installation/désinstallation, ouverture de la fenêtre, déplacement/réduction/agrandissement/redimensionnement, lisibilité à 100/125/150 %, visibilité des réglages ASIO, lecture/édition/export, puis fournir la liste détaillée des bugs/défauts. Aucun élément n'est considéré accepté à 100 % avant ce test et l'acceptation explicite.
 
 La vidéo reste exclue jusqu'après le test final confirmé.
+
+## Correctif d'interface après premier retour Windows
+
+Après le premier test d'installation, l'interface pouvait donner l'impression d'être « une fenêtre dans une fenêtre » et afficher des commandes de navigateur. Le build correctif 0.5.0 :
+
+- n'affiche plus qu'**une seule barre de titre**, celle de Windows ; la fausse barre de titre HTML est masquée en mode natif ;
+- fait occuper tout l'espace WebView2 à l'application, sans liseré ni page d'erreur / barre d'état de navigateur ;
+- désactive le menu contextuel WebView2 et les raccourcis **Retour / Suivant / Recharger / Rechercher** du navigateur ;
+- marque les fonctions non implémentées **« non disponible »** dans les menus, au lieu de messages « étape 2 » ou de commandes détournées ;
+- conserve **Adapter à l'écran** dans la barre d'état (`⤢`) ; les boutons Réduire / Agrandir / Fermer sont ceux de Windows ;
+- corrige **Exporter la piste sélectionnée** pour produire un seul WAV de piste et non un dossier de stems ;
+- désactive **Fermer le projet**, **Ajouter un canal FX** et **Éditeur logique MIDI** tant qu'ils ne sont pas réellement implémentés, afin d'éviter une perte de projet ou un faux résultat.
+
+`Enregistrer sous…` ouvre une boîte de dialogue native et écrit un projet `.alphaproj` ; `Imprimer…` et `Mise en page…` sont désactivés. `Précédent / Suivant` dans *Édition ▸ Sélection* concernent les événements du projet, pas la navigation WebView2.
+
+Le triage complet de l'audit utilisateur est dans `docs/TRIAGE-AUDIT-UTILISATEUR-0.5.0.md`. Ce correctif ne valide pas encore le moteur complet sur Windows.

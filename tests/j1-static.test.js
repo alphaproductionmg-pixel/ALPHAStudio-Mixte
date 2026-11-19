@@ -21,7 +21,9 @@ test('build — livrable unique, autosuffisant, contenant tout J1', () => {
   assert.ok(html.includes('setPlayhead'));
   assert.ok(!html.includes('<script src='));
   assert.ok(!html.includes('@import url('));
-  assert.equal((html.match(/<script>/g) || []).length, 1);
+  // Un script de détection native dans <head> + le bundle applicatif unique.
+  assert.equal((html.match(/<script>/g) || []).length, 2);
+  assert.match(html, /<script>if \(window\.__JUCE__ && window\.__JUCE__\.backend\) document\.documentElement\.dataset\.alphaNative = '1';<\/script>/);
   const inline = html.match(/<script>\n([\s\S]*)\n<\/script>/);
   assert.ok(inline);
   assert.doesNotThrow(() => new vm.Script(inline[1], { filename: 'alpha-studio.inline.js' }));
