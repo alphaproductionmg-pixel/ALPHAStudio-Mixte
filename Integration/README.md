@@ -8,12 +8,12 @@
 - Source/Main.cpp : point d'entrée de l'application mixte.
 
 ## Commandes raccordées dans le pont
-Transport lecture / arrêt / enregistrement, cycle, métronome, position, tempo, armement / mute / solo / volume des pistes, création de piste, import audio, ouverture et sauvegarde de projet.
+Transport lecture / arrêt / enregistrement, cycle, métronome, déplacement du curseur, armement / mute / solo / volume des pistes, création de piste, import audio, ouverture et sauvegarde de projet. Le point d'entrée natif accepte aussi une commande tempo, mais aucun champ de tempo de l'interface ne l'appelle encore.
 
-Le moteur reste propriétaire des données audio. L'interface reçoit un instantané périodique du transport, des pistes, des clips et des niveaux. Les callbacks natifs sont exécutés sur le thread message JUCE ; le traitement audio reste dans le moteur.
+Le moteur reste propriétaire des données audio. L'interface reçoit un instantané périodique du transport, des pistes, des clips et des niveaux. Les callbacks natifs sont exécutés sur le thread message JUCE ; le traitement audio reste dans le moteur. Les niveaux sont transmis, mais leur rendu VU dans les widgets de l'interface reste à raccorder.
 
 ## Fichier UI attendu
-Le point d'entrée attend UI/AlphaStudio/alpha-studio.html. Le build.py ajouté injecte native-bridge.js après les scripts ALPHA. Le dépôt ne contient pas encore le HTML original ni src/ ; le transfert de ces fichiers est un prérequis avant compilation et lancement.
+Le build.py ajouté injecte native-bridge.js après les scripts ALPHA et CMake le lance avant la compilation. Le dépôt ne contient pas encore src/ ; son transfert est un prérequis avant configuration et compilation. Le HTML est généré par build.py.
 
 ## Limites à ne pas masquer
 Ce premier adaptateur ne synchronise pas encore toutes les opérations d'édition de clips, les inserts VST, les automations, les fenêtres d'édition MIDI / échantillons ou les contrôles avancés de mixage. Ces raccordements nécessitent des commandes dédiées et des tests fonctionnels. Aucun de ces contrôles ne doit afficher une réussite fictive.
