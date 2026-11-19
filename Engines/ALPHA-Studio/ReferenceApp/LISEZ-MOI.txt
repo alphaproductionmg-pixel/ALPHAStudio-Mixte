@@ -1,0 +1,34 @@
+ALPHA Studio 0.1 - application Windows (C++ / JUCE) avec plugins VST3 et carte son
+
+CE QUE C'EST
+Le code source complet. Il faut le compiler une fois pour obtenir le programme et l'installeur.
+Ce code n'a PAS encore ete compile : la premiere compilation peut afficher des erreurs a corriger.
+
+OPTION A - sans rien installer sur le PC (recommandee) : GitHub
+1. Creez un compte gratuit sur github.com, puis un depot PRIVE (New repository).
+2. Envoyez-y tout le contenu de ce dossier (Add file > Upload files), y compris le dossier .github.
+3. Onglet "Actions" > "Construire l'installeur Windows" > "Run workflow".
+4. Au bout de 10 a 15 minutes, ouvrez l'execution terminee et telechargez "ALPHA-Studio-Setup".
+5. Decompressez, lancez ALPHA-Studio-Setup.exe.
+Si l'etape echoue : ouvrez l'execution, copiez les lignes rouges et envoyez-les moi.
+
+OPTION B - sur votre PC
+Installez Visual Studio 2022 Community (charge "Developpement Desktop en C++") et CMake,
+puis double-cliquez sur build-local.bat. Il faut Internet (telecharge JUCE).
+
+UTILISATION
+- Carte son : bouton "Carte son" (pilote, entree, sortie, taille de tampon).
+- Plugins : bouton "Scanner VST3", puis clic sur une case "+" d'une piste pour ajouter un effet.
+  Cliquez sur un effet ajoute pour ouvrir son interface ou le retirer.
+- Enregistrer : selectionnez une piste, bouton "Enreg." (prises dans Documents\ALPHA Studio\Prises).
+- Importer (wav, mp3, flac, ogg, aiff), Fichier > Exporter le mixage (WAV 24 bits).
+- Raccourcis : Espace lecture/stop, Debut, S scinder le clip, Suppr supprimer, C boucle.
+  Ctrl + molette = zoom, Maj + molette = defilement horizontal. Regle : moitie haute = boucle, moitie basse = curseur.
+
+LIMITES DE CETTE VERSION
+- VST3 uniquement (le SDK VST2 n'est plus distribuable). Vos plugins VST2 (.dll) ne se chargent pas ;
+  la plupart des editeurs fournissent aussi une version VST3.
+- ASIO : desactive par defaut (licence du SDK). Par defaut WASAPI et DirectSound. Pour ASIO :
+  telechargez le SDK sur steinberg.net, puis cmake -B build -DASIO_SDK_DIR="C:\chemin\asiosdk".
+- Pas de compensation de latence a l'enregistrement, pas de MIDI/instruments, pas de console separee.
+- Les fichiers audio sont charges en memoire (evitez les fichiers tres longs).
