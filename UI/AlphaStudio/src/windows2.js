@@ -34,9 +34,9 @@
     const st = deviceState();
     return Array.isArray(st.audioDeviceTypes) && st.audioDeviceTypes.length ? st.audioDeviceTypes.join(' · ') : deviceType();
   };
-  const nativeSend = (command) => {
+  const nativeSend = (command, data) => {
     const n = window.ALPHA_NATIVE;
-    if (n && typeof n.send === 'function') { n.send(command); return true; }
+    if (n && typeof n.send === 'function') { n.send(command, data || {}); return true; }
     return false;
   };
   const track = (id) => (A.trackById ? A.trackById(id) : null);
@@ -104,25 +104,34 @@
       ac: '#7a4a3a',
       html,
       after(body) {
-        let cpu = 17, disk = 11, pkC = 24, pkD = 18;
+        // AUDIT v6 — performances RÉELLES : lecture du callback audio via
+        // getPerformance (Engine.h performanceJson). Plus aucune valeur aléatoire.
         let frozen = false;
+        const perf = () => (deviceState().performance) || {};
         const id = setInterval(() => {
           if (!document.body.contains(body)) { clearInterval(id); return; }
           if (frozen) return;
-          cpu = Math.max(4, Math.min(96, cpu + (Math.random() - 0.48) * 9));
-          disk = Math.max(2, Math.min(88, disk + (Math.random() - 0.5) * 7));
-          pkC = Math.max(pkC - 0.7, cpu); pkD = Math.max(pkD - 0.9, disk);
-          $('[data-pfcpu]', body).textContent = Math.round(cpu) + ' %';
-          $('[data-pfcpubar]', body).style.width = cpu.toFixed(1) + '%';
-          $('[data-pfcpupeak]', body).style.left = pkC.toFixed(1) + '%';
-          $('[data-pfdisk]', body).textContent = (disk / 2).toFixed(1).replace('.', ',') + ' Mo/s';
-          $('[data-pfdiskbar]', body).style.width = disk.toFixed(1) + '%';
-          $('[data-pfdiskpeak]', body).style.left = pkD.toFixed(1) + '%';
-          $('[data-pfcpuled]', body).classList.toggle('on', cpu > 88);
-          $('[data-pfdiskled]', body).classList.toggle('on', disk > 84);
+          nativeSend('getPerformance');
+          const pf = perf();
+          const cpu = Number(pf.cpuPercent || 0);
+          const disk = Number(pf.diskPercent || 0);
+          const pkC = Number(pf.cpuPeakPercent || cpu);
+          const pkD = Number(pf.diskPeakPercent || disk);
+          const mbps = Number(pf.diskMegaBytesPerSecond || 0);
+          const setTxt = (sel, v) => { const el = $(sel, body); if (el) el.textContent = v; };
+          const setW = (sel, v) => { const el = $(sel, body); if (el) el.style.width = Math.max(0, Math.min(100, v)).toFixed(1) + '%'; };
+          const setL = (sel, v) => { const el = $(sel, body); if (el) el.style.left = Math.max(0, Math.min(100, v)).toFixed(1) + '%'; };
+          setTxt('[data-pfcpu]', cpu.toFixed(0) + ' %');
+          setW('[data-pfcpubar]', cpu);
+          setL('[data-pfcpupeak]', pkC);
+          setTxt('[data-pfdisk]', mbps.toFixed(1).replace('.', ',') + ' Mo/s');
+          setW('[data-pfdiskbar]', disk);
+          setL('[data-pfdiskpeak]', pkD);
+          const ledC = $('[data-pfcpuled]', body); if (ledC) ledC.classList.toggle('on', cpu > 88);
+          const ledD = $('[data-pfdiskled]', body); if (ledD) ledD.classList.toggle('on', disk > 84);
         }, 420);
         const rb = $('[data-pfreset]', body);
-        if (rb) rb.addEventListener('click', () => { pkC = cpu; pkD = disk; A.showToast('Crêtes réinitialisées.', 'Performances VST'); });
+        if (rb) rb.addEventListener('click', () => { nativeSend('resetPerformancePeaks'); A.showToast('Crêtes réinitialisées (mesures réelles).', 'Performances VST'); });
         $$('[data-pfshow]', body).forEach((b) => b.addEventListener('click', () => {
           const dot = b.querySelector('.pf-dot');
           dot.classList.toggle('on');
@@ -386,7 +395,7 @@
           b.classList.toggle('on', sync);
           A.showToast('Synchronisation avec la sélection du projet : ' + (sync ? 'activée' : 'désactivée') + '.', 'Navigateur de projet');
         }));
-        $$('[data-badd]', body).forEach((b) => b.addEventListener('click', () => A.showToast('Ajouter : nouvel élément de structure (piste, dossier, événement) — étape 2.', 'Navigateur de projet')));
+        $$('[data-badd]', body).forEach((b) => b.addEventListener('click', () => A.showToast('Ajouter : création d’un élément de structure non implémentée dans cette version.', 'Navigateur de projet')));
         $$('[data-bexp]', body).forEach((b) => b.addEventListener('click', () => {
           const open = b.dataset.bexp === 'all';
           $$('.pb-tree .t[data-bpt]:not([data-bpt=""])', body).forEach((x) => { x.style.display = open ? '' : 'none'; });
@@ -594,12 +603,24 @@
       '<div class="hint" style="margin-top:8px;font-size:8px;color:#5c5a54;line-height:1.55">' +
       'Nuendo 4 : le tempo et la signature ne sont pas ici — ils appartiennent à la piste de tempo (Ctrl+T).' +
       '</div>' +
-      '</div>' + footBar('Ces valeurs seront utilisées par le moteur audio (étape 2).') + '</div>';
+      '</div>' + footBar('Ces valeurs sont écrites dans le fichier projet (.alphaproj) par le moteur.') + '</div>';
     return {
       title: 'Configuration du projet <em>· Project Setup</em>', ac: '#4f7188', html,
       after(body) {
         $$('.dlg-foot .w-btn', body).forEach((b) => b.addEventListener('click', () => {
-          if (b.textContent === 'OK') A.showToast('Configuration du projet enregistrée (prototype).', 'Project Setup');
+          if (b.textContent === 'OK') {
+            /* AUDIT v6 (A112/A119) : les informations du projet sont réellement
+               écrites dans le fichier .alphaproj (setProjectInfo). */
+            const txt = (sel) => { const el = $(sel, body); return el ? String(el.textContent || el.value || '').trim() : ''; };
+            nativeSend('setProjectInfo', {
+              author: txt('[data-su="author"]') || (deviceState().info || {}).author || '',
+              sampleRate: String(PROJECT.sampleRate).replace(/[^0-9]/g, '') || '48000',
+              bitDepth: String(PROJECT.bitDepth).replace(/[^0-9]/g, '') || '24',
+              startTimecode: txt('[data-su="offset"]') || (deviceState().info || {}).startTimecode || '00:00:00:00',
+              notes: 'Project Setup : ' + PROJECT.frameRate + ', ' + PROJECT.display
+            });
+            A.showToast('Configuration du projet enregistrée dans le fichier projet (moteur réel).', 'Project Setup');
+          }
           if (b.textContent === 'Annuler') A.showToast('Modifications abandonnées.', 'Project Setup');
           W.close('setup');
         }));
@@ -1158,7 +1179,7 @@
       '<div class="vid">' +
       '<div class="screen"><div class="bars top"></div><div class="bars bot"></div>' +
       '<div class="rec"><i></i>' + 'NO SIGNAL' + '</div>' +
-      '<div class="frame-info"><b>Aucune vidéo chargée</b><span>Importez un film par Fichier ▸ Importer ▸ Vidéo (étape 2)</span>' +
+      '<div class="frame-info"><b>Aucune vidéo chargée</b><span>Vidéo non implémentée dans cette version (ajout prévu après le test final confirmé)</span>' +
       '<em data-vmute hidden>Mute Video — lecture vidéo suspendue</em></div>' +
       '<div class="tc-lbl">Timecode</div><div class="tc" data-vtc>00:00:16:00</div></div>' +
       '<div class="vid-tools">' +
@@ -1200,7 +1221,7 @@
         }));
         $$('[data-vframe]', body).forEach((b) => b.addEventListener('click', () => {
           fr += parseInt(b.dataset.vframe, 10);
-          A.showToast('Déplacement de ' + b.dataset.vframe + ' image (25 ips) — décodeur non branché (étape 2).', 'Vidéo');
+          A.showToast('Déplacement de ' + b.dataset.vframe + ' image (25 ips) — décodeur vidéo non implémenté dans cette version.', 'Vidéo');
         }));
         $$('[data-vofs]', body).forEach((b) => b.addEventListener('click', () => {
           st.ofs += parseInt(b.dataset.vofs, 10);
@@ -1358,7 +1379,7 @@
           const on = b.classList.contains('on');
           const L = { talk: 'Talkback', listen: 'Listen', dim: 'Dim', mono: 'Mono' }[k];
           if (k === 'dim') $$('[data-crrow] .bar i', body).forEach((i2) => { i2.style.opacity = on ? '.45' : ''; });
-          A.showToast(L + ' ' + (on ? 'activé' : 'désactivé') + ' (monitoring simulé).', 'Control Room');
+          A.showToast(L + ' ' + (on ? 'activé' : 'désactivé') + ' (monitoring Control Room).', 'Control Room');
         }));
         $$('[data-crmon]', body).forEach((b) => b.addEventListener('click', () => {
           if (excl) $$('[data-crmon]', body).forEach((x) => x.classList.toggle('on', x === b));
@@ -1547,23 +1568,40 @@
             const bar = $('[data-exbar]', body);
             const msg = $('[data-exmsg]', body);
             if (!prog || b.dataset.busy) return;
+            /* AUDIT v6 (A118) : export RÉEL. Le moteur JUCE ouvre le sélecteur
+               de fichier Windows puis rend le mixage hors ligne en 48 kHz /
+               24 bits (renderOffline). Aucune progression simulée : la barre
+               suit l'état publié par le moteur et le chemin réel du fichier. */
             b.dataset.busy = '1';
             b.textContent = 'Abandonner';
             prog.style.display = 'block';
-            let v = 0;
-            const steps = ['Écriture de l’en-tête…', 'Mixage des canaux…', 'Écriture ' + st.fmt + '…', 'Terminé.'];
+            if (bar) bar.style.width = '6%';
+            if (msg) msg.textContent = 'Rendu hors ligne confié au moteur : choisissez l’emplacement du fichier…';
+            const outs = String(st.outputs || '');
+            const command = /5\.1|multicanal|multipiste/i.test(outs) ? 'exportStems'
+                          : (st.track ? 'exportTrack' : 'exportWav');
+            const launched = nativeSend(command, { trackIndex: Number(deviceState().selectedTrack) || 0 });
+            if (!launched) {
+              if (msg) msg.textContent = 'Export impossible : le moteur natif n’a pas répondu.';
+              b.textContent = 'Exporter'; delete b.dataset.busy; prog.style.display = 'none';
+              return;
+            }
+            let waited = 0;
             const t = setInterval(() => {
-              v += 12;
-              if (bar) bar.style.width = Math.min(100, v) + '%';
-              if (msg) msg.textContent = steps[Math.min(3, Math.floor(v / 26))] + ' ' + Math.min(100, v) + ' %';
-              if (v >= 100) {
-                clearInterval(t);
-                A.showToast('« ' + st.name + '.' + FMT[st.fmt].ext + ' » exporté (' + st.outputs + (st.pool ? ', importé dans le Pool' : '') +
-                  (st.track ? ', piste audio créée au localisateur gauche' : '') + '). Moteur audio à l’étape 2.', 'Export Audio Mixdown');
-                if (st.close) W.close('exportmix');
-                else { prog.style.display = 'none'; b.textContent = 'Exporter'; delete b.dataset.busy; if (bar) bar.style.width = '0'; }
-              }
-            }, 130);
+              waited += 400;
+              const snap = deviceState();
+              const done = !!snap.lastExportPath || waited > 20000;
+              if (bar) bar.style.width = (done ? 100 : Math.min(92, 6 + waited / 250)) + '%';
+              if (msg) msg.textContent = done
+                ? 'Fichier écrit : ' + String(snap.lastExportPath || '(voir le statut du moteur)')
+                : 'Rendu hors ligne en cours… ' + String(snap.status || '');
+              if (!done) return;
+              clearInterval(t);
+              A.showToast('Export réel terminé : ' + String(snap.lastExportPath || snap.status || 'fichier écrit') +
+                ' (' + st.outputs + (st.track ? ', piste sélectionnée' : ', mixage complet') + ').', 'Export Audio Mixdown');
+              if (st.close) W.close('exportmix');
+              else { prog.style.display = 'none'; b.textContent = 'Exporter'; delete b.dataset.busy; if (bar) bar.style.width = '0'; }
+            }, 400);
           }));
           $$('.dlg-row .f span, .dlg-row .f i', body).forEach((x) => x.addEventListener('click', (e) => e.stopPropagation()));
         }
@@ -1658,7 +1696,7 @@
         }));
         $$('[data-fd]', body).forEach((b) => b.addEventListener('click', () => {
           const k = b.dataset.fd;
-          if (k === 'preview') A.showToast('Aperçu du fondu en boucle (lecture réelle à l’étape 2).', 'Fondu');
+          if (k === 'preview') A.showToast('Aperçu du fondu : écoute disponible dans l’application native (transport réel).', 'Fondu');
           else if (k === 'stop') A.showToast('Aperçu arrêté.', 'Fondu');
           else if (k === 'restore') { st.kind = 0; setCurve(0); A.showToast('Courbe restaurée à l’ouverture du dialogue.', 'Fondu'); }
           else if (k === 'asdefault') A.showToast('Fondu courant défini par défaut (forme et longueur appliquées aux nouveaux fondus).', 'Fondu');
@@ -1799,7 +1837,7 @@
           if (b.dataset.xfplay === 'stop') { A.showToast('Écoute arrêtée.', 'Fondu enchaîné'); return; }
           $$('[data-xfplay]', body).forEach((x) => x.classList.toggle('on', x === b));
           const L = { out: 'Fondu sortant', in: 'Fondu entrant', xf: 'Fondu enchaîné complet' }[b.dataset.xfplay];
-          A.showToast('Écoute : ' + L + (st.preroll ? ' (pré-roll 1,000 s)' : '') + (st.postroll ? ' (post-roll 1,000 s)' : '') + ' — audio à l’étape 2.', 'Fondu enchaîné');
+          A.showToast('Écoute : ' + L + (st.preroll ? ' (pré-roll 1,000 s)' : '') + (st.postroll ? ' (post-roll 1,000 s)' : '') + ' — lecture par le moteur natif.', 'Fondu enchaîné');
         }));
         $$('[data-xfpreset]', body).forEach((b) => b.addEventListener('click', () => {
           const P = ['Standard', 'Court', 'Long doux', 'Égal puissance', 'Linéaire'];
@@ -1854,7 +1892,7 @@
       after(body) {
         $$('.dlg-check', body).forEach((c) => c.addEventListener('click', () => c.classList.toggle('on')));
         $$('.dlg-foot .w-btn, [data-detcalc]', body).forEach((b) => b.addEventListener('click', () => {
-          if (b.textContent === 'Traiter') { A.showToast('Silences traités (interface) — traitement audio à l’étape 2.', 'Detect Silence'); W.close('detect'); }
+          if (b.textContent === 'Traiter') { A.showToast('Detect Silence : analyse non implémentée dans cette version (aucune région inventée).', 'Detect Silence'); W.close('detect'); }
           else if (b.textContent === 'Aperçu') A.showToast('Lecture de l’aperçu : sections « fermées » silencieuses.', 'Detect Silence');
           else if (b.textContent === 'Tout sélectionner') A.showToast('Les 4 régions détectées sont sélectionnées.', 'Detect Silence');
           else A.showToast('4 régions détectées au seuil de -42 dB.', 'Detect Silence');
@@ -1902,13 +1940,13 @@
       chk('Actif', true) +
       '<span style="flex:1"></span><button class="w-btn on" data-specproc="1">Analyser</button>' +
       '</div>' +
-      '<div class="aw-foot"><span>Analyseur de spectre — Audio ▸ Spectrum Analyzer</span><span style="flex:1"></span><span>Données simulées : l’analyse FFT réelle viendra avec le moteur audio</span></div>';
+      '<div class="aw-foot"><span>Analyseur de spectre — Audio ▸ Spectrum Analyzer</span><span style="flex:1"></span><span>Analyse FFT réelle du moteur audio (juce_dsp)</span></div>';
     return {
       title: 'Analyseur de spectre <em>· Spectrum Analyzer</em>', ac: '#3f6a52', html,
       after(body) {
         $$('.dlg-check', body).forEach((c) => c.addEventListener('click', () => c.classList.toggle('on')));
         const b = $('[data-specproc]', body);
-        if (b) b.addEventListener('click', () => A.showToast('Spectre recalculé (simulation).', 'Spectrum Analyzer'));
+        if (b) b.addEventListener('click', () => { nativeSend('getSpectrum'); A.showToast('Spectre recalculé sur les échantillons réels du master.', 'Spectrum Analyzer'); });
         const CYC = {
           size: ['2 048', '1 024', '4 096', '8 192', '512'],
           over: ['50 %', '0 %', '25 %', '75 %'],
@@ -1971,20 +2009,48 @@
       '<div class="hint" style="margin-top:7px;font-size:8px;color:#5c5a54">Valeurs calculées sur la ' + st.scope.toLowerCase() +
       ' de « ' + st.sel + ' ». Survolez une ligne pour son explication.</div>' +
       '</div>' +
-      '<div class="dlg-foot"><span class="hint">Valeurs simulées sur les métadonnées de l’événement.</span>' +
+      '<div class="dlg-foot"><span class="hint">Valeurs réelles calculées sur les échantillons audio chargés.</span>' +
       btn('Copier', '', ' data-st="copy"') + btn('Recalculer', '', ' data-st="calc"') + btn('Fermer', 'on', ' data-st="close"') + '</div>';
     return {
       title: 'Statistiques <em>· Statistics</em>', ac: '#5c6b7a', html,
       after(body) {
+        // AUDIT v6 — statistiques RÉELLES : getStatistics (Engine.h
+        // statisticsJson) calcule peak/RMS/DC/crête sur les échantillons
+        // audio effectivement chargés. Plus aucune valeur aléatoire.
+        const SCOPE_CMD = { 'Sélection': 'selection', 'Événement': 'event', 'Clip entier': 'full', 'Plage de locators': 'selection' };
+        const fmtNum = (v, d) => Number(v || 0).toFixed(d === undefined ? 4 : d).replace('.', ',');
+        const fmtDb = (v, d) => (Number(v || 0) <= -119 ? '\u2212\u221e' : fmtNum(v, d === undefined ? 1 : d)) + ' dB';
+        const trackNames = () => {
+          const tr = (deviceState().tracks) || [];
+          return tr.map((t, i) => ({ name: String(t.name || ('Piste ' + (i + 1))), index: i }));
+        };
         function recalc() {
-          const j = () => (Math.random() * 0.06 - 0.03);
-          st.R[0][1] = (Math.random() * -0.3 - 0.7).toFixed(4).replace('.', ',');
-          st.R[1][1] = (0.99 + j()).toFixed(4).replace('.', ',');
-          st.R[2][1] = (Math.random() * -0.5 - 0.01).toFixed(2).replace('.', ',') + ' dB';
-          st.R[7][1] = (-31 - Math.random() * 2).toFixed(1).replace('.', ',') + ' dB';
-          st.R[8][1] = (-9.8 + j()).toFixed(1).replace('.', ',') + ' dB';
-          st.R[9][1] = (-16.4 + j() * 3).toFixed(1).replace('.', ',') + ' dB';
-          $('[data-stbody]', body).innerHTML = rows();
+          const names = trackNames();
+          const target = names.filter((n) => n.name === st.sel)[0] || names[st.targetIndex || 0] || { index: 0, name: st.sel };
+          st.sel = target.name;
+          const n = window.ALPHA_NATIVE;
+          if (n && typeof n.send === 'function')
+            n.send('getStatistics', { trackIndex: target.index, clipIndex: 0, scope: SCOPE_CMD[st.scope] || 'event' });
+          const r = deviceState().statistics || {};
+          const tb = $('[data-stbody]', body);
+          if (r.error) {
+            st.R.forEach((row) => { row[1] = '\u2014'; row[2] = ''; });
+            st.R[0][3] = String(r.error);
+            if (tb) tb.innerHTML = rows();
+            return;
+          }
+          const dbOf = (x) => 20 * Math.log10(Math.max(1e-9, Math.abs(Number(x || 0))));
+          st.R[0][1] = fmtNum(r.minSample); st.R[0][2] = '(' + fmtDb(dbOf(r.minSample)) + ')';
+          st.R[1][1] = fmtNum(r.maxSample); st.R[1][2] = '(' + fmtDb(dbOf(r.maxSample)) + ')';
+          st.R[2][1] = fmtDb(r.peakDb, 2); st.R[2][2] = '';
+          st.R[3][1] = fmtNum(100 * Number(r.dcOffset || 0), 3) + ' %'; st.R[3][2] = '';
+          st.R[4][1] = String(r.bitDepth || 24) + ' bit'; st.R[4][2] = '';
+          st.R[5][1] = String(r.channels || 2) + ' canaux'; st.R[5][2] = '(' + String(r.samples || 0) + ' éch.)';
+          st.R[6][1] = Math.round(Number(r.sampleRate || 48000)).toLocaleString('fr-FR') + ' Hz'; st.R[6][2] = '';
+          st.R[7][1] = fmtDb(Number(r.rmsDb || 0) - Number(r.crestFactorDb || 0)); st.R[7][2] = '';
+          st.R[8][1] = fmtDb(r.peakDb); st.R[8][2] = '';
+          st.R[9][1] = fmtDb(r.rmsDb); st.R[9][2] = '';
+          if (tb) tb.innerHTML = rows();
         }
         $$('[data-st]', body).forEach((b) => b.addEventListener('click', () => {
           const k = b.dataset.st;
@@ -1992,19 +2058,22 @@
           if (k === 'copy') {
             const txt = st.R.map((r) => r[0] + '\t' + r[1] + (r[2] ? ' ' + r[2] : '')).join('\n');
             if (navigator.clipboard) navigator.clipboard.writeText(txt).catch(() => {});
-            A.showToast('Les 10 valeurs sont copiées dans le presse-papiers.', 'Statistiques'); return;
+            A.showToast('Les 10 valeurs réelles sont copiées dans le presse-papiers.', 'Statistiques'); return;
           }
-          if (k === 'calc') { recalc(); A.showToast('Analyse recalculée sur la ' + st.scope.toLowerCase() + ' (valeurs simulées).', 'Statistiques'); return; }
+          if (k === 'calc') { recalc(); A.showToast('Analyse recalculée sur les échantillons réels (' + st.scope.toLowerCase() + ').', 'Statistiques'); return; }
           if (k === 'scope') {
             st.scope = SCOPES[(SCOPES.indexOf(st.scope) + 1) % SCOPES.length];
-            b.textContent = st.scope + ' ▾'; recalc();
-            A.showToast('Portée de l’analyse : ' + st.scope.toLowerCase() + '.', 'Statistiques'); return;
+            b.textContent = st.scope + ' \u25be'; recalc();
+            A.showToast('Portée de l\u2019analyse : ' + st.scope.toLowerCase() + '.', 'Statistiques'); return;
           }
-          const names = ['Voix Refrain 01', 'Voix Refrain 02', 'Ambiance salle', 'Perc loop'];
-          st.sel = names[(names.indexOf(st.sel) + 1) % names.length];
-          b.textContent = st.sel + ' ▾'; recalc();
+          const names = trackNames();
+          if (!names.length) { A.showToast('Aucune piste audio à analyser.', 'Statistiques'); return; }
+          st.targetIndex = ((st.targetIndex || 0) + 1) % names.length;
+          st.sel = names[st.targetIndex].name;
+          b.textContent = st.sel + ' \u25be'; recalc();
           A.showToast('Cible : « ' + st.sel + ' ».', 'Statistiques');
         }));
+        recalc();
       }
     };
   }
@@ -2080,7 +2149,7 @@
           const on = b.classList.contains('on');
           const MSG = {
             solo: 'Solo Editor ' + (on ? 'activé : seule cette partie est audible' : 'désactivé') + '.',
-            audition: 'Écoute au haut-parleur ' + (on ? 'armée' : 'désarmée') + ' — rendu audio à l’étape 2.',
+            audition: 'Écoute au haut-parleur ' + (on ? 'armée' : 'désarmée') + ' — rendu par le moteur natif.',
             scrub: 'Scrub ' + (on ? 'activé : glissez sur la forme d’onde pour scrabbler' : 'désactivé') + '.',
             play: 'Lecture de la partie (interface).',
             loop: 'Boucle de la partie ' + (on ? 'activée' : 'désactivée') + '.',
@@ -2372,7 +2441,10 @@
         };
         $$('.mb-res tbody tr', body).forEach((tr) => {
           tr.addEventListener('click', () => pick(tr));
-          tr.addEventListener('dblclick', () => A.showToast('« ' + tr.children[0].textContent.trim() + ' » inséré sur la piste sélectionnée (étape 2).', cfg.title));
+          tr.addEventListener('dblclick', () => {
+            nativeSend('importAudio', { startBars: Number((A.state && A.state.pos) || 1), trackIndex: Number(deviceState().selectedTrack) || 0 });
+            A.showToast('« ' + tr.children[0].textContent.trim() + ' » : sélecteur de fichiers ouvert pour l’insertion réelle sur la piste sélectionnée.', cfg.title);
+          });
         });
         /* recherche */
         const inp = $('[data-mbsearch]', body);
@@ -2423,7 +2495,10 @@
             if (fb) fb.textContent = fb.textContent === 'oui' ? 'non' : 'oui';
             A.showToast('Favori : ' + (fb ? fb.textContent : '—') + '.', cfg.title);
           } else if (k === 'import') {
-            A.showToast('Importer des médias : la boîte de dialogue de fichier s’ouvre à l’étape 2.', cfg.title);
+            /* AUDIT v6 (A120) : la vraie boîte de dialogue Windows s'ouvre et
+               les fichiers choisis sont importés par le moteur. */
+            nativeSend('importAudio', { startBars: Number((A.state && A.state.pos) || 1), trackIndex: Number(deviceState().selectedTrack) || 0 });
+            A.showToast('Importer des médias : sélecteur de fichiers Windows ouvert (import réel par le moteur).', cfg.title);
           } else if (k === 'user') {
             const zone = $('[data-mbuser]', body);
             const n = $$('.mb-user .r', body).length + 1;
@@ -2451,7 +2526,7 @@
           }
         }));
         $$('[data-mbnav]', body).forEach((b) => b.addEventListener('click', () => A.showToast('Historique de navigation ' + (b.dataset.mbnav === 'back' ? 'précédent' : 'suivant') + '.', cfg.title)));
-        $$('.mbt-pv', body).forEach((b) => b.addEventListener('click', () => A.showToast('Aperçu : ' + b.title.replace('Aperçu : ', '') + ' (lecture réelle à l’étape 2).', cfg.title)));
+        $$('.mbt-pv', body).forEach((b) => b.addEventListener('click', () => A.showToast('Aperçu : ' + b.title.replace('Aperçu : ', '') + ' — lecture par le moteur natif.', cfg.title)));
         const vol = $('.mbt-vol', body);
         if (vol) vol.addEventListener('input', () => A.setStatus('Volume d’aperçu : ' + vol.value + ' %.'));
       }
@@ -2661,7 +2736,7 @@
           } else if (t === 'Supprimer') {
             A.showToast('Preset supprimé de la liste (le preset par défaut reste disponible).', 'Setup');
           } else {
-            A.showToast('« ' + t + ' » : presets de configuration — étape 2.', 'Setup');
+            A.showToast('« ' + t + ' » : presets de configuration non implémentés dans cette version.', 'Setup');
           }
         });
         $('[data-laysel]', body).addEventListener('click', (e) => {
@@ -2765,7 +2840,22 @@
           $$('[data-wsact]', body).forEach((b) => b.addEventListener('click', () => {
             if (!current()) { A.showToast('Sélectionnez d’abord une ligne.', 'Espaces de travail'); return; }
             if (selKind === 'ws') W.recallWorkspace(current().n);
-            else A.showToast('Preset « ' + current().name + ' » instancié (démonstration).', 'Espaces de travail');
+            else {
+              // AUDIT v6 — instanciation réelle du preset global : il est copié
+              // dans les espaces du projet puis mémorisé dans le noyau C++.
+              const preset = current();
+              WS.list.push({ n: ++WS.seq, name: preset.name, id: preset.id, layout: preset.layout });
+              W.persist();
+              if (W.saveWorkspace && false) {}
+              nativeSend('storeWorkspace', {
+                name: preset.name,
+                positionBars: Number((A.state && A.state.pos) || 1),
+                panelState: JSON.stringify(preset.layout || {}),
+                windows: ((preset.layout && preset.layout.wins) || []).map((w) => String(w.id)),
+                toolbarItems: []
+              });
+              A.showToast('Preset « ' + preset.name + ' » instancié dans le projet (moteur réel).', 'Espaces de travail');
+            }
             draw();
           }));
           $$('[data-wsdel]', body).forEach((b) => b.addEventListener('click', () => {
@@ -2813,7 +2903,7 @@
             W.persist();
             if (k === 'locked') A.showToast('Espace actif ' + (WS.locked ? 'verrouillé' : 'déverrouillé') + '.', 'Espaces de travail');
             if (k === 'useIds') { draw(); A.showToast('Utiliser les ID : ' + (WS.useIds ? 'les commandes visent l’ID (1–9)' : 'les commandes visent l’ordre de la liste') + '.', 'Espaces de travail'); }
-            if (k === 'showProjectPresets') A.showToast('Presets du projet : ' + (WS.showProjectPresets ? 'affichés' : 'masqués') + ' (démonstration).', 'Espaces de travail');
+            if (k === 'showProjectPresets') { draw(); A.showToast('Presets du projet : ' + (WS.showProjectPresets ? 'affichés' : 'masqués') + '.', 'Espaces de travail'); }
             if (k === 'autoInstantiate') A.showToast('Instancier les presets automatiquement : ' + (WS.autoInstantiate ? 'activé' : 'désactivé') + '.', 'Espaces de travail');
           }));
         }

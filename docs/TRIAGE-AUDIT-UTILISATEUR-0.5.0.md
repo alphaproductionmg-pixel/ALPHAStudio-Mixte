@@ -77,3 +77,5 @@ Ces corrections sont présentes dans le code, mais **pas validées en exécution
 Elle ne transforme pas ALPHA Studio en Nuendo 4 complet, n’implémente pas tous les A01→A136, ne valide pas le son réel, les plug-ins, l’ASIO matériel, les 59 fenêtres ni l’ergonomie finale. Elle supprime les deux blocages visuels signalés, sécurise les commandes trompeuses, corrige l’export de piste et fournit une base de triage honnête.
 
 Le test intégral Windows reste en cours. La liste détaillée des bugs / défauts reste à compléter. Aucune acceptation finale et aucun 100 % ne sont prononcés avant le retour utilisateur complet.
+
+Le triage point par point de l'audit complet v6 (A01 → A136) est tenu à jour dans `docs/AUDIT-V6-MATRICE.md` : chaque point y reçoit un statut CORRIGÉ (code), PARTIEL ou NON RÉSOLU, sans jamais d'acceptation finale.

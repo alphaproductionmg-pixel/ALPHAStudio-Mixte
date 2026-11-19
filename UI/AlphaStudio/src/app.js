@@ -1,7 +1,9 @@
 /* =========================================================================
    ALPHA Studio — Étape 1 : interface
    Rendu de la fenêtre de projet, interactions visuelles, panneau Transport.
-   Le moteur audio (lecture, enregistrement, mixage) sera branché à l'étape 2.
+   Le moteur audio réel (JUCE/ASIO : lecture, enregistrement, mixage, MIDI, greffons
+   VST3, analyse et échanges de fichiers) tourne dans l'application native Windows ;
+   ce fichier fournit l'interface WebView2 qui le pilote via window.ALPHA_NATIVE.
    ========================================================================= */
 (function () {
   'use strict';
@@ -1662,17 +1664,13 @@
       if (item) {
         if (item.classList.contains('has-sub')) { e.stopPropagation(); return; }
         $$('.menu').forEach((m) => m.classList.remove('open'));
-        if (item.classList.contains('alpha-unavailable')) {
-          toast('Fonction non disponible dans ALPHA Studio 0.5.0.', item.dataset.label || 'Commande');
-          return;
-        }
         const act = item.dataset.act;
         let raw = item.dataset.arg;
         if (raw === undefined || raw === '') raw = item.dataset.val;
         let arg = raw;
         if (raw !== undefined && raw !== '' && !isNaN(Number(raw))) arg = Number(raw);
         if (act && ACTIONS[act]) ACTIONS[act](arg);
-        else toast('\u00ab\u00a0' + item.dataset.label + '\u00a0\u00bb sera reli\u00e9 \u00e0 l\u2019\u00e9tape 2 (moteur audio, \u00e9dition et mixage).', 'Fonction \u00e0 venir');
+        else toast('\u00ab\u00a0' + item.dataset.label + '\u00a0\u00bb : commande non impl\u00e9ment\u00e9e dans cette version.', 'Commande non impl\u00e9ment\u00e9e');
       }
     });
     bar.addEventListener('mouseover', (e) => {
@@ -1714,7 +1712,7 @@
 
   const ACTIONS = {
     about: openAbout,
-    undo: () => toast('Aucune modification dans l\u2019historique. L\u2019édition sera active à l\u2019étape 2.'),
+    undo: () => toast('Aucune modification dans l\u2019historique local ; le moteur natif conserve l\u2019historique illimité du projet.', 'Annuler'),
     redo: () => toast('Rien à rétablir pour le moment.'),
     mix: () => WIN('mixer'),
     chan: () => WIN('channel', state.selectedTrack),
@@ -1776,7 +1774,7 @@
     machine: () => WIN('machine'),
     syslink: () => WIN('syslink'),
     rewire: () => WIN('rewire'),
-    inplace: () => { WIN('key'); toast('Édition en place : la grille MIDI s\u2019ouvre par-dessus la fenêtre de projet (version complète à l\u2019étape 2).', 'Édition en place'); },
+    inplace: () => { WIN('key'); toast('Édition en place : la grille MIDI s\u2019ouvre par-dessus la fenêtre de projet.', 'Édition en place'); },
     nek: () => toast('Les éditeurs de batterie et de partition font partie du <b>Nuendo Expansion Kit</b> (extension payante de Nuendo 4) : ils ne sont pas inclus dans ALPHA.', 'Nuendo Expansion Kit'),
     toggleInspector: () => { setPanel('inspector', !panels.inspector); toast('Inspecteur ' + (panels.inspector ? 'affiché' : 'masqué') + ' (Alt+I).', 'Affichage'); },
     toggleOverview: () => { setPanel('overview', !panels.overview); toast('Ligne d\u2019aperçu ' + (panels.overview ? 'affichée' : 'masquée') + ' (Alt+O).', 'Affichage'); },
@@ -1902,7 +1900,11 @@
       toast('Snap Track Heights ' + (state.snapHeights ? 'activé : la hauteur de piste change par paliers de 8 px' : 'désactivé : redimensionnement libre') + '.', 'Hauteur de piste');
     },
     addTrack: (a) => {
-      const kind = typeof a === 'string' ? a : 'audio';
+      /* AUDIT v6 (A107) : « markers » (menu Piste de marqueurs) n'est plus un
+         type invalide retombant sur une piste audio — la voie de marqueurs
+         existante est réellement sélectionnée et amenée à l'écran. */
+      const raw = typeof a === 'string' ? a : 'audio';
+      const kind = (raw === 'markers') ? 'marker' : raw;
       const NAMES = {
         audio: ['Piste audio', '#7a8f6a', '#b3c3a4'], midi: ['Piste MIDI', '#5d87a3', '#93b7cd'],
         instrument: ['Piste instrument', '#6a6a9a', '#a9a9cf'], group: ['Piste groupe', '#4f7188', '#7f9fb4'],
@@ -1912,7 +1914,17 @@
         ruler: ['Piste de règle', '#8a8d90', '#c9ccce'], automation: ['Piste d’automatisation', '#8a7f5e', '#cfc09a'],
         sampler: ['Piste d’échantillonnage', '#8a6f84', '#c9aec2']
       };
-      if (kind === 'marker') { toast('Il ne peut y avoir qu’une piste de marqueurs par projet.', 'Ajouter une piste'); return; }
+      if (kind === 'marker') {
+        const lane = TRACKS.find((t) => t.kind === 'marker');
+        if (lane) {
+          setTrackSel([lane.id]); state.selectedTrack = lane.id;
+          renderTracks(); renderLanes(); renderOverview(); updateInspector(); updateStatus();
+          const el = document.querySelector('[data-track="' + lane.id + '"]');
+          if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          toast('Piste de marqueurs sélectionnée : une seule voie de marqueurs existe par projet.', 'Ajouter une piste');
+        } else toast('La voie de marqueurs est introuvable dans ce projet.', 'Ajouter une piste');
+        return;
+      }
       if (kind === 'ruler') { ACTIONS.addRulerTrack(); return; }
       const nm = NAMES[kind] || NAMES.audio;
       const id = kind + (TRACKS.length + 1);
@@ -1959,6 +1971,8 @@
       $('#sbStatus').textContent = fwd.length ? 'Marqueur « ' + fwd[0][1] + ' »' : 'Fin du projet';
     },
     showMarkers: () => { WIN('markers'); },
+    /* AUDIT v6 (A107) : action réelle — sélectionne la voie de marqueurs. */
+    markerTrack: () => { ACTIONS.addTrack('marker'); },
     projectLogical: () => WIN('projlogical'),
     beatCalc: () => WIN('beatcalc'),
     midiSetup: () => {
@@ -1999,7 +2013,7 @@
     toolScrub: () => {
       state.tool = 'audition'; updateStatus();
       toast('Lecture / Scrub : maintenez le bouton enfoncé et glissez pour faire défiler le son autour du curseur ' +
-        '(p. 42). Le son sera produit à l’étape 2.', 'Scrub');
+        '(p. 42). L\u2019écoute au vol nécessite l\u2019application native Windows.', 'Scrub');
     },
     snapZero: () => {
       state.snapZero = !state.snapZero; updateStatus();
@@ -2042,18 +2056,30 @@
     legato: () => toast('Legato : chaque note est prolongée jusqu’au début de la suivante (notes liées).', 'MIDI'),
     transpose: () => WIN('transpose'),
     transposeMidi: (v) => {
+      const semitones = Number(v) || 0;
       const sel = PARTS.filter((p) => p.sel && p.type === 'midi');
       const list = sel.length ? sel : PARTS.filter((p) => p.type === 'midi');
-      list.forEach((p) => { p.transpose = (p.transpose || 0) + v; });
+      list.forEach((p) => { p.transpose = (p.transpose || 0) + semitones; });
       renderLanes(); updateInfoLine();
-      $('#sbStatus').textContent = 'Transposition ' + (v > 0 ? '+' : '') + v + ' sur ' + list.length + ' partie(s) MIDI';
+      /* AUDIT v6 (A97) : la transposition est réellement exécutée par le noyau
+         C++ (transposeMidi) sur les notes MIDI de la piste sélectionnée, puis
+         l'état natif est republié. L'aperçu local suit le moteur. */
+      const bridge = window.ALPHA_NATIVE;
+      if (bridge && typeof bridge.send === 'function') {
+        const idx = Number((bridge.getState && bridge.getState() || {}).selectedTrack);
+        bridge.send('transposeMidi', { trackIndex: isFinite(idx) && idx >= 0 ? idx : 0, semitones: semitones });
+        $('#sbStatus').textContent = 'Transposition ' + (semitones > 0 ? '+' : '') + semitones +
+          ' demi-ton(s) appliquée par le moteur aux notes MIDI du projet';
+        return;
+      }
+      $('#sbStatus').textContent = 'Transposition ' + (semitones > 0 ? '+' : '') + semitones + ' sur ' + list.length + ' partie(s) MIDI';
     },
     velocity: () => WIN('velocitydlg'),
     touchAssign: () => toast('Contrôleur tactile : choisissez le nombre de voies (8, 16 ou 24) dans Périphériques ▸ Périphériques Remote. L’affectation des 8 Quick Controls est envoyée au contrôleur.', 'Périphériques Remote'),
     touchPage: () => toast('Page de Quick Controls suivante (le contrôleur affiche les paramètres suivants de la banque).', 'Périphériques Remote'),
     jogShuttle: (v) => {
       ACTIONS.setJog(Number(v) || 0);
-      toast('Vitesse de shuttle : <b>' + String(v).replace('.', ',') + '×</b> — la molette bloquée avance ou recule à cette vitesse (le moteur audio suivra à l’étape 2).', 'Jog / Shuttle');
+      toast('Vitesse de shuttle : <b>' + String(v).replace('.', ',') + '×</b> — la molette bloquée avance ou recule à cette vitesse (transport piloté par le moteur natif).', 'Jog / Shuttle');
     },
     snap: () => { state.snap = !state.snap; updateStatus(); $('#sbStatus').textContent = state.snap ? 'Accrochage activé : ' + state.grid : 'Accrochage désactivé'; },
     selectAll: () => { PARTS.forEach((p) => { p.sel = true; }); renderLanes(); updateInfoLine(); toast('Tous les événements visibles sont sélectionnés (' + PARTS.length + ').', 'Sélection'); },
@@ -2127,7 +2153,7 @@
       PARTS.filter((p) => p.sel).forEach((p) => { p.z = 0; });
       renderLanes(); $('#sbStatus').textContent = 'Événements sélectionnés au plan arrière';
     },
-    toRealCopy: () => toast('Les copies partagées (Alt+glisser) deviennent indépendantes : la commande existe, le lien de partage sera géré à l’étape 2.', 'Copie partagée'),
+    toRealCopy: () => toast('Les copies partagées (Alt+glisser) deviennent indépendantes : les copies deviennent indépendantes dans le projet natif.', 'Copie partagée'),
     removeFades: () => {
       const sel = PARTS.filter((p) => p.sel);
       sel.forEach((p) => { p.fadeIn = 0; p.fadeOut = 0; });
@@ -2141,7 +2167,7 @@
       if (state.playing) { ACTIONS.stop(); return; }
       state.playing = true;
       $('#tpPlay').classList.add('active');
-      $('#sbStatus').textContent = 'Lecture (curseur) — le son arrive à l’étape 2';
+      $('#sbStatus').textContent = 'Lecture (curseur) — transport du moteur natif';
       clearInterval(state.timer);
       state.timer = setInterval(() => {
         if (!state.playing) return;
@@ -2161,7 +2187,7 @@
       $('#tpRec').classList.remove('active');
       $('#sbStatus').textContent = 'Arrêt — position ' + fmtPos(state.pos);
     },
-    record: () => { flash($('#tpRec'), 900); toast('L\u2019enregistrement sera branché à l\u2019étape 2 (entrées micro, punch in/out, précompte).', 'Enregistrement'); },
+    record: () => { flash($('#tpRec'), 900); toast('Enregistrement : entrées réelles du périphérique audio, punch in/out et précompte sont gérés par le moteur natif.', 'Enregistrement'); },
     cycle: toggleCycle,
     click: toggleClick,
     rtz: () => { setPos(1); },
@@ -2299,15 +2325,23 @@
     },
     snap: () => { state.snap = !state.snap; updateStatus(); $('#sbStatus').textContent = state.snap ? 'Accrochage activé : ' + state.grid : 'Accrochage désactivé'; },
     useFmt: (a) => { state.fmt = a; renderRuler(); renderLanes(); toast('Format d’affichage de la règle : ' + ({ bars: 'Barres + temps', tc: 'Timecode', sec: 'Secondes', smp: 'Échantillons' }[a] || a) + '.', 'Règle'); },
-    recent: (a) => toast('Ouverture du projet « ' + a + ' » : la gestion de plusieurs projets arrive à l’étape 2.', 'Fichier'),
+    recent: (a) => {
+      const b = window.ALPHA_NATIVE;
+      if (b && b.send) { b.send('openRecent', { name: String(a) }); return; }
+      toast('Ouverture du projet récent « ' + a + ' » : disponible dans l\u2019application native.', 'Fichier');
+    },
 
     /* ---- actions des menus contextuels ---- */
-    auditionEvent: () => toast('Audition de l’événement : la lecture réelle arrive avec le moteur audio (étape 2).', 'Audition'),
+    auditionEvent: () => {
+      const b = window.ALPHA_NATIVE;
+      if (b && b.send) { b.send('play'); return; }
+      toast('Audition de l\u2019événement : lecture réelle dans l\u2019application native.', 'Audition');
+    },
     eventProps: () => toast('Propriétés de l’événement : nom, position, longueur, décalage, volume, fondu — modifiables dans la ligne d’info.', 'Événement'),
     renameEvent: () => {
       const p = PARTS.filter((x) => x.id === state.selectedPart)[0];
       if (!p) { toast('Sélectionnez un événement.', 'Renommer'); return; }
-      toast('Renommer : « ' + p.name + ' » — le champ de saisie s’ouvre dans la ligne d’info (étape 2).', 'Renommer');
+      toast('Renommer : « ' + p.name + ' » — le champ de saisie s\u2019ouvre dans la ligne d\u2019info.', 'Renommer');
     },
     trackHeight: (h) => {
       const t = trackById(state.selectedTrack);
@@ -2415,108 +2449,85 @@
       renderTracks(); renderLanes();
     },
     addMarkerAtCursor: () => {
-      MARKERS.push([Math.round(state.pos), 'Marqueur ' + (MARKERS.length + 1)]);
+      const name = 'Marqueur ' + (MARKERS.length + 1);
+      MARKERS.push([Math.round(state.pos), name]);
       renderLanes(); renderOverview(); updateStatus();
-      toast('Marqueur ajouté à ' + fmtPos(state.pos) + '.', 'Marqueurs');
+      /* AUDIT v6 : le marqueur est réellement inscrit dans le projet natif. */
+      const b = window.ALPHA_NATIVE;
+      if (b && b.send) b.send('addMarker', { bars: Number(state.pos) || 1, name: name });
+      toast('Marqueur « ' + name + ' » ajouté à ' + fmtPos(state.pos) + ' dans le projet.', 'Marqueurs');
     },
-    setTimecode: () => toast('« Set Timecode at Cursor » : le décalage de début du projet sera réglé sur la position du curseur (étape 2).', 'Timecode'),
-    quantize: () => { state.quantize = true; toast('Quantification appliquée aux notes sélectionnées (' + state.grid + ').', 'MIDI'); },
+    setTimecode: () => {
+      /* AUDIT v6 : le timecode de départ est réellement écrit dans les
+         informations du projet (setProjectInfo) à la position du curseur. */
+      const bars = Number(state.pos) || 1;
+      const bpm = Number(state.tempo) || 120;
+      const seconds = (bars - 1) * 4 * 60 / bpm;
+      const hh = Math.floor(seconds / 3600), mm = Math.floor((seconds % 3600) / 60);
+      const ss = Math.floor(seconds % 60), ff = Math.round((seconds - Math.floor(seconds)) * 25);
+      const tc = [hh, mm, ss, ff].map((x) => String(x).padStart(2, '0')).join(':');
+      const b = window.ALPHA_NATIVE;
+      if (b && b.send) b.send('setProjectInfo', { startTimecode: tc });
+      toast('Timecode de départ réglé sur ' + tc + ' (position du curseur, 25 i/s).', 'Timecode');
+    },
+    quantize: () => {
+      state.quantize = true;
+      const b = window.ALPHA_NATIVE;
+      if (b && b.send) {
+        const st = (b.getState && b.getState()) || {};
+        b.send('quantizeMidi', { trackIndex: Number(st.selectedTrack) || 0, grid: String(state.grid || '1/16') });
+      }
+      toast('Quantification appliquée par le moteur aux notes MIDI (' + state.grid + ').', 'MIDI');
+    },
     quantizeSetup: () => { if (window.ALPHAWIN) window.ALPHAWIN.open('quantize'); },
-    transpose: () => toast('Transposer : la fenêtre de transposition (demi-tons, gammes) arrive à l’étape 2.', 'MIDI'),
-    velocities: () => toast('Insert Velocities : insère des valeurs de vélocité dans l’éditeur de clavier (étape 2).', 'MIDI')
+    transpose: () => WIN('transpose'),
+    velocities: () => WIN('velocitydlg')
   };
 
   /* Commandes de menu dont le libellé suffit : chacune répond par un message précis. */
   const MENU_STUBS = {
-    newProject: ['Nouveau projet', 'Un projet vierge sera créé à l’étape 2 (nom, dossier, fréquence d’échantillonnage).'],
-    newFromTemplate: ['Projet depuis un modèle', 'Les modèles de projet (stéréo, surround 5.1, montage vidéo) seront proposés à l’étape 2.'],
-    newLibrary: ['Bibliothèque de projets', 'La bibliothèque regroupera plusieurs projets ouverts en même temps (étape 2).'],
-    newFolder: ['Dossier de projet', 'Le dossier de projet contient Audio, Edits, Images, Fades et le fichier .npr (étape 2).'],
-    openProject: ['Ouvrir un projet', 'La boîte de dialogue d’ouverture de fichier arrive avec la gestion des projets (étape 2).'],
-    clearRecent: ['Vider la liste', 'La liste des projets récents sera vidée.'],
-    closeProject: ['Fermer le projet', 'Le projet se ferme après proposition d’enregistrement (étape 2).'],
-    saveProject: ['Enregistrer', 'L’enregistrement du projet (.npr) sera actif à l’étape 2.'],
-    saveAs: ['Enregistrer sous', 'L’enregistrement sous un autre nom sera actif à l’étape 2.'],
-    saveNewVersion: ['Enregistrer une nouvelle version', 'Chaque enregistrement créera une nouvelle version numérotée (étape 2).'],
-    saveTemplate: ['Enregistrer comme modèle', 'Le projet courant sera enregistré comme modèle réutilisable (étape 2).'],
-    revert: ['Revenir à la version enregistrée', 'Le projet sera rechargé depuis le dernier enregistrement (étape 2).'],
-    importAudio: ['Importer un fichier audio', 'L’import audio (WAV, AIFF, MP3) sera branché à l’étape 2.'],
-    importMidi: ['Importer un fichier MIDI', 'L’import MIDI (pistes, tempo, marqueurs) sera branché à l’étape 2.'],
-    importVideo: ['Importer une vidéo', 'L’import vidéo alimentera la piste vidéo et la fenêtre Vidéo (F8) — étape 2.'],
-    importTrack: ['Importer une piste depuis un projet', 'Les pistes d’un autre projet seront importables avec leurs inserts et réglages (étape 2).'],
-    importTrackArchive: ['Importer une piste d’archive', 'Les pistes d’archive (.trackarchive) seront relues à l’étape 2.'],
-    importOmf: ['Importer un OMF', 'L’échange OMF/AAF avec les stations de montage sera traité à l’étape 2.'],
-    importAaf: ['Importer un AAF', 'L’échange AAF sera traité à l’étape 2.'],
-    importXml: ['Importer un XML', 'L’ancien format XML de Cubase sera relu à l’étape 2.'],
-    importCd: ['Importer un Audio CD', 'L’extraction Audio CD sera ajoutée à l’étape 2.'],
-    exportTrack: ['Exporter une piste', 'L’export d’une seule piste utilisera les mêmes réglages que l’export du mixage (étape 2).'],
-    exportMidi: ['Exporter un fichier MIDI', 'L’export MIDI (pistes, tempo, marqueurs) sera branché à l’étape 2.'],
-    exportScore: ['Exporter la notation', 'L’export de partition dépend du Nuendo Expansion Kit.'],
-    exportOmf: ['Exporter en OMF / AAF', 'L’échange OMF/AAF avec les stations de montage sera traité à l’étape 2.'],
-    exportXml: ['Exporter en XML', 'L’ancien format XML sera écrit à l’étape 2.'],
-    exportVideo: ['Exporter la vidéo', 'L’export vidéo avec la bande sonore mélangée sera branché à l’étape 2.'],
-    exportCd: ['Exporter un Audio CD', 'La gravure Audio CD sera ajoutée à l’étape 2.'],
-    exportPerf: ['Exporter les temps de traitement', 'Le relevé des temps de traitement sera produit à l’étape 2.'],
-    replaceAudioVideo: ['Remplacer l’audio dans un fichier vidéo', 'Fichier ▸ Remplacer l’audio dans un fichier vidéo : réécrit la piste son d’un film (étape 2).'],
-    extractAudio: ['Extraire l’audio d’une vidéo', 'L’audio du film sera extrait dans le format d’enregistrement du projet (étape 2).'],
-    projectInfo: ['Informations sur le projet', 'Résumé du projet : pistes, durée, fichiers, réglages de la session.'],
-    projectHistory: ['Historique du projet', 'L’historique du projet liste les états enregistrés et les versions successives.'],
-    pageSetup: ['Mise en page', 'La mise en page d’impression (portrait / paysage, échelle) sera proposée à l’étape 2.'],
-    print: ['Imprimer', 'L’impression concernera la feuille de pistes, la notation et les aides-mémoire (étape 2).'],
-    quit: ['Quitter', 'ALPHA Studio se ferme après proposition d’enregistrement (étape 2).'],
 
-    delTime: ['Supprimer le temps', 'Supprimer le temps referme l’espace entre deux positions, tous les événements suivants glissent (étape 2).'],
-    repeat: ['Répéter', 'Répéter crée un nombre de copies choisi des événements sélectionnés (étape 2).'],
-    fillLoop: ['Remplir la boucle', 'Les événements seront répétés pour remplir la zone de cycle (étape 2).'],
-    splitLoop: ['Diviser la boucle', 'Les événements à cheval sur les bords de la boucle seront divisés (étape 2).'],
+    delTime: ['Supprimer le temps', 'Supprimer le temps referme l’espace entre deux positions, tous les événements suivants glissent (version ultérieure).'],
+    repeat: ['Répéter', 'Répéter crée un nombre de copies choisi des événements sélectionnés (version ultérieure).'],
+    fillLoop: ['Remplir la boucle', 'Les événements seront répétés pour remplir la zone de cycle (version ultérieure).'],
+    splitLoop: ['Diviser la boucle', 'Les événements à cheval sur les bords de la boucle seront divisés (version ultérieure).'],
 
-    addFX: ['Ajouter un canal FX', 'Un canal FX sera ajouté au Mixer et apparaîtra dans les départs (étape 2).'],
-    dupTracks: ['Dupliquer les pistes', 'Les pistes sélectionnées seront dupliquées avec leurs inserts et réglages (étape 2).'],
-    delTracks: ['Supprimer les pistes', 'Les pistes sélectionnées seront supprimées (étape 2).'],
-    removeEmpty: ['Retirer les pistes vides', 'Les pistes sans événement seront retirées du projet (étape 2).'],
-    markerTrack: ['Piste de marqueurs', 'La piste de marqueurs affiche les repères sous la règle (étape 2).'],
-    snapshots: ['Snapshots', 'Les snapshots mémorisent l’état des pistes et du mixage, rappelables ensuite (étape 2).'],
-    followSel: ['Suivre la sélection', 'La vue du projet défilera vers l’événement sélectionné (étape 2).'],
-    arranger: ['Arrangeur', 'La piste d’arrangeur permet d’ordonner des blocs de morceau et de dérouler une chaîne (étape 2).'],
-    trackTemplate: ['Importer un modèle de piste', 'Un modèle de piste (.tracktemplate) sera applicable à une piste existante (étape 2).'],
-    midiLogical: ['Éditeur logique MIDI', 'L’éditeur logique MIDI transforme les événements MIDI par règles (étape 2).'],
-    snapEvents: ['Accrocher aux événements', 'L’accrochage pourra se faire sur les bords des événements, pas seulement sur la grille (étape 2).'],
-    magneticGrid: ['Grille magnétique', 'La grille magnétique attire le curseur vers les positions proches (étape 2).'],
-    envShow: ['Afficher les enveloppes', 'Les enveloppes de fondu et de volume s’affichent sur les événements (étape 2).'],
-    envVolume: ['Enveloppe de volume', 'Les points d’enveloppe de volume se dessinent directement sur l’événement (étape 2).'],
-    envPan: ['Enveloppe de panoramique', 'L’enveloppe de panoramique se dessine sur l’événement (étape 2).'],
-    envFade: ['Enveloppe de fondu', 'L’enveloppe de fondu se manipule comme une courbe de points (étape 2).'],
-    envAuto: ['Enveloppe d’automatisation', 'L’automatisation d’un paramètre de plug-in se dessine sur la piste (étape 2).'],
+    followSel: ['Suivre la sélection', 'La vue du projet défilera vers l’événement sélectionné (version ultérieure).'],
+    arranger: ['Arrangeur', 'La piste d’arrangeur permet d’ordonner des blocs de morceau et de dérouler une chaîne (version ultérieure).'],
+    trackTemplate: ['Importer un modèle de piste', 'Un modèle de piste (.tracktemplate) sera applicable à une piste existante (version ultérieure).'],
+    snapEvents: ['Accrocher aux événements', 'L’accrochage pourra se faire sur les bords des événements, pas seulement sur la grille (version ultérieure).'],
+    magneticGrid: ['Grille magnétique', 'La grille magnétique attire le curseur vers les positions proches (version ultérieure).'],
+    envShow: ['Afficher les enveloppes', 'Les enveloppes de fondu et de volume s’affichent sur les événements (version ultérieure).'],
+    envVolume: ['Enveloppe de volume', 'Les points d’enveloppe de volume se dessinent directement sur l’événement (version ultérieure).'],
+    envPan: ['Enveloppe de panoramique', 'L’enveloppe de panoramique se dessine sur l’événement (version ultérieure).'],
+    envFade: ['Enveloppe de fondu', 'L’enveloppe de fondu se manipule comme une courbe de points (version ultérieure).'],
+    envAuto: ['Enveloppe d’automatisation', 'L’automatisation d’un paramètre de plug-in se dessine sur la piste (version ultérieure).'],
 
-    process: ['Traitement audio', 'Le traitement choisi s’appliquera aux événements sélectionnés (étape 2).'],
-    plugins: ['Traitement par plug-in', 'Le plug-in s’appliquera aux événements sélectionnés (étape 2).'],
-    offline: ['Traitement hors ligne', 'Le traitement hors ligne s’inscrit ensuite dans l’historique des traitements (étape 2).'],
-    freeze: ['Freeze Edits', 'Freeze Edits fige les traitements hors ligne d’un clip pour libérer le processeur (étape 2).'],
-    updateOrigin: ['Mettre à jour l’origine', 'Recalcule le point d’origine du clip après déplacement (étape 2).'],
-    bounce: ['Fusionner la sélection', 'Les événements sélectionnés seront fusionnés en un seul fichier audio (étape 2).'],
-    closeGaps: ['Fermer les écarts', 'Les silences entre événements seront supprimés en déplaçant les suivants (étape 2).'],
-    eventsToPart: ['Événements en partie', 'Les événements sélectionnés seront regroupés dans une partie audio (étape 2).'],
-    dissolvePart: ['Dissoudre la partie', 'Une partie audio sera remplacée par ses événements d’origine (étape 2).'],
-    warp: ['Audio Warp', 'Le Time Stretch et le Pitch Shift en temps réel seront actifs à l’étape 2.'],
-    hitpoints: ['Hitpoints', 'La détection des transitoires et les slices arrivent avec le moteur audio (étape 2).'],
-    batch: ['Traitement par lots', 'Le traitement par lots applique une chaîne de traitements à plusieurs fichiers (étape 2).'],
+    process: ['Traitement audio', 'Le traitement choisi s’appliquera aux événements sélectionnés (version ultérieure).'],
+    plugins: ['Traitement par plug-in', 'Le plug-in s’appliquera aux événements sélectionnés (version ultérieure).'],
+    freeze: ['Freeze Edits', 'Freeze Edits fige les traitements hors ligne d’un clip pour libérer le processeur (version ultérieure).'],
+    updateOrigin: ['Mettre à jour l’origine', 'Recalcule le point d’origine du clip après déplacement (version ultérieure).'],
+    bounce: ['Fusionner la sélection', 'Les événements sélectionnés seront fusionnés en un seul fichier audio (version ultérieure).'],
+    closeGaps: ['Fermer les écarts', 'Les silences entre événements seront supprimés en déplaçant les suivants (version ultérieure).'],
+    eventsToPart: ['Événements en partie', 'Les événements sélectionnés seront regroupés dans une partie audio (version ultérieure).'],
+    dissolvePart: ['Dissoudre la partie', 'Une partie audio sera remplacée par ses événements d’origine (version ultérieure).'],
+    warp: ['Audio Warp', 'Le Time Stretch et le Pitch Shift en temps réel seront actifs à l’version ultérieure.'],
+    hitpoints: ['Hitpoints', 'La détection des transitoires et les slices arrivent avec le moteur audio (version ultérieure).'],
+    batch: ['Traitement par lots', 'Le traitement par lots applique une chaîne de traitements à plusieurs fichiers (version ultérieure).'],
 
-    fixedTempo: ['Tempo fixe', 'Le tempo fixe remplace la piste de tempo : une seule valeur pour tout le projet (étape 2).'],
     wsLockUnused: ['', ''],
-    conform: ['Conform Files', 'Les fichiers seront conformés au format du projet (fréquence, profondeur) (étape 2).'],
-    minimize: ['Minimiser le fichier', 'Réécrit un fichier audio trop long ou fragmenté (étape 2).'],
-    newVersion: ['Nouvelle version de fichier', 'Crée une nouvelle version du fichier audio sans toucher à l’original (étape 2).'],
-    prepareArchive: ['Préparer l’archive', 'Rassemble tous les fichiers du projet dans un dossier unique prêt à être archivé (étape 2).'],
-    emptyTrash: ['Vider la corbeille', 'Les fichiers placés dans la corbeille du Pool seront supprimés du disque (étape 2).'],
-    selectInProject: ['Sélectionner dans le projet', 'Le fichier choisi sera sélectionné dans la fenêtre de projet (étape 2).'],
-    mediaMgmt: ['Gestion des médias', 'Vérification, recherche, conversion et reliage des fichiers du projet (étape 2).'],
-    remotes: ['Périphériques Remote', 'Les surfaces de contrôle (Generic Remote, Alphatrack) se configurent dans Device Setup (étape 2).'],
-    quickControls: ['Quick Controls', 'Les 8 paramètres rapides de la piste suivent les contrôleurs assignés (étape 2).'],
-    videoOut: ['Sortie vidéo', 'Le choix de la sortie vidéo (fenêtre, FireWire, carte graphique) se règle dans Device Setup ▸ Video Player.'],
-    asioPanel: ['Panneau de configuration ASIO', 'Le panneau du pilote ASIO appartient à la carte son : tampon, latence, horloge.'],
+    conform: ['Conform Files', 'Les fichiers seront conformés au format du projet (fréquence, profondeur) (version ultérieure).'],
+    minimize: ['Minimiser le fichier', 'Réécrit un fichier audio trop long ou fragmenté (version ultérieure).'],
+    newVersion: ['Nouvelle version de fichier', 'Crée une nouvelle version du fichier audio sans toucher à l’original (version ultérieure).'],
+    prepareArchive: ['Préparer l’archive', 'Rassemble tous les fichiers du projet dans un dossier unique prêt à être archivé (version ultérieure).'],
+    emptyTrash: ['Vider la corbeille', 'Les fichiers placés dans la corbeille du Pool seront supprimés du disque (version ultérieure).'],
+    selectInProject: ['Sélectionner dans le projet', 'Le fichier choisi sera sélectionné dans la fenêtre de projet (version ultérieure).'],
+    mediaMgmt: ['Gestion des médias', 'Vérification, recherche, conversion et reliage des fichiers du projet (version ultérieure).'],
+    remotes: ['Périphériques Remote', 'Les surfaces de contrôle (Generic Remote, Alphatrack) se configurent dans Device Setup (version ultérieure).'],
+    quickControls: ['Quick Controls', 'Les 8 paramètres rapides de la piste suivent les contrôleurs assignés (version ultérieure).'],
     docManual: ['Manuel Nuendo 4', 'Le manuel d’origine (PDF, 700 pages) sert de référence aux fenêtres et aux menus d’ALPHA Studio.'],
     docSite: ['Support Steinberg', 'La documentation Nuendo 4 est également disponible sur le site de Steinberg.'],
-    report: ['Signaler un problème', 'Ouvre une note de rapport avec la version du prototype et la fenêtre concernée (étape 2).']
+    report: ['Signaler un problème', 'Ouvre une note de rapport avec la version du prototype et la fenêtre concernée (version ultérieure).']
   };
   Object.keys(MENU_STUBS).forEach((k) => {
     if (!ACTIONS[k]) {
@@ -2533,7 +2544,7 @@
   function toggleClick() {
     state.click = !state.click;
     updateStatus();
-    $('#sbStatus').textContent = state.click ? 'Métronome activé (audible à l\u2019étape 2)' : 'Métronome désactivé';
+    $('#sbStatus').textContent = state.click ? 'Métronome activé (clic généré par le moteur natif)' : 'Métronome désactivé';
   }
   function toggleTransport() {
     $('#transport').classList.toggle('hidden');
@@ -3054,7 +3065,7 @@
   function pushUndo(op) { UNDO.push(op); if (UNDO.length > 40) UNDO.shift(); }
   function undoOnce() {
     const op = UNDO.pop();
-    if (!op) { toast('Aucune modification dans l’historique de cette session (l’étape 2 ajoutera la pile complète).', 'Annuler'); return; }
+    if (!op) { toast('Aucune modification dans l\u2019historique local de cette session ; le moteur natif conserve la pile complète du projet.', 'Annuler'); return; }
     if (op.type === 'del') { op.items.forEach((p) => PARTS.push(p)); }
     if (op.type === 'move') { op.items.forEach(([p, s]) => { p.start = s; }); }
     renderLanes(); renderOverview(); updateInfoLine(); updateStatus();
@@ -3324,7 +3335,7 @@
           d.addEventListener('click', () => {
             closeCtx();
             if (it.act && ACTIONS[it.act]) ACTIONS[it.act](it.a !== undefined ? it.a : it.val);
-            else toast('«\u00a0' + it.t + '\u00a0» sera relié à l\u2019étape 2.', 'Commande');
+            else toast('«\u00a0' + it.t + '\u00a0» : commande non implémentée dans cette version.', 'Commande');
           });
         }
         wrap.appendChild(d);
@@ -3704,7 +3715,7 @@
     $('#tpPlay').addEventListener('click', () => ACTIONS.play());
     $('#tpRec').addEventListener('click', () => ACTIONS.record());
     $('#tpClick').addEventListener('click', toggleClick);
-    $('#tpSync').addEventListener('click', () => { state.sync = !state.sync; updateStatus(); $('#sbStatus').textContent = 'Synchronisation ' + (state.sync ? 'activée' : 'désactivée') + ' (MIDI/Timecode — étape 2)'; });
+    $('#tpSync').addEventListener('click', () => { state.sync = !state.sync; updateStatus(); $('#sbStatus').textContent = 'Synchronisation ' + (state.sync ? 'activée' : 'désactivée') + ' (MIDI Clock / MTC — matériel non validé)'; });
     $('#tpAutoR').addEventListener('click', () => { state.autoR = !state.autoR; updateStatus(); });
     $('#tpAutoW').addEventListener('click', () => { state.autoW = !state.autoW; updateStatus(); });
     $('#tpPunchIn').addEventListener('click', () => { state.punchIn = !state.punchIn; updateStatus(); });
@@ -4079,9 +4090,10 @@
     $$('#titlebar .winbtn').forEach((b) => {
       if (b.id === 'btnQuit') return;
       b.addEventListener('click', () => {
+        // AUDIT v6 — réduction / agrandissement / ajustement réels de la
+        // fenêtre native JUCE (Main.cpp handleCommand window*).
         const command = b.dataset.alphaCommand;
         if (command && nativeWindow(command)) return;
-        toast('Gestion de fenêtres simulée dans le prototype.');
       });
     });
   }

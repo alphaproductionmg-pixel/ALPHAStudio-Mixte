@@ -21,6 +21,17 @@
   const dlgRow = (label, value, arr) => '<div class="dlg-row"><label>' + label + '</label><div class="f' + (arr ? ' arr' : '') + '">' + value + (arr ? '<i class="arr"></i>' : '') + '</div></div>';
   const sec = (t) => '<h5 class="w3-sec">' + t + '</h5>';
 
+  // AUDIT v6 — accès réel au moteur natif (Engine.h command / stateJson).
+  const nativeSend = (command, data) => {
+    const n = window.ALPHA_NATIVE;
+    if (n && typeof n.send === 'function') { n.send(command, data || {}); return true; }
+    return false;
+  };
+  const deviceState = () => {
+    const n = window.ALPHA_NATIVE;
+    return (n && typeof n.getState === 'function' && n.getState()) || {};
+  };
+
   /* racine des fenêtres du lot 3 : colonne qui remplit le corps de fenêtre */
   const ROOT = '.w3-pi,.w3-le,.w3-md,.w3-tp,.w3-qs,.w3-bc,.w3-im,.w3-omf,.w3-batch,.w3-sur,.w3-sync,.w3-mc,.w3-sl,.w3-rw';
 
@@ -362,20 +373,81 @@
               A.showToast('Preset « ' + k + ' » chargé : conditions, fonction et actions appliquées au filtre.', cfg.label);
             });
           });
+          //Traduction réelle de l'interface vers le modèle LogicalRule du noyau.
+          const num = (v) => { const n = parseFloat(String(v).replace(',', '.')); return isFinite(n) ? n : 0; };
+          const condValue = (field) => {
+            const c = st.cond.filter((x) => x.on && x.f === field)[0];
+            return c ? { op: c.op, v: num(c.v) } : null;
+          };
+          const actValue = (field) => {
+            const a = st.acts.filter((x) => x.on && x.f === field)[0];
+            return a ? { op: a.op, v: num(a.v) } : null;
+          };
+          function buildRulePayload() {
+            const pitch = condValue('Valeur 1 (hauteur)');
+            const vel = condValue('Valeur 2 (vélocité)');
+            const len = condValue('Longueur');
+            const fnMap = {
+              'Transpose': 'transpose', 'Égaliser la vélocité': 'setVelocity',
+              'Compresser la vélocité': 'scaleVelocity', 'Quantifier les longueurs': 'quantize',
+              'Supprimer': 'deleteNotes', 'Déplacer': 'setLength',
+              'Sélectionner': 'setVelocity', 'Insérer': 'setVelocity'
+            };
+            let action = fnMap[st.fn] || 'setVelocity';
+            let actionValue = 0;
+            const aPitch = actValue('Valeur 1 (hauteur)');
+            const aVel = actValue('Valeur 2 (vélocité)');
+            const aLen = actValue('Longueur');
+            if (action === 'transpose' && aPitch) actionValue = aPitch.op === 'Soustraire' ? -aPitch.v : aPitch.v;
+            else if (action === 'setVelocity' && aVel) actionValue = aVel.v;
+            else if (action === 'scaleVelocity' && aVel) actionValue = aVel.op === 'Multiplier par' ? aVel.v * 100 : 100 + aVel.v;
+            else if ((action === 'setLength' || action === 'quantize') && aLen) actionValue = aLen.v;
+            return {
+              name: st.preset || st.fn,
+              enabled: true,
+              pitchMin: pitch && (pitch.op === 'Supérieur à' || pitch.op === 'Égal') ? Math.max(0, Math.round(pitch.v)) : 0,
+              pitchMax: pitch && (pitch.op === 'Inférieur à' || pitch.op === 'Égal') ? Math.min(127, Math.round(pitch.v)) : 127,
+              velocityMin: vel && (vel.op === 'Supérieur à' || vel.op === 'Égal') ? Math.max(1, Math.round(vel.v)) : 1,
+              velocityMax: vel && (vel.op === 'Inférieur à' || vel.op === 'Égal') ? Math.min(127, Math.round(vel.v)) : 127,
+              lengthMinBars: len && (len.op === 'Supérieur à' || len.op === 'Égal') ? Math.max(0, len.v) : 0,
+              lengthMaxBars: len && (len.op === 'Inférieur à' || len.op === 'Égal') ? Math.max(0, len.v) : 100000,
+              onlySelectedTrack: true,
+              typeFilter: 'note',
+              action: action,
+              actionValue: actionValue,
+              grid: '1/16'
+            };
+          }
+          function storeRule() {
+            const payload = buildRulePayload();
+            const before = ((deviceState().logicalRules) || []).length;
+            nativeSend('storeLogicalRule', payload);
+            A.showToast('Règle « ' + payload.name + ' » stockée dans le projet (fonction « ' + st.fn + ' »).', cfg.label);
+            return before;
+          }
+          function applyLogical(bodyEl) {
+            const payload = buildRulePayload();
+            const index = ((deviceState().logicalRules) || []).length;
+            nativeSend('storeLogicalRule', payload);
+            nativeSend('applyLogicalEdit', { ruleIndex: index, allTracks: false });
+            const touched = Number(deviceState().lastLogicalTouched || 0);
+            A.showToast('Éditeur logique appliqué : ' + touched + ' note(s) MIDI réellement modifiée(s) — fonction « ' +
+              st.fn + ' », ' + st.acts.filter((a) => a.on).length + ' action(s).', cfg.label);
+            const el = bodyEl && $('[data-leinfo]', bodyEl);
+            if (el) el.textContent = touched + ' note(s) modifiée(s) · règle « ' + payload.name + ' » appliquée.';
+          }
           const ap = $('[data-leapply]', body);
-          if (ap) ap.addEventListener('click', () => {
-            const n = 12 + st.cond.filter((c) => c.on).length * 7;
-            A.showToast('Éditeur logique : ' + n + ' événement(s) traités — fonction « ' + st.fn + ' », ' +
-              st.acts.filter((a) => a.on).length + ' action(s). Modification réelle à l’étape 2 (moteur MIDI).', cfg.label);
-          });
+          if (ap) ap.addEventListener('click', () => applyLogical(body));
           $$('[data-lea2]', body).forEach((b) => b.addEventListener('click', () => {
             const k = b.dataset.lea2;
+            if (k === 'apply') { applyLogical(body); return; }
+            if (k === 'store') { storeRule(); return; }
             const MSG = {
               store: 'Preset stocké : « ' + st.preset + ' » (conditions, fonction et actions enregistrées).',
               rename: 'Renommer le preset sélectionné (« ' + st.preset + ' »).',
               del: 'Preset « ' + st.preset + ' » supprimé de la liste.',
               load: 'Charger un preset depuis un fichier .xml.',
-              apply: 'Éditeur logique : les actions sont appliquées à la sélection courante (simulation).'
+              apply: 'Éditeur logique : les actions sont appliquées à la sélection courante (moteur MIDI réel).'
             };
             A.showToast(MSG[k] || '', cfg.label);
           }));
@@ -876,7 +948,8 @@
           meta();
         }));
         $$('[data-im]', body).forEach((tr) => tr.addEventListener('dblclick', () => {
-          A.showToast('« ' + FILES[+tr.dataset.im].n + ' » importé dans le Pool (lecture réelle à l’étape 2).', 'Import Medium');
+          nativeSend('importAudio', { startBars: Number((A.state && A.state.pos) || 1), trackIndex: Number(deviceState().selectedTrack) || 0 });
+          A.showToast('« ' + FILES[+tr.dataset.im].n + ' » : sélecteur de fichiers Windows ouvert, import réel par le moteur.', 'Import Medium');
         }));
         $$('.im-opt .dlg-check', body).forEach((c, i) => c.addEventListener('click', () => {
           c.classList.toggle('on');

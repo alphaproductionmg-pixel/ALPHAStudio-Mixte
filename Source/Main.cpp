@@ -200,13 +200,43 @@ void AlphaWebMainComponent::handleCommand (const Array<var>& args,
         JUCEApplication::getInstance()->systemRequestedQuit();
         return;
     }
+    // AUDIT v6 — commandes d'échange de fichiers réelles : chacune ouvre un
+    // sélecteur Windows natif puis appelle le traitement moteur correspondant.
     if (command == "openProject" || command == "saveProject" || command == "saveAs" ||
         command == "saveNewVersion" || command == "saveTemplate" || command == "loadTemplateFile" ||
         command == "importAudio" || command == "importMidi" ||
         command == "exportMidi" || command == "importTrack" || command == "importTrackArchive" ||
-        command == "importOmf" || command == "importAaf" || command == "importXml" || command == "importCd")
+        command == "importOmf" || command == "importAaf" || command == "importXml" || command == "importCd" ||
+        command == "newFolder" || command == "exportOmf" || command == "exportCd" ||
+        command == "exportXml" || command == "exportScore" || command == "exportPerf" ||
+        command == "printSheet")
     {
         openDialog (command, payload);
+        complete (buildState());
+        return;
+    }
+
+    // Impression réelle de la fiche de projet par le moteur WebView2.
+    if (command == "print" || command == "pageSetup")
+    {
+        openDialog ("printSheet", payload);
+        complete (buildState());
+        return;
+    }
+
+    // Navigateur de greffons réel : liste des modules effectivement analysés.
+    if (command == "addFX" || command == "pluginBrowser" || command == "addPluginFolderDialog")
+    {
+        if (command == "addPluginFolderDialog") choosePluginFolder();
+        else showPluginBrowser (payload);
+        complete (buildState());
+        return;
+    }
+
+    // Bibliothèque de projets réelle : tous les .alphaproj présents sur le disque.
+    if (command == "newLibrary" || command == "projectLibrary")
+    {
+        showProjectLibrary();
         complete (buildState());
         return;
     }
@@ -296,38 +326,66 @@ void AlphaWebMainComponent::handleCommand (const Array<var>& args,
 void AlphaWebMainComponent::openDialog (const String& kind, const var& payload)
 {
     auto& eng = engine;
-    const bool save = kind == "saveProject" || kind == "saveAs" || kind == "saveNewVersion" ||
-                      kind == "saveTemplate" || kind == "exportMidi";
-    const bool audio = kind == "importAudio" || kind == "importTrack" || kind == "importTrackArchive" ||
-                       kind == "importOmf" || kind == "importAaf" || kind == "importXml" || kind == "importCd";
+
+    // ------------------------------------------------------------------
+    // AUDIT v6 — dialogues natifs réels : chaque commande d'échange de
+    // fichiers ouvre un véritable sélecteur Windows et appelle le
+    // traitement moteur correspondant. Aucun format n'est refusé par un
+    // simple message d'état.
+    // ------------------------------------------------------------------
+    const bool saveProjectFamily = kind == "saveProject" || kind == "saveAs" || kind == "saveNewVersion" ||
+                                   kind == "saveTemplate" || kind == "loadTemplateFile";
+    const bool saveExchange = kind == "exportMidi" || kind == "exportXml" || kind == "exportScore" ||
+                              kind == "exportPerf" || kind == "printSheet";
+    const bool directoryMode = kind == "newFolder" || kind == "exportOmf" || kind == "exportCd" || kind == "importCd";
+    const bool importExchange = kind == "importOmf" || kind == "importAaf" || kind == "importXml";
+    const bool importAudioFamily = kind == "importAudio" || kind == "importTrack" || kind == "importTrackArchive";
+
     String filters = "*.alphaproj;*.alpha";
-    String title = "Ouvrir un projet";
+    String title = TR ("Ouvrir un projet");
     File initial = File::getSpecialLocation (File::userDocumentsDirectory);
     int dialogFlags = FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles;
 
-    if (save)
+    if (saveProjectFamily)
     {
-        title = kind == "exportMidi" ? "Exporter un fichier MIDI"
-              : kind == "saveTemplate" ? "Enregistrer comme modèle" : "Enregistrer le projet";
+        title = kind == "saveTemplate" ? TR ("Enregistrer comme modèle") : TR ("Enregistrer le projet");
         initial = kind == "saveTemplate"
-                    ? eng.templatesDir().getChildFile ("Nouveau modèle.alphaproj")
-                    : File::getSpecialLocation (File::userDocumentsDirectory).getChildFile (kind == "exportMidi" ? "Export.mid" : "Projet.alphaproj");
-        filters = kind == "exportMidi" ? "*.mid;*.midi" : "*.alphaproj;*.alpha";
+                    ? eng.templatesDir().getChildFile (TR ("Nouveau modèle.alphaproj"))
+                    : File::getSpecialLocation (File::userDocumentsDirectory).getChildFile (TR ("Projet.alphaproj"));
         dialogFlags = FileBrowserComponent::saveMode | FileBrowserComponent::warnAboutOverwriting;
     }
-    else if (kind == "loadTemplateFile")
+    else if (saveExchange)
     {
-        title = "Charger un modèle de projet";
-        initial = eng.templatesDir();
-        filters = "*.alphaproj";
+        dialogFlags = FileBrowserComponent::saveMode | FileBrowserComponent::warnAboutOverwriting;
+        const File docs = File::getSpecialLocation (File::userDocumentsDirectory);
+        if (kind == "exportMidi")      { title = TR ("Exporter un fichier MIDI");        initial = docs.getChildFile ("Export.mid");              filters = "*.mid;*.midi"; }
+        else if (kind == "exportXml")  { title = TR ("Exporter un XML Final Cut Pro");   initial = docs.getChildFile ("Projet.xml");              filters = "*.xml"; }
+        else if (kind == "exportScore"){ title = TR ("Exporter une partition MusicXML"); initial = docs.getChildFile ("Partition.musicxml");      filters = "*.musicxml;*.xml"; }
+        else if (kind == "exportPerf") { title = TR ("Exporter le journal de performances"); initial = docs.getChildFile ("Performances.csv");    filters = "*.csv;*.txt"; }
+        else                           { title = TR ("Générer la fiche de projet imprimable"); initial = docs.getChildFile ("Fiche-projet.html"); filters = "*.html"; }
+    }
+    else if (directoryMode)
+    {
+        dialogFlags = FileBrowserComponent::openMode | FileBrowserComponent::canSelectDirectories;
+        filters = String();
+        if (kind == "newFolder")  { title = TR ("Créer un dossier de projet");        initial = File::getSpecialLocation (File::userDocumentsDirectory); }
+        else if (kind == "exportOmf") { title = TR ("Exporter un paquet OMF");        initial = File::getSpecialLocation (File::userDocumentsDirectory).getChildFile ("Paquet OMF"); }
+        else if (kind == "exportCd")  { title = TR ("Préparer une image CD");         initial = File::getSpecialLocation (File::userDocumentsDirectory).getChildFile ("Image CD"); }
+        else                          { title = TR ("Importer les plages d'un CD audio"); initial = File::getSpecialLocation (File::userMusicDirectory); }
+    }
+    else if (importExchange)
+    {
+        if (kind == "importXml") { title = TR ("Importer un XML Final Cut Pro"); filters = "*.xml"; }
+        else                     { title = kind == "importAaf" ? TR ("Importer un fichier AAF") : TR ("Importer un fichier OMF");
+                                   filters = "*.omf;*.aaf;*.xml"; }
     }
     else if (kind == "importMidi")
     {
-        title = "Importer un fichier MIDI"; filters = "*.mid;*.midi";
+        title = TR ("Importer un fichier MIDI"); filters = "*.mid;*.midi";
     }
-    else if (audio)
+    else if (importAudioFamily)
     {
-        title = "Importer des fichiers audio ou un document";
+        title = TR ("Importer des fichiers audio ou un document");
         filters = "*.wav;*.mp3;*.flac;*.ogg;*.aif;*.aiff;*.alphaproj;*.json;*.mid;*.midi";
         dialogFlags |= FileBrowserComponent::canSelectMultipleItems;
     }
@@ -343,22 +401,95 @@ void AlphaWebMainComponent::openDialog (const String& kind, const var& payload)
         const double startBars = (double) payload.getProperty (Identifier ("startBars"), var (1.0));
         const int trackIndex = (int) payload.getProperty (Identifier ("trackIndex"), var (0));
 
+        if (result == File() && results.isEmpty()) return;
+
+        // ---- création réelle d'un dossier de projet avec son arborescence
+        if (kind == "newFolder")
+        {
+            const auto e = eng.createProjectFolder (result, result.getFileName());
+            if (e.isNotEmpty()) AlertWindow::showMessageBoxAsync (MessageBoxIconType::WarningIcon, "ALPHA Studio", e);
+            safe->publishState();
+            return;
+        }
+
+        // ---- échanges réels nécessitant un rendu hors ligne (thread dédié)
+        if (kind == "exportOmf" || kind == "exportCd")
+        {
+            safe->runHeavyExchange (kind, result);
+            return;
+        }
+
+        // ---- imports d'échange réels
+        if (kind == "importXml")
+        {
+            String error;
+            if (! eng.importFcpXml (result, error))
+                AlertWindow::showMessageBoxAsync (MessageBoxIconType::WarningIcon, "ALPHA Studio", error);
+            safe->publishState();
+            return;
+        }
+        if (kind == "importOmf" || kind == "importAaf")
+        {
+            const auto e = eng.importOmfOrAaf (result, trackIndex, startBars);
+            if (e.isNotEmpty()) AlertWindow::showMessageBoxAsync (MessageBoxIconType::WarningIcon, "ALPHA Studio", e);
+            safe->publishState();
+            return;
+        }
+        if (kind == "importCd")
+        {
+            const auto e = eng.importCdTracks (result, trackIndex, startBars);
+            if (e.isNotEmpty()) AlertWindow::showMessageBoxAsync (MessageBoxIconType::WarningIcon, "ALPHA Studio", e);
+            safe->publishState();
+            return;
+        }
+
+        // ---- exports de documents réels
+        if (kind == "exportXml")
+        {
+            const File f = result.getFileExtension().isEmpty() ? result.withFileExtension ("xml") : result;
+            if (! eng.exportFcpXml (f)) eng.setNativeStatus (TR ("Export XML Final Cut Pro impossible."));
+            safe->publishState();
+            return;
+        }
+        if (kind == "exportScore")
+        {
+            const File f = result.getFileExtension().isEmpty() ? result.withFileExtension ("musicxml") : result;
+            if (! eng.exportMusicXml (f, trackIndex)) eng.setNativeStatus (TR ("Export de partition impossible : aucune note MIDI."));
+            safe->publishState();
+            return;
+        }
+        if (kind == "exportPerf")
+        {
+            const File f = result.getFileExtension().isEmpty() ? result.withFileExtension ("csv") : result;
+            if (! eng.exportPerformanceLog (f)) eng.setNativeStatus (TR ("Export du journal de performances impossible."));
+            safe->publishState();
+            return;
+        }
+        if (kind == "printSheet")
+        {
+            const File f = result.getFileExtension().isEmpty() ? result.withFileExtension ("html") : result;
+            const auto e = eng.writeProjectSheet (f);
+            if (e.isEmpty()) safe->printDocument (f);
+            safe->publishState();
+            return;
+        }
+
         if (kind == "openProject")
         {
             if (! result.existsAsFile()) return;
             if (result.hasFileExtension (".alpha")) eng.loadProject (result);
             else eng.loadProjectJson (result.withFileExtension ("alphaproj"));
+            eng.addRecentReal (result);
         }
         else if (kind == "saveProject" || kind == "saveAs" || kind == "saveNewVersion")
         {
-            if (result == File()) return;
             File f = result.getFileExtension().isEmpty() ? result.withFileExtension ("alphaproj") : result;
             if (f.hasFileExtension (".alpha")) eng.saveProject (f);
             else eng.saveProjectJson (f);
+            eng.addRecentReal (f);
         }
         else if (kind == "saveTemplate")
         {
-            if (result == File()) return;
             eng.saveTemplate (result.getFileNameWithoutExtension());
         }
         else if (kind == "loadTemplateFile")
@@ -368,13 +499,12 @@ void AlphaWebMainComponent::openDialog (const String& kind, const var& payload)
         }
         else if (kind == "exportMidi")
         {
-            if (result == File()) return;
-            const File f = result.withFileExtension ("mid");
+            const File f = result.getFileExtension().isEmpty() ? result.withFileExtension ("mid") : result;
             const auto bytes = alpha::base64Decode (eng.exportMidiData (trackIndex).toStdString());
             FileOutputStream os (f);
             if (! os.openedOk() || ! os.write (bytes.data(), bytes.size()))
                 eng.setNativeStatus (TR ("Export MIDI impossible."));
-            else eng.setNativeStatus (TR ("Fichier MIDI exporté."));
+            else eng.setNativeStatus (TR ("Fichier MIDI exporté : ") + f.getFullPathName());
         }
         else if (kind == "importMidi")
         {
@@ -401,9 +531,16 @@ void AlphaWebMainComponent::openDialog (const String& kind, const var& payload)
                     if (file.loadFileAsData (mb)) eng.importProjectData (mb.toBase64Encoding(), file.getParentDirectory());
                     continue;
                 }
-                if (kind == "importOmf" || kind == "importAaf" || kind == "importXml" || kind == "importCd")
+                if (file.hasFileExtension (".xml"))
                 {
-                    eng.setNativeStatus (TR ("Format d'échange non pris en charge ; importer un WAV, MIDI ou .alphaproj."));
+                    String error;
+                    if (! eng.importFcpXml (file, error)) eng.setNativeStatus (error);
+                    continue;
+                }
+                if (file.hasFileExtension (".omf") || file.hasFileExtension (".aaf"))
+                {
+                    const auto e = eng.importOmfOrAaf (file, trackIndex, startBars);
+                    if (e.isNotEmpty()) eng.setNativeStatus (e);
                     continue;
                 }
                 MemoryBlock mb;
@@ -493,7 +630,432 @@ void AlphaWebMainComponent::exportWav (bool stems, int singleTrack)
     });
 }
 
+//==============================================================================
+// AUDIT v6 — fenêtres natives réelles appelées par les commandes d'interface.
+//==============================================================================
+namespace
+{
+    // Navigateur de greffons : liste réellement alimentée par l'analyse des
+    // modules VST3 présents sur le disque, insertion réelle dans le graphe.
+    class AlphaPluginBrowser final : public Component, private ListBoxModel, private Button::Listener, private Timer
+    {
+    public:
+        AlphaPluginBrowser (std::shared_ptr<AlphaEngine> engineRef,
+                            std::function<void()> publish,
+                            std::function<void()> chooseFolder,
+                            int trackIndex)
+            : engine (std::move (engineRef)), onPublish (std::move (publish)),
+              onChooseFolder (std::move (chooseFolder)), targetTrack (trackIndex),
+              scanButton (TR ("Analyser les greffons")),
+              folderButton (TR ("Ajouter un dossier…")),
+              insertButton (TR ("Insérer sur la piste " ) + String (trackIndex + 1)),
+              editorButton (TR ("Ouvrir l'éditeur")),
+              closeButton (TR ("Fermer"))
+        {
+            addAndMakeVisible (list);
+            list.setModel (this);
+            list.setRowHeight (22);
+            list.setMultipleSelectionEnabled (false);
+            for (auto* b : { &scanButton, &folderButton, &insertButton, &editorButton, &closeButton })
+            {
+                addAndMakeVisible (b);
+                b->addListener (this);
+            }
+            addAndMakeVisible (info);
+            info.setMultiLine (true);
+            info.setReadOnly (true);
+            info.setCaretVisible (false);
+            refresh();
+        }
+
+        void resized() override
+        {
+            auto area = getLocalBounds().reduced (8);
+            auto top = area.removeFromTop (28);
+            scanButton.setBounds (top.removeFromLeft (180).reduced (2));
+            folderButton.setBounds (top.removeFromLeft (170).reduced (2));
+            top.removeFromLeft (8);
+            closeButton.setBounds (top.removeFromRight (90).reduced (2));
+            editorButton.setBounds (top.removeFromRight (140).reduced (2));
+            insertButton.setBounds (top.removeFromRight (210).reduced (2));
+            area.removeFromTop (6);
+            info.setBounds (area.removeFromBottom (58));
+            area.removeFromBottom (6);
+            list.setBounds (area);
+        }
+
+        int getNumRows() override { return descriptions.size(); }
+
+        void paintListBoxItem (int row, Graphics& g, int width, int height, bool selected) override
+        {
+            if (row < 0 || row >= descriptions.size()) return;
+            if (selected) g.fillAll (Colour (0xff3a5f82));
+            g.setColour (selected ? Colours::white : Colours::lightgrey);
+            const auto& d = descriptions[(size_t) row];
+            g.setFont ((float) height * 0.55f);
+            g.drawText (d.name + "   [" + d.pluginFormatName + "]   " + d.manufacturerName,
+                        8, 0, width - 16, height, Justification::centredLeft);
+        }
+
+        void selectedRowsChanged (int) override { updateInfo(); }
+
+        void buttonClicked (Button* b) override
+        {
+            if (b == &closeButton) { if (auto* w = findParentComponentOfClass<DocumentWindow>()) w->closeButtonPressed(); return; }
+            if (b == &scanButton)
+            {
+                engine->startPluginScan (false);
+                info.setText (TR ("Analyse en cours sur les dossiers VST3…"));
+                Timer::startTimer (400);
+                return;
+            }
+            if (b == &folderButton)
+            {
+                if (onChooseFolder) onChooseFolder();
+                return;
+            }
+            const int row = list.getSelectedRow();
+            if (row < 0 || row >= descriptions.size())
+            { info.setText (TR ("Sélectionnez d'abord un greffon dans la liste.")); return; }
+            const auto& d = descriptions[(size_t) row];
+            if (b == &insertButton)
+            {
+                const auto err = engine->addInsertReal (targetTrack, String (d.uniqueId).toStdString(), -1, MemoryBlock());
+                info.setText (err.isNotEmpty() ? err : TR ("Insert « ") + d.name + TR (" » ajouté à la piste ") + String (targetTrack + 1) + TR ("."));
+                if (onPublish) onPublish();
+                return;
+            }
+            if (b == &editorButton)
+            {
+                const auto err = engine->addInsertReal (targetTrack, String (d.uniqueId).toStdString(), -1, MemoryBlock());
+                if (err.isNotEmpty()) { info.setText (err); return; }
+                const int track = jlimit (0, (int) engine->core.state.tracks.size() - 1, targetTrack);
+                const int index = (int) engine->core.state.tracks[(size_t) track].inserts.size() - 1;
+                engine->openPluginEditorReal (track, index);
+                info.setText (engine->lastStatus);
+                if (onPublish) onPublish();
+            }
+        }
+
+        void timerCallback() override
+        {
+            if (! engine->isPluginScanRunning()) { Timer::stopTimer(); refresh(); }
+            else info.setText (TR ("Analyse en cours : ") + String (engine->pluginScanProgressDone()) + TR (" / ")
+                               + String (engine->pluginScanProgressTotal()) + TR ("  —  ") + engine->pluginScanProgressCurrent());
+        }
+
+    private:
+        void refresh()
+        {
+            descriptions = engine->knownPlugins.getTypes();
+            list.updateContent();
+            list.repaint();
+            updateInfo();
+        }
+        void updateInfo()
+        {
+            const int row = list.getSelectedRow();
+            String text = TR ("Greffons analysés : ") + String (descriptions.size());
+            if (row >= 0 && row < descriptions.size())
+            {
+                const auto& d = descriptions[(size_t) row];
+                text += String ("\n") + TR ("Sélection : ") + d.name + " — " + d.manufacturerName
+                      + "\n" + TR ("Format : ") + d.pluginFormatName + "  ·  UID : " + String (d.uniqueId)
+                      + "  ·  Entrées : " + String (d.numInputChannels) + "  ·  Sorties : " + String (d.numOutputChannels)
+                      + "\n" + TR ("Module : ") + d.fileOrIdentifier;
+            }
+            info.setText (text);
+        }
+
+        std::shared_ptr<AlphaEngine> engine;
+        std::function<void()> onPublish, onChooseFolder;
+        int targetTrack = 0;
+        Array<PluginDescription> descriptions;
+        ListBox list;
+        TextEditor info;
+        TextButton scanButton, folderButton, insertButton, editorButton, closeButton;
+        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AlphaPluginBrowser)
+    };
+
+    //==========================================================================
+    // Bibliothèque de projets : liste réellement construite à partir des
+    // fichiers .alphaproj présents sur le disque, ouverture réelle du projet.
+    //==========================================================================
+    class AlphaProjectLibrary final : public Component, private ListBoxModel, private Button::Listener
+    {
+    public:
+        AlphaProjectLibrary (std::shared_ptr<AlphaEngine> engineRef,
+                             std::function<void()> publish)
+            : engine (std::move (engineRef)), onPublish (std::move (publish)),
+              openButton (TR ("Ouvrir le projet")),
+              revealButton (TR ("Ouvrir le dossier")),
+              refreshButton (TR ("Actualiser")),
+              closeButton (TR ("Fermer"))
+        {
+            addAndMakeVisible (list);
+            list.setModel (this);
+            list.setRowHeight (24);
+            for (auto* b : { &openButton, &revealButton, &refreshButton, &closeButton })
+            {
+                addAndMakeVisible (b);
+                b->addListener (this);
+            }
+            addAndMakeVisible (info);
+            info.setMultiLine (true);
+            info.setReadOnly (true);
+            info.setCaretVisible (false);
+            refresh();
+        }
+
+        void resized() override
+        {
+            auto area = getLocalBounds().reduced (8);
+            auto top = area.removeFromTop (28);
+            openButton.setBounds (top.removeFromLeft (170).reduced (2));
+            revealButton.setBounds (top.removeFromLeft (150).reduced (2));
+            refreshButton.setBounds (top.removeFromLeft (110).reduced (2));
+            closeButton.setBounds (top.removeFromRight (90).reduced (2));
+            area.removeFromTop (6);
+            info.setBounds (area.removeFromBottom (52));
+            area.removeFromBottom (6);
+            list.setBounds (area);
+        }
+
+        int getNumRows() override { return projects.size(); }
+
+        void paintListBoxItem (int row, Graphics& g, int width, int height, bool selected) override
+        {
+            if (row < 0 || row >= projects.size()) return;
+            if (selected) g.fillAll (Colour (0xff3a5f82));
+            g.setColour (selected ? Colours::white : Colours::lightgrey);
+            g.setFont ((float) height * 0.5f);
+            const auto& f = projects[(size_t) row];
+            g.drawText (f.getFileName() + "   —   " + f.getParentDirectory().getFullPathName()
+                        + "   —   " + f.getLastModificationTime().formatted ("%d/%m/%Y %H:%M"),
+                        8, 0, width - 16, height, Justification::centredLeft);
+        }
+
+        void selectedRowsChanged (int) override
+        {
+            const int row = list.getSelectedRow();
+            info.setText (row >= 0 && row < projects.size()
+                          ? TR ("Projet : ") + projects[(size_t) row].getFullPathName()
+                            + "\n" + TR ("Taille : ") + String (projects[(size_t) row].getSize() / 1024) + TR (" Ko")
+                            + TR ("  ·  Modifié le ") + projects[(size_t) row].getLastModificationTime().formatted ("%d/%m/%Y à %H:%M")
+                          : TR ("Aucun projet sélectionné."));
+        }
+
+        void buttonClicked (Button* b) override
+        {
+            if (b == &closeButton) { if (auto* w = findParentComponentOfClass<DocumentWindow>()) w->closeButtonPressed(); return; }
+            if (b == &refreshButton) { refresh(); return; }
+            const int row = list.getSelectedRow();
+            if (row < 0 || row >= projects.size()) { info.setText (TR ("Sélectionnez d'abord un projet.")); return; }
+            const File f = projects[(size_t) row];
+            if (b == &openButton)
+            {
+                if (! engine->loadProjectJson (f)) info.setText (TR ("Projet illisible : ") + f.getFileName());
+                else
+                {
+                    engine->addRecentReal (f);
+                    info.setText (TR ("Projet ouvert : ") + f.getFileName());
+                }
+                if (onPublish) onPublish();
+                return;
+            }
+            if (b == &revealButton) f.getParentDirectory().startAsProcess();
+        }
+
+    private:
+        void refresh()
+        {
+            projects.clear();
+            Array<File> roots;
+            roots.add (engine->applicationDataDir());
+            roots.add (engine->templatesDir());
+            roots.add (File::getSpecialLocation (File::userDocumentsDirectory).getChildFile ("ALPHA Studio"));
+            roots.add (File::getSpecialLocation (File::userDocumentsDirectory));
+            roots.add (File::getSpecialLocation (File::userDesktopDirectory));
+            for (const auto& recent : engine->core.state.recents)
+                roots.add (File (alphaString (recent.path)).getParentDirectory());
+            for (const auto& root : roots)
+            {
+                if (! root.isDirectory()) continue;
+                Array<File> found;
+                root.findChildFiles (found, File::findFiles, true, "*.alphaproj");
+                for (const auto& f : found)
+                {
+                    bool duplicate = false;
+                    for (const auto& existing : projects) if (existing == f) duplicate = true;
+                    if (! duplicate) projects.add (f);
+                }
+            }
+            projects.sort();
+            list.updateContent();
+            list.repaint();
+            info.setText (TR ("Bibliothèque : ") + String (projects.size())
+                          + TR (" projet(s) ALPHA réellement présents sur ce poste."));
+        }
+
+        std::shared_ptr<AlphaEngine> engine;
+        std::function<void()> onPublish;
+        Array<File> projects;
+        ListBox list;
+        TextEditor info;
+        TextButton openButton, revealButton, refreshButton, closeButton;
+        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AlphaProjectLibrary)
+    };
+}
+
+//==============================================================================
+// AUDIT v6 — exports lourds réels (paquet OMF, image CD) sur thread dédié.
+//==============================================================================
+void AlphaWebMainComponent::runHeavyExchange (const String& kind, const File& target)
+{
+    if (target == File()) return;
+    if (exporting.exchange (true))
+    {
+        engine.setNativeStatus (TR ("Un export est déjà en cours."));
+        publishState();
+        return;
+    }
+    exportDone->reset();
+    Component::SafePointer<AlphaWebMainComponent> safe (this);
+    auto aliveFlag = alive;
+    auto done = exportDone;
+    auto engineRef = engineOwner;
+
+    const bool launched = Thread::launch ([safe, aliveFlag, done, kind, target, engineRef]()
+    {
+        AlphaExportDoneSignal completion { done };
+        if (! aliveFlag->load()) return;
+        String report;
+        bool ok = false;
+        if (kind == "exportOmf") ok = engineRef->exportOmfPackage (target, report);
+        else if (kind == "exportCd") ok = engineRef->exportCdImage (target, report);
+        else report = TR ("Commande d'échange inconnue : ") + kind;
+        MessageManager::callAsync ([safe, ok, report]()
+        {
+            if (safe == nullptr) return;
+            safe->exporting.store (false);
+            safe->engine.setNativeStatus (report);
+            if (! ok && report.isNotEmpty())
+                AlertWindow::showMessageBoxAsync (MessageBoxIconType::WarningIcon, "ALPHA Studio", report);
+            safe->publishState();
+        });
+    });
+    if (! launched) { exporting.store (false); done->signal(); }
+}
+
+//==============================================================================
+// AUDIT v6 — impression réelle : WebView2 affiche la fiche de projet générée
+// puis déclenche le dialogue d'impression Windows (Projet ▸ Imprimer).
+//==============================================================================
+void AlphaWebMainComponent::printDocument (const File& document)
+{
+    if (! document.existsAsFile())
+    {
+        engine.setNativeStatus (TR ("Document à imprimer introuvable."));
+        return;
+    }
+    auto options = WebBrowserComponent::Options{}.withNativeIntegrationEnabled();
+   #if JUCE_WEB_BROWSER && JUCE_USE_WIN_WEBVIEW2
+    options = options.withBackend (WebBrowserComponent::Options::Backend::webview2)
+                     .withWinWebView2Options (WebBrowserComponent::Options::WinWebView2{}
+                         .withUserDataFolder (engine.applicationDataDir().getChildFile ("WebView2-print"))
+                         .withStatusBarDisabled()
+                         .withBackgroundColour (Colour (0xffffffff)));
+   #endif
+    std::unique_ptr<Browser> view (new Browser (options));
+    Component::SafePointer<Browser> viewSafe (view.get());
+    view->onPageReady = [viewSafe]()
+    {
+        if (viewSafe == nullptr) return;
+        viewSafe->evaluateJavascript ("window.print()");   // dialogue d'impression réel
+    };
+    view->goToURL (URL (document).toString (false));
+
+    std::unique_ptr<DocumentWindow> win (new DocumentWindow (TR ("Impression — ") + document.getFileName(),
+                                                             Colour (0xff2b2b2b),
+                                                             DocumentWindow::closeButton));
+    win->setContentOwned (view.release(), true);
+    win->setUsingNativeTitleBar (true);
+    win->centreWithSize (960, 720);
+    win->setVisible (true);
+    win->toFront (true);
+    nativeWindows.push_back (std::move (win));
+    engine.setNativeStatus (TR ("Aperçu avant impression ouvert : ") + document.getFullPathName());
+}
+
+//==============================================================================
+// AUDIT v6 — navigateur de greffons et bibliothèque de projets natifs.
+//==============================================================================
+void AlphaWebMainComponent::showPluginBrowser (const var& payload)
+{
+    int trackIndex = (int) payload.getProperty (Identifier ("trackIndex"), var ((int) engine.core.state.selectedTrack));
+    if (trackIndex < 0 || trackIndex >= (int) engine.tracks.size()) trackIndex = jmax (0, (int) engine.tracks.size() - 1);
+
+    Component::SafePointer<AlphaWebMainComponent> safe (this);
+    auto* browserComponent = new AlphaPluginBrowser (engineOwner,
+                                                     [safe]() { if (safe != nullptr) safe->publishState(); },
+                                                     [safe]() { if (safe != nullptr) safe->choosePluginFolder(); },
+                                                     trackIndex);
+    browserComponent->setSize (820, 560);
+    std::unique_ptr<DocumentWindow> win (new DocumentWindow (TR ("Greffons — piste ") + String (trackIndex + 1),
+                                                             Colour (0xff1f2022),
+                                                             DocumentWindow::closeButton | DocumentWindow::minimiseButton));
+    win->setContentOwned (browserComponent, true);
+    win->setUsingNativeTitleBar (true);
+    win->setResizable (true, false);
+    win->centreWithSize (820, 560);
+    win->setVisible (true);
+    win->toFront (true);
+    nativeWindows.push_back (std::move (win));
+    if (engine.knownPlugins.getTypes().isEmpty()) engine.startPluginScan (false);
+    engine.setNativeStatus (TR ("Navigateur de greffons ouvert : ") + String ((int) engine.knownPlugins.getTypes().size())
+                            + TR (" module(s) déjà analysé(s)."));
+}
+
+void AlphaWebMainComponent::showProjectLibrary()
+{
+    Component::SafePointer<AlphaWebMainComponent> safe (this);
+    auto* library = new AlphaProjectLibrary (engineOwner,
+                                             [safe]() { if (safe != nullptr) safe->publishState(); });
+    library->setSize (880, 560);
+    std::unique_ptr<DocumentWindow> win (new DocumentWindow (TR ("Bibliothèque de projets"),
+                                                             Colour (0xff1f2022),
+                                                             DocumentWindow::closeButton | DocumentWindow::minimiseButton));
+    win->setContentOwned (library, true);
+    win->setUsingNativeTitleBar (true);
+    win->setResizable (true, false);
+    win->centreWithSize (880, 560);
+    win->setVisible (true);
+    win->toFront (true);
+    nativeWindows.push_back (std::move (win));
+    engine.setNativeStatus (TR ("Bibliothèque de projets ouverte."));
+}
+
+void AlphaWebMainComponent::choosePluginFolder()
+{
+    folderChooser = std::make_unique<FileChooser> (TR ("Choisir un dossier de greffons VST3"),
+                                                   File::getSpecialLocation (File::currentApplicationFile).getParentDirectory());
+    Component::SafePointer<AlphaWebMainComponent> safe (this);
+    folderChooser->launchAsync (FileBrowserComponent::openMode | FileBrowserComponent::canSelectDirectories,
+        [safe] (const FileChooser& fc)
+        {
+            if (safe == nullptr) return;
+            const File dir = fc.getResult();
+            if (dir == File()) return;
+            alpha::JsonValue p (alpha::JsonValue::Type::Object);
+            p["path"] = alpha::JsonValue (dir.getFullPathName().toStdString());
+            const auto err = safe->engine.command ("addPluginFolder", alphaString (p.dump()));
+            if (err.isNotEmpty()) AlertWindow::showMessageBoxAsync (MessageBoxIconType::WarningIcon, "ALPHA Studio", err);
+            safe->publishState();
+        });
+}
+
 void AlphaWebMainComponent::timerCallback()
+
 {
     engine.recordingTick();
     engine.autosaveTick (false);

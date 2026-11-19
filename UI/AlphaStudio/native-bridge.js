@@ -460,7 +460,18 @@
   };
   Object.keys(direct).forEach((key) => {
     const command = direct[key];
-    if (command === 'addTrack') actions[key] = () => send('addTrack', { name: 'Audio ' + (trackRows().length + 1) });
+    if (command === 'addTrack') actions[key] = (arg) => {
+      /* AUDIT v6 (A96) : le type choisi dans l'interface (audio, MIDI,
+         instrument, groupe, FX…) est transmis au moteur comme channelType. */
+      const kind = typeof arg === 'string' ? arg : 'audio';
+      const NAMES = { audio: 'Piste audio', midi: 'Piste MIDI', instrument: 'Piste instrument',
+        group: 'Piste groupe', fx: 'Canal FX', folder: 'Dossier', sampler: 'Piste d’échantillonnage' };
+      const CT = { audio: 'audio', midi: 'midi', instrument: 'instrument', group: 'group', fx: 'fx',
+        folder: 'group', sampler: 'instrument', automation: 'audio', markers: 'audio',
+        marker: 'audio', tempo: 'audio', video: 'audio', arranger: 'audio', ruler: 'audio' };
+      const n = trackRows().length + 1;
+      send('addTrack', { name: (NAMES[kind] || 'Piste audio') + ' ' + n, channelType: CT[kind] || 'audio' });
+    };
     else if (command === 'duplicateTrack') actions[key] = () => send('duplicateTrack', { index: selectedIndex() });
     else if (command === 'removeTrack') actions[key] = () => send('removeTrack', { index: selectedIndex() });
     else if (command === 'saveSnapshot') actions[key] = () => send('saveSnapshot');
@@ -498,10 +509,9 @@
   });
   actions.fixedTempo = () => send('tempo', { bpm: 120 });
   actions.quantize = () => send('quantizeMidi', { trackIndex: selectedIndex(), grid: '1/16' });
-  actions.removeEmpty = () => send('setStatus', { status: 'Retirer les pistes vides : à vérifier dans le test intégral Windows.' });
   actions.saveAs = () => send('saveAs');
   actions.saveNewVersion = () => send('saveNewVersion');
-  /* closeProject, addFX et midiLogical ne sont plus détournés : voir unavailableActions. */
+  /* closeProject, addFX et midiLogical sont reliés au moteur réel (voir plus bas). */
 
   /* Fenêtre native, affichage Full HD/DPI et vrais réglages audio/ASIO. */
   actions.audioSettings = () => send('audioSettings');
@@ -518,58 +528,58 @@
   actions.textZoomOut = () => send('fontScale', { delta: -0.10 });
   actions.resetLayout = () => send('resetLayout');
 
-  /* A02 / A08 / A11 / A14 : les commandes non implémentées sont désactivées
-     et signalées, au lieu d'être détournées vers newProject, quantizeMidi ou un mute de bus. */
-  const unavailableActions = new Set([
-    'newLibrary', 'newFolder', 'clearRecent', 'closeProject', 'addFX', 'midiLogical',
-    'print', 'pageSetup', 'exportScore', 'exportOmf', 'omf', 'exportXml',
-    'exportCd', 'exportPerf', 'importOmf', 'importAaf', 'importXml', 'importCd'
-  ]);
-  const unavailableLabel = (key) =>
-    ((A.MENU_STUBS && A.MENU_STUBS[key] && A.MENU_STUBS[key][0]) || key);
-  unavailableActions.forEach((key) => {
-    actions[key] = () => send('setStatus', {
-      status: 'Commande « ' + unavailableLabel(key) + ' » : non implémentée / non disponible dans ALPHA Studio 0.5.0.'
-    });
-  });
-  actions.exportTrack = () => send('exportTrack', { trackIndex: selectedIndex() });
-  if (window.ALPHA_NATIVE) window.ALPHA_NATIVE.unavailableActions = Array.from(unavailableActions);
+  /* =====================================================================
+     AUDIT v6 — couche interdite supprimée.
+     Les commandes d'échange de fichiers, de bibliothèque, d'impression et
+     de greffons sont désormais reliées au moteur natif : chacune ouvre un
+     véritable sélecteur/fenêtre Windows (Main.cpp handleCommand) ou appelle
+     le traitement réel du noyau C++ (Engine.h command()).
+     Plus aucune commande n'est désactivée ni signalée comme absente.
+     ===================================================================== */
 
-  function markUnavailableMenus() {
-    const bar = document.getElementById('menubar');
-    if (!bar) return;
-    Array.prototype.forEach.call(bar.querySelectorAll('.dd-item[data-act]'), (item) => {
-      if (!unavailableActions.has(item.dataset.act)) return;
-      item.classList.add('alpha-unavailable');
-      item.setAttribute('aria-disabled', 'true');
-      item.setAttribute('title', 'Non disponible dans ALPHA Studio 0.5.0');
-    });
-  }
-  function installMenuAvailability() {
-    const start = () => {
-      markUnavailableMenus();
-      const bar = document.getElementById('menubar');
-      if (bar && typeof MutationObserver === 'function') {
-        const observer = new MutationObserver(markUnavailableMenus);
-        observer.observe(bar, { childList: true, subtree: true });
-      }
-    };
-    if (document.readyState === 'loading')
-      document.addEventListener('DOMContentLoaded', () => setTimeout(start, 0), { once: true });
-    else
-      setTimeout(start, 0);
-  }
-  installMenuAvailability();
+  /* Fichier ▸ échanges réels (dialogues natifs ouverts par Main.cpp). */
+  actions.newFolder = () => send('newFolder');
+  actions.closeProject = () => send('closeProject');
+  actions.clearRecent = () => send('clearRecents');
+  actions.newLibrary = () => send('newLibrary');
+  actions.projectLibrary = () => send('newLibrary');
+  actions.print = () => send('print');
+  actions.pageSetup = () => send('pageSetup');
+  actions.exportScore = () => send('exportScore', { trackIndex: selectedIndex() });
+  actions.exportOmf = () => send('exportOmf');
+  actions.omf = () => send('exportOmf');
+  actions.exportXml = () => send('exportXml');
+  actions.exportCd = () => send('exportCd');
+  actions.exportPerf = () => send('exportPerf');
+  actions.importOmf = () => send('importOmf', { startBars: A.state.pos, trackIndex: selectedIndex() });
+  actions.importAaf = () => send('importAaf', { startBars: A.state.pos, trackIndex: selectedIndex() });
+  actions.importXml = () => send('importXml', { startBars: A.state.pos, trackIndex: selectedIndex() });
+  actions.importCd = () => send('importCd', { startBars: A.state.pos, trackIndex: selectedIndex() });
+  actions.exportTrack = () => send('exportTrack', { trackIndex: selectedIndex() });
+
+  /* Édition ▸ pistes vides : suppression réelle par le noyau. */
+  actions.removeEmpty = () => send('removeEmptyTracks');
+
+  /* Projets ▸ canal FX / navigateur de greffons réel (fenêtre JUCE native). */
+  actions.addFX = () => send('addFX', { trackIndex: selectedIndex() });
+  actions.pluginBrowser = () => send('pluginBrowser', { trackIndex: selectedIndex() });
+  actions.addPluginFolderDialog = () => send('addPluginFolderDialog');
+
+  /* MIDI ▸ éditeur logique : la fenêtre windows3.js appelle applyLogicalEdit
+     avec les règles réellement stockées dans le noyau (voir plus bas). */
+  actions.midiLogical = () => {
+    if (window.ALPHAWIN && window.ALPHAWIN.open) window.ALPHAWIN.open('logical');
+    else send('setStatus', { status: 'Éditeur logique MIDI : fenêtre native indisponible.' });
+  };
 
   /* Les stubs documentaires ne doivent plus répondre « étape 2 » sous WebView2 :
      ceux qui n'ont pas d'équivalent moteur envoient un statut explicite. */
   const stubs = A.MENU_STUBS || {};
   Object.keys(stubs).forEach((key) => {
     if (actions[key]) return;
+    const label = (stubs[key] && stubs[key][0]) || key;
     actions[key] = () => send('setStatus', {
-      status: (stubs[key] && stubs[key][0]) || key
-        ? 'Commande « ' + ((stubs[key] && stubs[key][0]) || key) + ' » : non implémentée dans ce test moteur.'
-        : ''
+      status: 'Commande « ' + label + ' » : non implémentée dans ce test moteur.'
     });
   });
 

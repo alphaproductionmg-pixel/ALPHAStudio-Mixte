@@ -152,32 +152,16 @@ test('réparation 0.5.0 — corrections du rapport d’audit A1→S9', () => {
   assert.match(main, /return aliveFlag->load\(\)/);
 });
 
-test('correctif interface — une seule fenêtre native, menus honnêtes et export de piste', () => {
+test('correctif interface — une seule fenêtre native et export de piste réel', () => {
   const css = read('UI/AlphaStudio/src/style.css');
   assert.match(css, /html\[data-alpha-native="1"\] #titlebar\{display:none\}/);
   assert.match(css, /html\[data-alpha-native="1"\] body\{background:var\(--chrome-3\)\}/);
   assert.match(css, /html\[data-alpha-native="1"\] #app\{border-top:0\}/);
-  assert.match(css, /alpha-unavailable/);
-  assert.match(css, /non disponible/);
 
   const html = read('UI/AlphaStudio/src/body.html');
   assert.match(html, /ALPHA Studio 0\.5\.0/);
   assert.doesNotMatch(html, /ALPHA Studio 1\.0 \(interface\)/);
   assert.match(html, /data-alpha-ui-command="windowFitToScreen"/);
-
-  const app = read('UI/AlphaStudio/src/app.js');
-  assert.match(app, /alpha-unavailable/);
-  assert.match(app, /Fonction non disponible dans ALPHA Studio 0\.5\.0/);
-
-  const bridge = read('UI/AlphaStudio/native-bridge.js');
-  assert.match(bridge, /installNativeShell/);
-  assert.match(bridge, /contextmenu/);
-  assert.match(bridge, /browserNavigation/);
-  assert.match(bridge, /unavailableActions/);
-  assert.match(bridge, /actions\.exportTrack = \(\) => send\('exportTrack', \{ trackIndex: selectedIndex\(\) \}\)/);
-  assert.doesNotMatch(bridge, /actions\.closeProject = \(\) => send\('newProject'\)/);
-  assert.doesNotMatch(bridge, /actions\.addFX = \(\) => send\('uiControl'/);
-  assert.doesNotMatch(bridge, /actions\.midiLogical = \(\) => send\('quantizeMidi'/);
 
   const builder = read('UI/AlphaStudio/build.py');
   assert.match(builder, /document\.documentElement\.dataset\.alphaNative/);
@@ -189,10 +173,180 @@ test('correctif interface — une seule fenêtre native, menus honnêtes et expo
   assert.match(main, /payload\.getProperty \(Identifier \("trackIndex"\), -1\)/);
   assert.match(main, /renderOffline \(target\.withFileExtension \("wav"\), 48000\.0, 24, progress, onlyTrack\)/);
   assert.match(read('Source/AlphaWebMain.h'), /exportWav \(bool stems, int singleTrack = -1\)/);
+});
+
+test('audit v6 — la couche « non disponible » est supprimée de toute l’interface', () => {
+  const css = read('UI/AlphaStudio/src/style.css');
+  const app = read('UI/AlphaStudio/src/app.js');
+  const bridge = read('UI/AlphaStudio/native-bridge.js');
+
+  [css, app, bridge].forEach((source) => {
+    assert.doesNotMatch(source, /alpha-unavailable/);
+    assert.doesNotMatch(source, /unavailableActions/);
+    assert.doesNotMatch(source, /markUnavailableMenus/);
+    assert.doesNotMatch(source, /installMenuAvailability/);
+    assert.doesNotMatch(source, /non disponible/i);
+    assert.doesNotMatch(source, /non implémentée \/ non disponible/);
+  });
+  assert.doesNotMatch(app, /Fonction non disponible/);
+  // Les entrées de menus désormais réelles ne doivent plus annoncer « étape 2 ».
+  ['newLibrary', 'newFolder', 'clearRecent', 'closeProject', 'importOmf', 'importAaf',
+   'importXml', 'importCd', 'exportScore', 'exportOmf', 'exportXml', 'exportCd',
+   'exportPerf', 'pageSetup', 'print', 'addFX', 'removeEmpty', 'midiLogical'].forEach((key) => {
+    const stub = new RegExp('^\\s+' + key + ':\\s*\\[', 'm');
+    assert.ok(!stub.test(app), 'MENU_STUBS contient encore « ' + key + ' »');
+  });
+});
+
+test('audit v6 — échanges de fichiers réels câblés du menu jusqu’au moteur', () => {
+  const bridge = read('UI/AlphaStudio/native-bridge.js');
+  assert.match(bridge, /actions\.newFolder = \(\) => send\('newFolder'\)/);
+  assert.match(bridge, /actions\.closeProject = \(\) => send\('closeProject'\)/);
+  assert.match(bridge, /actions\.clearRecent = \(\) => send\('clearRecents'\)/);
+  assert.match(bridge, /actions\.newLibrary = \(\) => send\('newLibrary'\)/);
+  assert.match(bridge, /actions\.print = \(\) => send\('print'\)/);
+  assert.match(bridge, /actions\.pageSetup = \(\) => send\('pageSetup'\)/);
+  assert.match(bridge, /actions\.exportScore = \(\) => send\('exportScore', \{ trackIndex: selectedIndex\(\) \}\)/);
+  assert.match(bridge, /actions\.exportOmf = \(\) => send\('exportOmf'\)/);
+  assert.match(bridge, /actions\.exportXml = \(\) => send\('exportXml'\)/);
+  assert.match(bridge, /actions\.exportCd = \(\) => send\('exportCd'\)/);
+  assert.match(bridge, /actions\.exportPerf = \(\) => send\('exportPerf'\)/);
+  assert.match(bridge, /actions\.importOmf = \(\) => send\('importOmf', \{ startBars: A\.state\.pos, trackIndex: selectedIndex\(\) \}\)/);
+  assert.match(bridge, /actions\.importAaf = \(\) => send\('importAaf'/);
+  assert.match(bridge, /actions\.importXml = \(\) => send\('importXml'/);
+  assert.match(bridge, /actions\.importCd = \(\) => send\('importCd'/);
+  assert.match(bridge, /actions\.removeEmpty = \(\) => send\('removeEmptyTracks'\)/);
+  assert.match(bridge, /actions\.addFX = \(\) => send\('addFX', \{ trackIndex: selectedIndex\(\) \}\)/);
+  assert.match(bridge, /window\.ALPHAWIN\.open\('logical'\)/);
+  assert.doesNotMatch(bridge, /actions\.closeProject = \(\) => send\('newProject'\)/);
+  assert.doesNotMatch(bridge, /actions\.addFX = \(\) => send\('uiControl'/);
+  assert.doesNotMatch(bridge, /actions\.midiLogical = \(\) => send\('quantizeMidi'/);
+
+  const main = read('Source/Main.cpp');
+  // Chaque commande d’échange ouvre un vrai sélecteur de fichiers Windows.
+  ['newFolder', 'exportOmf', 'exportCd', 'exportXml', 'exportScore', 'exportPerf',
+   'importOmf', 'importAaf', 'importXml', 'importCd', 'printSheet'].forEach((kind) => {
+    assert.ok(main.includes('"' + kind + '"'), 'Main.cpp ne traite pas « ' + kind + ' »');
+  });
+  assert.match(main, /std::make_unique<FileChooser> \(title, initial, filters\)/);
+  assert.match(main, /canSelectDirectories/);
+  assert.match(main, /eng\.createProjectFolder \(result, result\.getFileName\(\)\)/);
+  assert.match(main, /eng\.exportFcpXml \(f\)/);
+  assert.match(main, /eng\.importFcpXml \(result, error\)/);
+  assert.match(main, /eng\.importOmfOrAaf \(result, trackIndex, startBars\)/);
+  assert.match(main, /eng\.importCdTracks \(result, trackIndex, startBars\)/);
+  assert.match(main, /eng\.exportMusicXml \(f, trackIndex\)/);
+  assert.match(main, /eng\.exportPerformanceLog \(f\)/);
+  assert.match(main, /eng\.writeProjectSheet \(f\)/);
+  assert.match(main, /safe->printDocument \(f\)/);
+  assert.match(main, /runHeavyExchange \(kind, result\)/);
+  assert.match(main, /engineRef->exportOmfPackage \(target, report\)/);
+  assert.match(main, /engineRef->exportCdImage \(target, report\)/);
+  assert.match(main, /window\.print\(\)/);
+  assert.doesNotMatch(main, /Format d'échange non pris en charge/);
+
+  const header = read('Source/AlphaWebMain.h');
+  ['runHeavyExchange', 'printDocument', 'showPluginBrowser', 'showProjectLibrary', 'choosePluginFolder']
+    .forEach((m) => assert.ok(header.includes(m), 'AlphaWebMain.h ne déclare pas ' + m));
+});
+
+test('audit v6 — greffons, périphériques et fenêtres natives réels', () => {
+  const main = read('Source/Main.cpp');
+  assert.match(main, /class AlphaPluginBrowser final/);
+  assert.match(main, /ListBoxModel/);
+  assert.match(main, /engine->knownPlugins\.getTypes\(\)/);
+  assert.match(main, /engine->startPluginScan \(false\)/);
+  assert.match(main, /engine->addInsertReal \(targetTrack, String \(d\.uniqueId\)\.toStdString\(\), -1, MemoryBlock\(\)\)/);
+  assert.match(main, /engine->openPluginEditorReal \(track, index\)/);
+  assert.match(main, /class AlphaProjectLibrary final/);
+  assert.match(main, /findChildFiles \(found, File::findFiles, true, "\*\.alphaproj"\)/);
+  assert.match(main, /engine->loadProjectJson \(f\)/);
+  assert.match(main, /DocumentWindow \(TR \("Greffons — piste "\)/);
+  assert.match(main, /command == "addFX" \|\| command == "pluginBrowser"/);
+  assert.match(main, /command == "newLibrary" \|\| command == "projectLibrary"/);
+  assert.match(main, /command == "print" \|\| command == "pageSetup"/);
+  assert.doesNotMatch(main, /AlertWindow::showMessageBoxAsync \(MessageBoxIconType::WarningIcon, "ALPHA Studio",\s*"Commande/);
+
+  const engine = read('Engines/ALPHA-Studio/Source/Engine.h');
+  ['startPluginScan', 'pluginListJson', 'addInsertReal', 'removeInsertReal', 'moveInsertReal',
+   'setInsertBypassReal', 'setInsertParameterReal', 'openPluginEditorReal', 'reconcileInsertsWithCore',
+   'audioDevicesJson', 'setAudioDeviceTypeReal', 'setAudioDeviceReal', 'midiDevicesJson',
+   'refreshMidiInputs', 'setMidiInputReal', 'midiMonitorJson', 'spectrumJson', 'statisticsJson',
+   'performanceJson', 'exportPerformanceLog', 'exportFcpXml', 'importFcpXml', 'exportMusicXml',
+   'exportCdImage', 'importCdTracks', 'exportOmfPackage', 'importOmfOrAaf', 'detectTempoFromFile',
+   'storeWorkspaceReal', 'recallWorkspaceReal', 'projectLibraryJson', 'createProjectFolder',
+   'closeProjectReal', 'clearRecentsReal', 'addRecentReal', 'writeProjectSheet']
+    .forEach((m) => assert.ok(engine.includes(m), 'Engine.h ne contient pas ' + m));
+  assert.match(engine, /j\["lastLogicalTouched"\] = alpha::JsonValue \(core\.state\.lastLogicalTouched\)/);
+  assert.match(engine, /isPluginScanRunning\(\) const/);
+});
+
+test('audit v6 — plus aucune simulation dans les fenêtres d’analyse et MIDI', () => {
+  const w2 = read('UI/AlphaStudio/src/windows2.js');
+  const w5 = read('UI/AlphaStudio/src/windows5.js');
+
+  assert.doesNotMatch(w2, /Math\.random/);
+  assert.doesNotMatch(w5, /Math\.random/);
+  assert.doesNotMatch(w2, /Données simulées/);
+  assert.doesNotMatch(w2, /Valeurs simulées/);
+  assert.doesNotMatch(w2, /monitoring simulé/);
+  assert.doesNotMatch(w2, /\(simulation\)/);
+  assert.doesNotMatch(w5, /\(démonstration\)/);
+  assert.doesNotMatch(w5, /\(audition\)/);
+
+  // Performances VST : lecture du callback audio réel.
+  assert.match(w2, /nativeSend\('getPerformance'\)/);
+  assert.match(w2, /pf\.cpuPercent/);
+  assert.match(w2, /pf\.diskMegaBytesPerSecond/);
+  assert.match(w2, /nativeSend\('resetPerformancePeaks'\)/);
+  // Analyseur de spectre et statistiques : analyse réelle du moteur.
+  assert.match(w2, /nativeSend\('getSpectrum'\)/);
+  assert.match(w2, /n\.send\('getStatistics'/);
+  assert.match(w2, /r\.crestFactorDb/);
+  // Espaces de travail : preset réellement instancié.
+  assert.doesNotMatch(w2, /instancié \(démonstration\)/);
+
+  // Moniteur MIDI : événements du callback natif, plus de génération aléatoire.
+  assert.match(w5, /nativeSend\('getMidiMonitor', \{ maxEvents: 200 \}\)/);
+  assert.match(w5, /nativeSend\('clearMidiMonitor'\)/);
+  assert.match(w5, /mm\.events/);
+  // Quick Controls et modificateurs MIDI : écriture réelle dans le noyau.
+  assert.match(w5, /nativeSend\('setQuickControl'/);
+  assert.match(w5, /nativeSend\('applyQuickControl'/);
+  assert.match(w5, /nativeSend\('storeMidiModifier'/);
+  assert.match(w5, /nativeSend\('applyMidiModifier'/);
+
+  // Éditeur logique : règles réellement stockées puis appliquées.
+  const w3 = read('UI/AlphaStudio/src/windows3.js');
+  assert.match(w3, /nativeSend\('storeLogicalRule', payload\)/);
+  assert.match(w3, /nativeSend\('applyLogicalEdit', \{ ruleIndex: index, allTracks: false \}\)/);
+  assert.match(w3, /deviceState\(\)\.lastLogicalTouched/);
+  assert.doesNotMatch(w3, /Modification réelle à l’étape 2/);
+  assert.doesNotMatch(w3, /\(simulation\)/);
+
+  // Espaces de travail mémorisés/rappelés dans le projet C++.
+  const w1 = read('UI/AlphaStudio/src/windows.js');
+  assert.match(w1, /nativeSend\('storeWorkspace'/);
+  assert.match(w1, /nativeSend\('recallWorkspace'/);
+  assert.doesNotMatch(w1, /aucun conflit de port détecté \(simulation\)/);
+
+  const app = read('UI/AlphaStudio/src/app.js');
+  assert.doesNotMatch(app, /Gestion de fenêtres simulée/);
+});
+
+test('audit v6 — matrice de triage par point, sans acceptation finale', () => {
+  assert.ok(exists('docs/AUDIT-V6-MATRICE.md'));
+  const matrix = read('docs/AUDIT-V6-MATRICE.md');
+  assert.match(matrix, /A01/);
+  assert.match(matrix, /A136/);
+  assert.match(matrix, /CORRIGÉ/);
+  assert.match(matrix, /NON RÉSOLU|PARTIEL/);
+  assert.match(matrix, /Aucune acceptation finale/);
 
   assert.ok(exists('docs/TRIAGE-AUDIT-UTILISATEUR-0.5.0.md'));
   const triage = read('docs/TRIAGE-AUDIT-UTILISATEUR-0.5.0.md');
   assert.match(triage, /A01/);
   assert.match(triage, /W01/);
   assert.match(triage, /Aucune acceptation finale/);
+  assert.match(triage, /AUDIT-V6-MATRICE\.md/);
 });

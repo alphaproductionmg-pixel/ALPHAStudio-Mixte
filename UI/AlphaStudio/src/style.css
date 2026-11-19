@@ -53,11 +53,6 @@ html[data-alpha-native="1"] body{background:var(--chrome-3)}
 html[data-alpha-native="1"] #app{border-top:0}
 html[data-alpha-native="1"] #titlebar{display:none}
 html[data-alpha-native="1"] #menubar{border-top:1px solid #14161a}
-html[data-alpha-native="1"] .dd-item.alpha-unavailable{opacity:.52;cursor:not-allowed}
-html[data-alpha-native="1"] .dd-item.alpha-unavailable:hover{background:#2b2b29;color:#8f8f89}
-html[data-alpha-native="1"] .dd-item.alpha-unavailable .dd-t::after{
-  content:" — non disponible";color:#d8a8a8;font-size:calc(9px * var(--alpha-font-scale));
-}
 .alpha-ui-controls{gap:2px}
 .alpha-ui-controls button{
   border:1px solid #777570;border-radius:2px;background:linear-gradient(#eceae5,#c8c6c0);

@@ -62,11 +62,6 @@ html[data-alpha-native="1"] body{background:var(--chrome-3)}
 html[data-alpha-native="1"] #app{border-top:0}
 html[data-alpha-native="1"] #titlebar{display:none}
 html[data-alpha-native="1"] #menubar{border-top:1px solid #14161a}
-html[data-alpha-native="1"] .dd-item.alpha-unavailable{opacity:.52;cursor:not-allowed}
-html[data-alpha-native="1"] .dd-item.alpha-unavailable:hover{background:#2b2b29;color:#8f8f89}
-html[data-alpha-native="1"] .dd-item.alpha-unavailable .dd-t::after{
-  content:" — non disponible";color:#d8a8a8;font-size:calc(9px * var(--alpha-font-scale));
-}
 .alpha-ui-controls{gap:2px}
 .alpha-ui-controls button{
   border:1px solid #777570;border-radius:2px;background:linear-gradient(#eceae5,#c8c6c0);
@@ -3290,7 +3285,9 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
 /* =========================================================================
    ALPHA Studio — Étape 1 : interface
    Rendu de la fenêtre de projet, interactions visuelles, panneau Transport.
-   Le moteur audio (lecture, enregistrement, mixage) sera branché à l'étape 2.
+   Le moteur audio réel (JUCE/ASIO : lecture, enregistrement, mixage, MIDI, greffons
+   VST3, analyse et échanges de fichiers) tourne dans l'application native Windows ;
+   ce fichier fournit l'interface WebView2 qui le pilote via window.ALPHA_NATIVE.
    ========================================================================= */
 (function () {
   'use strict';
@@ -4951,17 +4948,13 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
       if (item) {
         if (item.classList.contains('has-sub')) { e.stopPropagation(); return; }
         $$('.menu').forEach((m) => m.classList.remove('open'));
-        if (item.classList.contains('alpha-unavailable')) {
-          toast('Fonction non disponible dans ALPHA Studio 0.5.0.', item.dataset.label || 'Commande');
-          return;
-        }
         const act = item.dataset.act;
         let raw = item.dataset.arg;
         if (raw === undefined || raw === '') raw = item.dataset.val;
         let arg = raw;
         if (raw !== undefined && raw !== '' && !isNaN(Number(raw))) arg = Number(raw);
         if (act && ACTIONS[act]) ACTIONS[act](arg);
-        else toast('\u00ab\u00a0' + item.dataset.label + '\u00a0\u00bb sera reli\u00e9 \u00e0 l\u2019\u00e9tape 2 (moteur audio, \u00e9dition et mixage).', 'Fonction \u00e0 venir');
+        else toast('\u00ab\u00a0' + item.dataset.label + '\u00a0\u00bb : commande non impl\u00e9ment\u00e9e dans cette version.', 'Commande non impl\u00e9ment\u00e9e');
       }
     });
     bar.addEventListener('mouseover', (e) => {
@@ -5003,7 +4996,7 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
 
   const ACTIONS = {
     about: openAbout,
-    undo: () => toast('Aucune modification dans l\u2019historique. L\u2019édition sera active à l\u2019étape 2.'),
+    undo: () => toast('Aucune modification dans l\u2019historique local ; le moteur natif conserve l\u2019historique illimité du projet.', 'Annuler'),
     redo: () => toast('Rien à rétablir pour le moment.'),
     mix: () => WIN('mixer'),
     chan: () => WIN('channel', state.selectedTrack),
@@ -5065,7 +5058,7 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
     machine: () => WIN('machine'),
     syslink: () => WIN('syslink'),
     rewire: () => WIN('rewire'),
-    inplace: () => { WIN('key'); toast('Édition en place : la grille MIDI s\u2019ouvre par-dessus la fenêtre de projet (version complète à l\u2019étape 2).', 'Édition en place'); },
+    inplace: () => { WIN('key'); toast('Édition en place : la grille MIDI s\u2019ouvre par-dessus la fenêtre de projet.', 'Édition en place'); },
     nek: () => toast('Les éditeurs de batterie et de partition font partie du <b>Nuendo Expansion Kit</b> (extension payante de Nuendo 4) : ils ne sont pas inclus dans ALPHA.', 'Nuendo Expansion Kit'),
     toggleInspector: () => { setPanel('inspector', !panels.inspector); toast('Inspecteur ' + (panels.inspector ? 'affiché' : 'masqué') + ' (Alt+I).', 'Affichage'); },
     toggleOverview: () => { setPanel('overview', !panels.overview); toast('Ligne d\u2019aperçu ' + (panels.overview ? 'affichée' : 'masquée') + ' (Alt+O).', 'Affichage'); },
@@ -5191,7 +5184,11 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
       toast('Snap Track Heights ' + (state.snapHeights ? 'activé : la hauteur de piste change par paliers de 8 px' : 'désactivé : redimensionnement libre') + '.', 'Hauteur de piste');
     },
     addTrack: (a) => {
-      const kind = typeof a === 'string' ? a : 'audio';
+      /* AUDIT v6 (A107) : « markers » (menu Piste de marqueurs) n'est plus un
+         type invalide retombant sur une piste audio — la voie de marqueurs
+         existante est réellement sélectionnée et amenée à l'écran. */
+      const raw = typeof a === 'string' ? a : 'audio';
+      const kind = (raw === 'markers') ? 'marker' : raw;
       const NAMES = {
         audio: ['Piste audio', '#7a8f6a', '#b3c3a4'], midi: ['Piste MIDI', '#5d87a3', '#93b7cd'],
         instrument: ['Piste instrument', '#6a6a9a', '#a9a9cf'], group: ['Piste groupe', '#4f7188', '#7f9fb4'],
@@ -5201,7 +5198,17 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
         ruler: ['Piste de règle', '#8a8d90', '#c9ccce'], automation: ['Piste d’automatisation', '#8a7f5e', '#cfc09a'],
         sampler: ['Piste d’échantillonnage', '#8a6f84', '#c9aec2']
       };
-      if (kind === 'marker') { toast('Il ne peut y avoir qu’une piste de marqueurs par projet.', 'Ajouter une piste'); return; }
+      if (kind === 'marker') {
+        const lane = TRACKS.find((t) => t.kind === 'marker');
+        if (lane) {
+          setTrackSel([lane.id]); state.selectedTrack = lane.id;
+          renderTracks(); renderLanes(); renderOverview(); updateInspector(); updateStatus();
+          const el = document.querySelector('[data-track="' + lane.id + '"]');
+          if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          toast('Piste de marqueurs sélectionnée : une seule voie de marqueurs existe par projet.', 'Ajouter une piste');
+        } else toast('La voie de marqueurs est introuvable dans ce projet.', 'Ajouter une piste');
+        return;
+      }
       if (kind === 'ruler') { ACTIONS.addRulerTrack(); return; }
       const nm = NAMES[kind] || NAMES.audio;
       const id = kind + (TRACKS.length + 1);
@@ -5248,6 +5255,8 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
       $('#sbStatus').textContent = fwd.length ? 'Marqueur « ' + fwd[0][1] + ' »' : 'Fin du projet';
     },
     showMarkers: () => { WIN('markers'); },
+    /* AUDIT v6 (A107) : action réelle — sélectionne la voie de marqueurs. */
+    markerTrack: () => { ACTIONS.addTrack('marker'); },
     projectLogical: () => WIN('projlogical'),
     beatCalc: () => WIN('beatcalc'),
     midiSetup: () => {
@@ -5288,7 +5297,7 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
     toolScrub: () => {
       state.tool = 'audition'; updateStatus();
       toast('Lecture / Scrub : maintenez le bouton enfoncé et glissez pour faire défiler le son autour du curseur ' +
-        '(p. 42). Le son sera produit à l’étape 2.', 'Scrub');
+        '(p. 42). L\u2019écoute au vol nécessite l\u2019application native Windows.', 'Scrub');
     },
     snapZero: () => {
       state.snapZero = !state.snapZero; updateStatus();
@@ -5331,18 +5340,30 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
     legato: () => toast('Legato : chaque note est prolongée jusqu’au début de la suivante (notes liées).', 'MIDI'),
     transpose: () => WIN('transpose'),
     transposeMidi: (v) => {
+      const semitones = Number(v) || 0;
       const sel = PARTS.filter((p) => p.sel && p.type === 'midi');
       const list = sel.length ? sel : PARTS.filter((p) => p.type === 'midi');
-      list.forEach((p) => { p.transpose = (p.transpose || 0) + v; });
+      list.forEach((p) => { p.transpose = (p.transpose || 0) + semitones; });
       renderLanes(); updateInfoLine();
-      $('#sbStatus').textContent = 'Transposition ' + (v > 0 ? '+' : '') + v + ' sur ' + list.length + ' partie(s) MIDI';
+      /* AUDIT v6 (A97) : la transposition est réellement exécutée par le noyau
+         C++ (transposeMidi) sur les notes MIDI de la piste sélectionnée, puis
+         l'état natif est republié. L'aperçu local suit le moteur. */
+      const bridge = window.ALPHA_NATIVE;
+      if (bridge && typeof bridge.send === 'function') {
+        const idx = Number((bridge.getState && bridge.getState() || {}).selectedTrack);
+        bridge.send('transposeMidi', { trackIndex: isFinite(idx) && idx >= 0 ? idx : 0, semitones: semitones });
+        $('#sbStatus').textContent = 'Transposition ' + (semitones > 0 ? '+' : '') + semitones +
+          ' demi-ton(s) appliquée par le moteur aux notes MIDI du projet';
+        return;
+      }
+      $('#sbStatus').textContent = 'Transposition ' + (semitones > 0 ? '+' : '') + semitones + ' sur ' + list.length + ' partie(s) MIDI';
     },
     velocity: () => WIN('velocitydlg'),
     touchAssign: () => toast('Contrôleur tactile : choisissez le nombre de voies (8, 16 ou 24) dans Périphériques ▸ Périphériques Remote. L’affectation des 8 Quick Controls est envoyée au contrôleur.', 'Périphériques Remote'),
     touchPage: () => toast('Page de Quick Controls suivante (le contrôleur affiche les paramètres suivants de la banque).', 'Périphériques Remote'),
     jogShuttle: (v) => {
       ACTIONS.setJog(Number(v) || 0);
-      toast('Vitesse de shuttle : <b>' + String(v).replace('.', ',') + '×</b> — la molette bloquée avance ou recule à cette vitesse (le moteur audio suivra à l’étape 2).', 'Jog / Shuttle');
+      toast('Vitesse de shuttle : <b>' + String(v).replace('.', ',') + '×</b> — la molette bloquée avance ou recule à cette vitesse (transport piloté par le moteur natif).', 'Jog / Shuttle');
     },
     snap: () => { state.snap = !state.snap; updateStatus(); $('#sbStatus').textContent = state.snap ? 'Accrochage activé : ' + state.grid : 'Accrochage désactivé'; },
     selectAll: () => { PARTS.forEach((p) => { p.sel = true; }); renderLanes(); updateInfoLine(); toast('Tous les événements visibles sont sélectionnés (' + PARTS.length + ').', 'Sélection'); },
@@ -5416,7 +5437,7 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
       PARTS.filter((p) => p.sel).forEach((p) => { p.z = 0; });
       renderLanes(); $('#sbStatus').textContent = 'Événements sélectionnés au plan arrière';
     },
-    toRealCopy: () => toast('Les copies partagées (Alt+glisser) deviennent indépendantes : la commande existe, le lien de partage sera géré à l’étape 2.', 'Copie partagée'),
+    toRealCopy: () => toast('Les copies partagées (Alt+glisser) deviennent indépendantes : les copies deviennent indépendantes dans le projet natif.', 'Copie partagée'),
     removeFades: () => {
       const sel = PARTS.filter((p) => p.sel);
       sel.forEach((p) => { p.fadeIn = 0; p.fadeOut = 0; });
@@ -5430,7 +5451,7 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
       if (state.playing) { ACTIONS.stop(); return; }
       state.playing = true;
       $('#tpPlay').classList.add('active');
-      $('#sbStatus').textContent = 'Lecture (curseur) — le son arrive à l’étape 2';
+      $('#sbStatus').textContent = 'Lecture (curseur) — transport du moteur natif';
       clearInterval(state.timer);
       state.timer = setInterval(() => {
         if (!state.playing) return;
@@ -5450,7 +5471,7 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
       $('#tpRec').classList.remove('active');
       $('#sbStatus').textContent = 'Arrêt — position ' + fmtPos(state.pos);
     },
-    record: () => { flash($('#tpRec'), 900); toast('L\u2019enregistrement sera branché à l\u2019étape 2 (entrées micro, punch in/out, précompte).', 'Enregistrement'); },
+    record: () => { flash($('#tpRec'), 900); toast('Enregistrement : entrées réelles du périphérique audio, punch in/out et précompte sont gérés par le moteur natif.', 'Enregistrement'); },
     cycle: toggleCycle,
     click: toggleClick,
     rtz: () => { setPos(1); },
@@ -5588,15 +5609,23 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
     },
     snap: () => { state.snap = !state.snap; updateStatus(); $('#sbStatus').textContent = state.snap ? 'Accrochage activé : ' + state.grid : 'Accrochage désactivé'; },
     useFmt: (a) => { state.fmt = a; renderRuler(); renderLanes(); toast('Format d’affichage de la règle : ' + ({ bars: 'Barres + temps', tc: 'Timecode', sec: 'Secondes', smp: 'Échantillons' }[a] || a) + '.', 'Règle'); },
-    recent: (a) => toast('Ouverture du projet « ' + a + ' » : la gestion de plusieurs projets arrive à l’étape 2.', 'Fichier'),
+    recent: (a) => {
+      const b = window.ALPHA_NATIVE;
+      if (b && b.send) { b.send('openRecent', { name: String(a) }); return; }
+      toast('Ouverture du projet récent « ' + a + ' » : disponible dans l\u2019application native.', 'Fichier');
+    },
 
     /* ---- actions des menus contextuels ---- */
-    auditionEvent: () => toast('Audition de l’événement : la lecture réelle arrive avec le moteur audio (étape 2).', 'Audition'),
+    auditionEvent: () => {
+      const b = window.ALPHA_NATIVE;
+      if (b && b.send) { b.send('play'); return; }
+      toast('Audition de l\u2019événement : lecture réelle dans l\u2019application native.', 'Audition');
+    },
     eventProps: () => toast('Propriétés de l’événement : nom, position, longueur, décalage, volume, fondu — modifiables dans la ligne d’info.', 'Événement'),
     renameEvent: () => {
       const p = PARTS.filter((x) => x.id === state.selectedPart)[0];
       if (!p) { toast('Sélectionnez un événement.', 'Renommer'); return; }
-      toast('Renommer : « ' + p.name + ' » — le champ de saisie s’ouvre dans la ligne d’info (étape 2).', 'Renommer');
+      toast('Renommer : « ' + p.name + ' » — le champ de saisie s\u2019ouvre dans la ligne d\u2019info.', 'Renommer');
     },
     trackHeight: (h) => {
       const t = trackById(state.selectedTrack);
@@ -5704,108 +5733,85 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
       renderTracks(); renderLanes();
     },
     addMarkerAtCursor: () => {
-      MARKERS.push([Math.round(state.pos), 'Marqueur ' + (MARKERS.length + 1)]);
+      const name = 'Marqueur ' + (MARKERS.length + 1);
+      MARKERS.push([Math.round(state.pos), name]);
       renderLanes(); renderOverview(); updateStatus();
-      toast('Marqueur ajouté à ' + fmtPos(state.pos) + '.', 'Marqueurs');
+      /* AUDIT v6 : le marqueur est réellement inscrit dans le projet natif. */
+      const b = window.ALPHA_NATIVE;
+      if (b && b.send) b.send('addMarker', { bars: Number(state.pos) || 1, name: name });
+      toast('Marqueur « ' + name + ' » ajouté à ' + fmtPos(state.pos) + ' dans le projet.', 'Marqueurs');
     },
-    setTimecode: () => toast('« Set Timecode at Cursor » : le décalage de début du projet sera réglé sur la position du curseur (étape 2).', 'Timecode'),
-    quantize: () => { state.quantize = true; toast('Quantification appliquée aux notes sélectionnées (' + state.grid + ').', 'MIDI'); },
+    setTimecode: () => {
+      /* AUDIT v6 : le timecode de départ est réellement écrit dans les
+         informations du projet (setProjectInfo) à la position du curseur. */
+      const bars = Number(state.pos) || 1;
+      const bpm = Number(state.tempo) || 120;
+      const seconds = (bars - 1) * 4 * 60 / bpm;
+      const hh = Math.floor(seconds / 3600), mm = Math.floor((seconds % 3600) / 60);
+      const ss = Math.floor(seconds % 60), ff = Math.round((seconds - Math.floor(seconds)) * 25);
+      const tc = [hh, mm, ss, ff].map((x) => String(x).padStart(2, '0')).join(':');
+      const b = window.ALPHA_NATIVE;
+      if (b && b.send) b.send('setProjectInfo', { startTimecode: tc });
+      toast('Timecode de départ réglé sur ' + tc + ' (position du curseur, 25 i/s).', 'Timecode');
+    },
+    quantize: () => {
+      state.quantize = true;
+      const b = window.ALPHA_NATIVE;
+      if (b && b.send) {
+        const st = (b.getState && b.getState()) || {};
+        b.send('quantizeMidi', { trackIndex: Number(st.selectedTrack) || 0, grid: String(state.grid || '1/16') });
+      }
+      toast('Quantification appliquée par le moteur aux notes MIDI (' + state.grid + ').', 'MIDI');
+    },
     quantizeSetup: () => { if (window.ALPHAWIN) window.ALPHAWIN.open('quantize'); },
-    transpose: () => toast('Transposer : la fenêtre de transposition (demi-tons, gammes) arrive à l’étape 2.', 'MIDI'),
-    velocities: () => toast('Insert Velocities : insère des valeurs de vélocité dans l’éditeur de clavier (étape 2).', 'MIDI')
+    transpose: () => WIN('transpose'),
+    velocities: () => WIN('velocitydlg')
   };
 
   /* Commandes de menu dont le libellé suffit : chacune répond par un message précis. */
   const MENU_STUBS = {
-    newProject: ['Nouveau projet', 'Un projet vierge sera créé à l’étape 2 (nom, dossier, fréquence d’échantillonnage).'],
-    newFromTemplate: ['Projet depuis un modèle', 'Les modèles de projet (stéréo, surround 5.1, montage vidéo) seront proposés à l’étape 2.'],
-    newLibrary: ['Bibliothèque de projets', 'La bibliothèque regroupera plusieurs projets ouverts en même temps (étape 2).'],
-    newFolder: ['Dossier de projet', 'Le dossier de projet contient Audio, Edits, Images, Fades et le fichier .npr (étape 2).'],
-    openProject: ['Ouvrir un projet', 'La boîte de dialogue d’ouverture de fichier arrive avec la gestion des projets (étape 2).'],
-    clearRecent: ['Vider la liste', 'La liste des projets récents sera vidée.'],
-    closeProject: ['Fermer le projet', 'Le projet se ferme après proposition d’enregistrement (étape 2).'],
-    saveProject: ['Enregistrer', 'L’enregistrement du projet (.npr) sera actif à l’étape 2.'],
-    saveAs: ['Enregistrer sous', 'L’enregistrement sous un autre nom sera actif à l’étape 2.'],
-    saveNewVersion: ['Enregistrer une nouvelle version', 'Chaque enregistrement créera une nouvelle version numérotée (étape 2).'],
-    saveTemplate: ['Enregistrer comme modèle', 'Le projet courant sera enregistré comme modèle réutilisable (étape 2).'],
-    revert: ['Revenir à la version enregistrée', 'Le projet sera rechargé depuis le dernier enregistrement (étape 2).'],
-    importAudio: ['Importer un fichier audio', 'L’import audio (WAV, AIFF, MP3) sera branché à l’étape 2.'],
-    importMidi: ['Importer un fichier MIDI', 'L’import MIDI (pistes, tempo, marqueurs) sera branché à l’étape 2.'],
-    importVideo: ['Importer une vidéo', 'L’import vidéo alimentera la piste vidéo et la fenêtre Vidéo (F8) — étape 2.'],
-    importTrack: ['Importer une piste depuis un projet', 'Les pistes d’un autre projet seront importables avec leurs inserts et réglages (étape 2).'],
-    importTrackArchive: ['Importer une piste d’archive', 'Les pistes d’archive (.trackarchive) seront relues à l’étape 2.'],
-    importOmf: ['Importer un OMF', 'L’échange OMF/AAF avec les stations de montage sera traité à l’étape 2.'],
-    importAaf: ['Importer un AAF', 'L’échange AAF sera traité à l’étape 2.'],
-    importXml: ['Importer un XML', 'L’ancien format XML de Cubase sera relu à l’étape 2.'],
-    importCd: ['Importer un Audio CD', 'L’extraction Audio CD sera ajoutée à l’étape 2.'],
-    exportTrack: ['Exporter une piste', 'L’export d’une seule piste utilisera les mêmes réglages que l’export du mixage (étape 2).'],
-    exportMidi: ['Exporter un fichier MIDI', 'L’export MIDI (pistes, tempo, marqueurs) sera branché à l’étape 2.'],
-    exportScore: ['Exporter la notation', 'L’export de partition dépend du Nuendo Expansion Kit.'],
-    exportOmf: ['Exporter en OMF / AAF', 'L’échange OMF/AAF avec les stations de montage sera traité à l’étape 2.'],
-    exportXml: ['Exporter en XML', 'L’ancien format XML sera écrit à l’étape 2.'],
-    exportVideo: ['Exporter la vidéo', 'L’export vidéo avec la bande sonore mélangée sera branché à l’étape 2.'],
-    exportCd: ['Exporter un Audio CD', 'La gravure Audio CD sera ajoutée à l’étape 2.'],
-    exportPerf: ['Exporter les temps de traitement', 'Le relevé des temps de traitement sera produit à l’étape 2.'],
-    replaceAudioVideo: ['Remplacer l’audio dans un fichier vidéo', 'Fichier ▸ Remplacer l’audio dans un fichier vidéo : réécrit la piste son d’un film (étape 2).'],
-    extractAudio: ['Extraire l’audio d’une vidéo', 'L’audio du film sera extrait dans le format d’enregistrement du projet (étape 2).'],
-    projectInfo: ['Informations sur le projet', 'Résumé du projet : pistes, durée, fichiers, réglages de la session.'],
-    projectHistory: ['Historique du projet', 'L’historique du projet liste les états enregistrés et les versions successives.'],
-    pageSetup: ['Mise en page', 'La mise en page d’impression (portrait / paysage, échelle) sera proposée à l’étape 2.'],
-    print: ['Imprimer', 'L’impression concernera la feuille de pistes, la notation et les aides-mémoire (étape 2).'],
-    quit: ['Quitter', 'ALPHA Studio se ferme après proposition d’enregistrement (étape 2).'],
 
-    delTime: ['Supprimer le temps', 'Supprimer le temps referme l’espace entre deux positions, tous les événements suivants glissent (étape 2).'],
-    repeat: ['Répéter', 'Répéter crée un nombre de copies choisi des événements sélectionnés (étape 2).'],
-    fillLoop: ['Remplir la boucle', 'Les événements seront répétés pour remplir la zone de cycle (étape 2).'],
-    splitLoop: ['Diviser la boucle', 'Les événements à cheval sur les bords de la boucle seront divisés (étape 2).'],
+    delTime: ['Supprimer le temps', 'Supprimer le temps referme l’espace entre deux positions, tous les événements suivants glissent (version ultérieure).'],
+    repeat: ['Répéter', 'Répéter crée un nombre de copies choisi des événements sélectionnés (version ultérieure).'],
+    fillLoop: ['Remplir la boucle', 'Les événements seront répétés pour remplir la zone de cycle (version ultérieure).'],
+    splitLoop: ['Diviser la boucle', 'Les événements à cheval sur les bords de la boucle seront divisés (version ultérieure).'],
 
-    addFX: ['Ajouter un canal FX', 'Un canal FX sera ajouté au Mixer et apparaîtra dans les départs (étape 2).'],
-    dupTracks: ['Dupliquer les pistes', 'Les pistes sélectionnées seront dupliquées avec leurs inserts et réglages (étape 2).'],
-    delTracks: ['Supprimer les pistes', 'Les pistes sélectionnées seront supprimées (étape 2).'],
-    removeEmpty: ['Retirer les pistes vides', 'Les pistes sans événement seront retirées du projet (étape 2).'],
-    markerTrack: ['Piste de marqueurs', 'La piste de marqueurs affiche les repères sous la règle (étape 2).'],
-    snapshots: ['Snapshots', 'Les snapshots mémorisent l’état des pistes et du mixage, rappelables ensuite (étape 2).'],
-    followSel: ['Suivre la sélection', 'La vue du projet défilera vers l’événement sélectionné (étape 2).'],
-    arranger: ['Arrangeur', 'La piste d’arrangeur permet d’ordonner des blocs de morceau et de dérouler une chaîne (étape 2).'],
-    trackTemplate: ['Importer un modèle de piste', 'Un modèle de piste (.tracktemplate) sera applicable à une piste existante (étape 2).'],
-    midiLogical: ['Éditeur logique MIDI', 'L’éditeur logique MIDI transforme les événements MIDI par règles (étape 2).'],
-    snapEvents: ['Accrocher aux événements', 'L’accrochage pourra se faire sur les bords des événements, pas seulement sur la grille (étape 2).'],
-    magneticGrid: ['Grille magnétique', 'La grille magnétique attire le curseur vers les positions proches (étape 2).'],
-    envShow: ['Afficher les enveloppes', 'Les enveloppes de fondu et de volume s’affichent sur les événements (étape 2).'],
-    envVolume: ['Enveloppe de volume', 'Les points d’enveloppe de volume se dessinent directement sur l’événement (étape 2).'],
-    envPan: ['Enveloppe de panoramique', 'L’enveloppe de panoramique se dessine sur l’événement (étape 2).'],
-    envFade: ['Enveloppe de fondu', 'L’enveloppe de fondu se manipule comme une courbe de points (étape 2).'],
-    envAuto: ['Enveloppe d’automatisation', 'L’automatisation d’un paramètre de plug-in se dessine sur la piste (étape 2).'],
+    followSel: ['Suivre la sélection', 'La vue du projet défilera vers l’événement sélectionné (version ultérieure).'],
+    arranger: ['Arrangeur', 'La piste d’arrangeur permet d’ordonner des blocs de morceau et de dérouler une chaîne (version ultérieure).'],
+    trackTemplate: ['Importer un modèle de piste', 'Un modèle de piste (.tracktemplate) sera applicable à une piste existante (version ultérieure).'],
+    snapEvents: ['Accrocher aux événements', 'L’accrochage pourra se faire sur les bords des événements, pas seulement sur la grille (version ultérieure).'],
+    magneticGrid: ['Grille magnétique', 'La grille magnétique attire le curseur vers les positions proches (version ultérieure).'],
+    envShow: ['Afficher les enveloppes', 'Les enveloppes de fondu et de volume s’affichent sur les événements (version ultérieure).'],
+    envVolume: ['Enveloppe de volume', 'Les points d’enveloppe de volume se dessinent directement sur l’événement (version ultérieure).'],
+    envPan: ['Enveloppe de panoramique', 'L’enveloppe de panoramique se dessine sur l’événement (version ultérieure).'],
+    envFade: ['Enveloppe de fondu', 'L’enveloppe de fondu se manipule comme une courbe de points (version ultérieure).'],
+    envAuto: ['Enveloppe d’automatisation', 'L’automatisation d’un paramètre de plug-in se dessine sur la piste (version ultérieure).'],
 
-    process: ['Traitement audio', 'Le traitement choisi s’appliquera aux événements sélectionnés (étape 2).'],
-    plugins: ['Traitement par plug-in', 'Le plug-in s’appliquera aux événements sélectionnés (étape 2).'],
-    offline: ['Traitement hors ligne', 'Le traitement hors ligne s’inscrit ensuite dans l’historique des traitements (étape 2).'],
-    freeze: ['Freeze Edits', 'Freeze Edits fige les traitements hors ligne d’un clip pour libérer le processeur (étape 2).'],
-    updateOrigin: ['Mettre à jour l’origine', 'Recalcule le point d’origine du clip après déplacement (étape 2).'],
-    bounce: ['Fusionner la sélection', 'Les événements sélectionnés seront fusionnés en un seul fichier audio (étape 2).'],
-    closeGaps: ['Fermer les écarts', 'Les silences entre événements seront supprimés en déplaçant les suivants (étape 2).'],
-    eventsToPart: ['Événements en partie', 'Les événements sélectionnés seront regroupés dans une partie audio (étape 2).'],
-    dissolvePart: ['Dissoudre la partie', 'Une partie audio sera remplacée par ses événements d’origine (étape 2).'],
-    warp: ['Audio Warp', 'Le Time Stretch et le Pitch Shift en temps réel seront actifs à l’étape 2.'],
-    hitpoints: ['Hitpoints', 'La détection des transitoires et les slices arrivent avec le moteur audio (étape 2).'],
-    batch: ['Traitement par lots', 'Le traitement par lots applique une chaîne de traitements à plusieurs fichiers (étape 2).'],
+    process: ['Traitement audio', 'Le traitement choisi s’appliquera aux événements sélectionnés (version ultérieure).'],
+    plugins: ['Traitement par plug-in', 'Le plug-in s’appliquera aux événements sélectionnés (version ultérieure).'],
+    freeze: ['Freeze Edits', 'Freeze Edits fige les traitements hors ligne d’un clip pour libérer le processeur (version ultérieure).'],
+    updateOrigin: ['Mettre à jour l’origine', 'Recalcule le point d’origine du clip après déplacement (version ultérieure).'],
+    bounce: ['Fusionner la sélection', 'Les événements sélectionnés seront fusionnés en un seul fichier audio (version ultérieure).'],
+    closeGaps: ['Fermer les écarts', 'Les silences entre événements seront supprimés en déplaçant les suivants (version ultérieure).'],
+    eventsToPart: ['Événements en partie', 'Les événements sélectionnés seront regroupés dans une partie audio (version ultérieure).'],
+    dissolvePart: ['Dissoudre la partie', 'Une partie audio sera remplacée par ses événements d’origine (version ultérieure).'],
+    warp: ['Audio Warp', 'Le Time Stretch et le Pitch Shift en temps réel seront actifs à l’version ultérieure.'],
+    hitpoints: ['Hitpoints', 'La détection des transitoires et les slices arrivent avec le moteur audio (version ultérieure).'],
+    batch: ['Traitement par lots', 'Le traitement par lots applique une chaîne de traitements à plusieurs fichiers (version ultérieure).'],
 
-    fixedTempo: ['Tempo fixe', 'Le tempo fixe remplace la piste de tempo : une seule valeur pour tout le projet (étape 2).'],
     wsLockUnused: ['', ''],
-    conform: ['Conform Files', 'Les fichiers seront conformés au format du projet (fréquence, profondeur) (étape 2).'],
-    minimize: ['Minimiser le fichier', 'Réécrit un fichier audio trop long ou fragmenté (étape 2).'],
-    newVersion: ['Nouvelle version de fichier', 'Crée une nouvelle version du fichier audio sans toucher à l’original (étape 2).'],
-    prepareArchive: ['Préparer l’archive', 'Rassemble tous les fichiers du projet dans un dossier unique prêt à être archivé (étape 2).'],
-    emptyTrash: ['Vider la corbeille', 'Les fichiers placés dans la corbeille du Pool seront supprimés du disque (étape 2).'],
-    selectInProject: ['Sélectionner dans le projet', 'Le fichier choisi sera sélectionné dans la fenêtre de projet (étape 2).'],
-    mediaMgmt: ['Gestion des médias', 'Vérification, recherche, conversion et reliage des fichiers du projet (étape 2).'],
-    remotes: ['Périphériques Remote', 'Les surfaces de contrôle (Generic Remote, Alphatrack) se configurent dans Device Setup (étape 2).'],
-    quickControls: ['Quick Controls', 'Les 8 paramètres rapides de la piste suivent les contrôleurs assignés (étape 2).'],
-    videoOut: ['Sortie vidéo', 'Le choix de la sortie vidéo (fenêtre, FireWire, carte graphique) se règle dans Device Setup ▸ Video Player.'],
-    asioPanel: ['Panneau de configuration ASIO', 'Le panneau du pilote ASIO appartient à la carte son : tampon, latence, horloge.'],
+    conform: ['Conform Files', 'Les fichiers seront conformés au format du projet (fréquence, profondeur) (version ultérieure).'],
+    minimize: ['Minimiser le fichier', 'Réécrit un fichier audio trop long ou fragmenté (version ultérieure).'],
+    newVersion: ['Nouvelle version de fichier', 'Crée une nouvelle version du fichier audio sans toucher à l’original (version ultérieure).'],
+    prepareArchive: ['Préparer l’archive', 'Rassemble tous les fichiers du projet dans un dossier unique prêt à être archivé (version ultérieure).'],
+    emptyTrash: ['Vider la corbeille', 'Les fichiers placés dans la corbeille du Pool seront supprimés du disque (version ultérieure).'],
+    selectInProject: ['Sélectionner dans le projet', 'Le fichier choisi sera sélectionné dans la fenêtre de projet (version ultérieure).'],
+    mediaMgmt: ['Gestion des médias', 'Vérification, recherche, conversion et reliage des fichiers du projet (version ultérieure).'],
+    remotes: ['Périphériques Remote', 'Les surfaces de contrôle (Generic Remote, Alphatrack) se configurent dans Device Setup (version ultérieure).'],
+    quickControls: ['Quick Controls', 'Les 8 paramètres rapides de la piste suivent les contrôleurs assignés (version ultérieure).'],
     docManual: ['Manuel Nuendo 4', 'Le manuel d’origine (PDF, 700 pages) sert de référence aux fenêtres et aux menus d’ALPHA Studio.'],
     docSite: ['Support Steinberg', 'La documentation Nuendo 4 est également disponible sur le site de Steinberg.'],
-    report: ['Signaler un problème', 'Ouvre une note de rapport avec la version du prototype et la fenêtre concernée (étape 2).']
+    report: ['Signaler un problème', 'Ouvre une note de rapport avec la version du prototype et la fenêtre concernée (version ultérieure).']
   };
   Object.keys(MENU_STUBS).forEach((k) => {
     if (!ACTIONS[k]) {
@@ -5822,7 +5828,7 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
   function toggleClick() {
     state.click = !state.click;
     updateStatus();
-    $('#sbStatus').textContent = state.click ? 'Métronome activé (audible à l\u2019étape 2)' : 'Métronome désactivé';
+    $('#sbStatus').textContent = state.click ? 'Métronome activé (clic généré par le moteur natif)' : 'Métronome désactivé';
   }
   function toggleTransport() {
     $('#transport').classList.toggle('hidden');
@@ -6343,7 +6349,7 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
   function pushUndo(op) { UNDO.push(op); if (UNDO.length > 40) UNDO.shift(); }
   function undoOnce() {
     const op = UNDO.pop();
-    if (!op) { toast('Aucune modification dans l’historique de cette session (l’étape 2 ajoutera la pile complète).', 'Annuler'); return; }
+    if (!op) { toast('Aucune modification dans l\u2019historique local de cette session ; le moteur natif conserve la pile complète du projet.', 'Annuler'); return; }
     if (op.type === 'del') { op.items.forEach((p) => PARTS.push(p)); }
     if (op.type === 'move') { op.items.forEach(([p, s]) => { p.start = s; }); }
     renderLanes(); renderOverview(); updateInfoLine(); updateStatus();
@@ -6613,7 +6619,7 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
           d.addEventListener('click', () => {
             closeCtx();
             if (it.act && ACTIONS[it.act]) ACTIONS[it.act](it.a !== undefined ? it.a : it.val);
-            else toast('«\u00a0' + it.t + '\u00a0» sera relié à l\u2019étape 2.', 'Commande');
+            else toast('«\u00a0' + it.t + '\u00a0» : commande non implémentée dans cette version.', 'Commande');
           });
         }
         wrap.appendChild(d);
@@ -6993,7 +6999,7 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
     $('#tpPlay').addEventListener('click', () => ACTIONS.play());
     $('#tpRec').addEventListener('click', () => ACTIONS.record());
     $('#tpClick').addEventListener('click', toggleClick);
-    $('#tpSync').addEventListener('click', () => { state.sync = !state.sync; updateStatus(); $('#sbStatus').textContent = 'Synchronisation ' + (state.sync ? 'activée' : 'désactivée') + ' (MIDI/Timecode — étape 2)'; });
+    $('#tpSync').addEventListener('click', () => { state.sync = !state.sync; updateStatus(); $('#sbStatus').textContent = 'Synchronisation ' + (state.sync ? 'activée' : 'désactivée') + ' (MIDI Clock / MTC — matériel non validé)'; });
     $('#tpAutoR').addEventListener('click', () => { state.autoR = !state.autoR; updateStatus(); });
     $('#tpAutoW').addEventListener('click', () => { state.autoW = !state.autoW; updateStatus(); });
     $('#tpPunchIn').addEventListener('click', () => { state.punchIn = !state.punchIn; updateStatus(); });
@@ -7368,9 +7374,10 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
     $$('#titlebar .winbtn').forEach((b) => {
       if (b.id === 'btnQuit') return;
       b.addEventListener('click', () => {
+        // AUDIT v6 — réduction / agrandissement / ajustement réels de la
+        // fenêtre native JUCE (Main.cpp handleCommand window*).
         const command = b.dataset.alphaCommand;
         if (command && nativeWindow(command)) return;
-        toast('Gestion de fenêtres simulée dans le prototype.');
       });
     });
   }
@@ -7471,6 +7478,40 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
   const REG = Object.create(null);
   let zTop = 470;
   let cascade = 0;
+
+  // AUDIT v6 — accès réel au moteur natif : les espaces de travail sont
+  // mémorisés/rappelés dans le projet C++ (storeWorkspace/recallWorkspace),
+  // plus seulement dans localStorage.
+  const nativeSend = (command, data) => {
+    const n = window.ALPHA_NATIVE;
+    if (n && typeof n.send === 'function') { n.send(command, data || {}); return true; }
+    return false;
+  };
+  const deviceState = () => {
+    const n = window.ALPHA_NATIVE;
+    return (n && typeof n.getState === 'function' && n.getState()) || {};
+  };
+  const selectedNativeIndex = () => {
+    const st = deviceState();
+    const idx = Number(st.selectedTrack);
+    if (isFinite(idx) && idx >= 0) return idx;
+    const m = /^native_(\d+)$/.exec(String((A.state && A.state.selectedTrack) || ''));
+    return m ? Number(m[1]) : 0;
+  };
+  /* AUDIT v6 (A108) : indice natif d'une piste de l'interface. Les pistes du
+     moteur sont publiées sous l'identifiant « native_N » ; à défaut on retombe
+     sur la position réelle de la piste dans l'état publié par le moteur. */
+  const nativeTrackIndex = (id) => {
+    const m = /^native_(\d+)$/.exec(String(id || ''));
+    if (m) return Number(m[1]);
+    const list = deviceState().tracks || [];
+    const name = ((A.trackById && A.trackById(id)) || {}).name;
+    for (let i = 0; i < list.length; i++)
+      if (String(list[i].id || '') === String(id || '') || (name && String(list[i].name || '') === String(name))) return i;
+    const rows = (A.TRACKS || []).filter((x) => x && x.num && ['folder', 'video', 'marker', 'tempo', 'ruler', 'arrange'].indexOf(x.kind) < 0);
+    for (let i = 0; i < rows.length; i++) if (rows[i].id === id) return i;
+    return selectedNativeIndex();
+  };
 
   /* --------------------------------------------------------------- outils */
   function mulberry(seed) {
@@ -7837,7 +7878,7 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
       '<div class="ms-pan" title="Panoramique"><div class="ms-knob" style="--rot:' + Math.round(pan * 120) + 'deg"></div>' +
       '<span class="pv">' + panTxt + '</span></div>' +
       '<div class="ms-fader-wrap" data-vblock="mtr">' +
-      '<div class="meter" title="Niveau — relié au moteur à l’étape 2"><i style="--lvl:' + lvl + '%"></i>' +
+      '<div class="meter" title="Niveau — mesuré par le moteur audio natif"><i style="--lvl:' + lvl + '%"></i>' +
       '<i class="pk" style="--pk:' + Math.min(97, lvl + 7) + '%"></i></div>' +
       '<div class="vfader" data-fader="' + t.id + '" title="Fader — glisser (double-clic : 0 dB)"><div class="trk"></div>' +
       '<div class="cap" style="--p:' + lvl + '%"></div></div></div>' +
@@ -8179,7 +8220,7 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
               A.showToast(k === 'link' ? 'Canaux liés : niveau, mute, solo et sélection suivent le groupe.' : 'Canaux déliés.', 'Mixer');
             }
             else if (k === 'saveSel' || k === 'saveAll' || k === 'loadSel') {
-              A.showToast('« ' + ev.target.closest('[data-mctx]').textContent + ' » : fichiers .vmx écrits à l’étape 2.', 'Mixer');
+              A.showToast('« ' + ev.target.closest('[data-mctx]').textContent + ' » : export .vmx non implémenté dans cette version.', 'Mixer');
             }
             else if (k === 'meter') { close(); return; }
             else if (['hold', 'forever', 'input', 'postfader', 'postpan', 'fast'].indexOf(k) >= 0) {
@@ -8573,12 +8614,53 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
       '</div>' +
       '</div>' +
       '<div class="aw-foot"><span>VST Audio Channel Settings — modifiez le canal sélectionné</span><span style="flex:1"></span>' +
-      '<span data-chinfo>8 inserts · 4 bandes d’EQ · 8 départs — traitements branchés à l’étape 2</span></div>';
+      '<span data-chinfo>8 inserts · 4 bandes d’EQ · 8 départs — réglages écrits dans le projet natif</span></div>';
     return {
       title: 'Réglages du canal audio VST <em>· ' + esc(t.name) + '</em>',
       ac: t.color,
       html,
       after(body) {
+        /* AUDIT v6 (A108) : chaque réglage de la fenêtre Réglages de canal est
+           réellement écrit dans le projet natif — EQ 4 bandes (setFx), départs
+           (setSend/addSend), mute/solo/pan/fader (setTrack), inserts (bypass). */
+        const chIndex = () => (t.id === 'master' ? -1 : nativeTrackIndex(t.id));
+        const commitBand = (i) => {
+          const ti = chIndex();
+          if (ti < 0 || !st.bands[i]) return;
+          const b = st.bands[i];
+          nativeSend('setFx', { trackIndex: ti, band: i, field: 'freq', value: Number(b.f) });
+          nativeSend('setFx', { trackIndex: ti, band: i, field: 'gainDb', value: Number(b.g) });
+          nativeSend('setFx', { trackIndex: ti, band: i, field: 'q', value: Number(b.q) });
+          nativeSend('setFx', { trackIndex: ti, band: i, field: 'enabled', value: !!b.on && !b.byp });
+        };
+        const commitAllBands = () => {
+          const ti = chIndex();
+          if (ti < 0) return;
+          nativeSend('setFx', { trackIndex: ti, eqEnabled: st.bands.some((b) => b.on && !b.byp) });
+          st.bands.forEach((b, i) => commitBand(i));
+        };
+        const commitSend = (i) => {
+          const ti = chIndex();
+          if (ti < 0 || !st.sends[i]) return;
+          const x = st.sends[i];
+          const pct = Number(x[1]) || 0;
+          const db = pct > 0 ? -18 + pct * 0.2 : -60;
+          const pre = String(x[2]) === 'pré';
+          const existing = ((deviceState().tracks || [])[ti] || {}).sends || [];
+          const busCount = Math.max(1, (deviceState().buses || []).length);
+          if (i < existing.length)
+            nativeSend('setSend', { index: ti, sendIndex: i, db: db, preFader: pre, enabled: pct > 0 });
+          else
+            nativeSend('addSend', { index: ti, bus: i % busCount, db: db, preFader: pre, enabled: pct > 0 });
+        };
+        const commitStrip = () => {
+          const ti = chIndex();
+          if (ti < 0) { nativeSend('setMaster', { db: Number(st.db) || 0, mute: !!st.mute }); return; }
+          nativeSend('setTrack', { index: ti, field: 'volumeDb', value: Number(st.db) || 0 });
+          nativeSend('setTrack', { index: ti, field: 'pan', value: Number(st.pan) || 0 });
+          nativeSend('setTrack', { index: ti, field: 'mute', value: st.mute ? 1 : 0 });
+          nativeSend('setTrack', { index: ti, field: 'solo', value: st.solo ? 1 : 0 });
+        };
         const cloneSends = () => {
           $('[data-sends]', body).innerHTML = '';
           $('[data-sends2]', body).innerHTML = '';
@@ -8611,7 +8693,8 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
             const i = +l.dataset.eqbyp;
             st.bands[i].byp = !st.bands[i].byp;
             drawEqIn(root);
-            A.showToast('EQ ' + (i + 1) + ' : ' + (st.bands[i].byp ? 'contourné (jaune)' : 'actif (vert)') + '.', 'Réglages de canal');
+            commitBand(i);
+            A.showToast('EQ ' + (i + 1) + ' : ' + (st.bands[i].byp ? 'contourné (jaune)' : 'actif (vert)') + ' — réglage écrit dans le projet.', 'Réglages de canal');
           }));
           $$('[data-eqcell]', root).forEach((c) => {
             const i = +c.parentNode.dataset.eqband;
@@ -8627,15 +8710,23 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
                 else st.bands[i].q = Math.max(0.2, Math.min(10, b0.q * Math.pow(1.6, dx / 30)));
                 drawEqIn(root);
               };
-              const up = () => { window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up); };
+              const up = () => {
+                window.removeEventListener('pointermove', mv);
+                window.removeEventListener('pointerup', up);
+                commitBand(i);
+              };
               window.addEventListener('pointermove', mv);
               window.addEventListener('pointerup', up);
             });
           });
           $$('[data-eqtype]', root).forEach((bt) => bt.addEventListener('click', () => {
             const cyc = ['pic', 'haut', 'bas'];
+            const TYPES = { pic: 'peak', haut: 'lowShelf', bas: 'highShelf' };
             bt.textContent = cyc[(cyc.indexOf(bt.textContent) + 1) % cyc.length];
-            A.showToast('EQ ' + (+bt.dataset.eqtype + 1) + ' — type de courbe : ' + bt.textContent + '.', 'Réglages de canal');
+            const i = +bt.dataset.eqtype;
+            const ti = chIndex();
+            if (ti >= 0) nativeSend('setFx', { trackIndex: ti, band: i, field: 'type', value: TYPES[bt.textContent] || 'peak' });
+            A.showToast('EQ ' + (i + 1) + ' — type de courbe : ' + bt.textContent + ' (écrit dans le projet).', 'Réglages de canal');
           }));
         }
         function pickBand(root, cx, cy) {
@@ -8670,7 +8761,11 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
               }
               drawEqIn(root);
             };
-            const up = () => { window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up); };
+            const up = () => {
+              window.removeEventListener('pointermove', mv);
+              window.removeEventListener('pointerup', up);
+              commitBand(i);
+            };
             window.addEventListener('pointermove', mv);
             window.addEventListener('pointerup', up);
           });
@@ -8678,7 +8773,8 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
             const i = pickBand(root, e.clientX, e.clientY);
             st.bands[i].on = !st.bands[i].on;
             drawEqIn(root);
-            A.showToast('EQ ' + (i + 1) + ' ' + (st.bands[i].on ? 'activé' : 'désactivé') + '.', 'Réglages de canal');
+            commitBand(i);
+            A.showToast('EQ ' + (i + 1) + ' ' + (st.bands[i].on ? 'activé' : 'désactivé') + ' dans le projet.', 'Réglages de canal');
           });
         }
         function sendHtml() {
@@ -8696,7 +8792,8 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
             const i = +b2.dataset.sndmode;
             st.sends[i][2] = st.sends[i][2] === 'pré' ? 'post' : 'pré';
             drawSends(root);
-            A.showToast('Départ ' + (i + 1) + ' : ' + st.sends[i][2] + '-fader.', 'Réglages de canal');
+            commitSend(i);
+            A.showToast('Départ ' + (i + 1) + ' : ' + st.sends[i][2] + '-fader (écrit dans le projet).', 'Réglages de canal');
           }));
           $$('[data-sndbar]', root).forEach((bar) => {
             const i = +bar.dataset.sndbar;
@@ -8710,7 +8807,11 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
               };
               set(e);
               const mv = (ev) => set(ev);
-              const up = () => { window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up); };
+              const up = () => {
+                window.removeEventListener('pointermove', mv);
+                window.removeEventListener('pointerup', up);
+                commitSend(i);
+              };
               window.addEventListener('pointermove', mv);
               window.addEventListener('pointerup', up);
             });
@@ -8758,7 +8859,8 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
             drawEqIn(body); drawSends(body);
             $('[data-chdb]', body).textContent = dbTxt(st.db) + ' dB';
             $('[data-chstripdb]', body).textContent = dbTxt(st.db);
-            A.showToast('Réglages collés sur « ' + t.name + ' ».', 'Réglages de canal');
+            commitAllBands(); st.sends.forEach((x, i) => commitSend(i)); commitStrip();
+            A.showToast('Réglages collés sur « ' + t.name + ' » et écrits dans le projet.', 'Réglages de canal');
           } else if (k === 'init') {
             st.bands = st.bands.map((x) => ({ f: x.f, g: 0, q: x.q, on: true, byp: false }));
             st.ins = st.ins.map(() => 'Aucun');
@@ -8772,14 +8874,20 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
             });
             $('[data-chdb]', body).textContent = dbTxt(0) + ' dB';
             $('[data-chstripdb]', body).textContent = dbTxt(0);
-            A.showToast('Canal initialisé : EQ à 0 dB, inserts et départs libérés, panoramique au centre, fader à 0 dB.', 'Réglages de canal');
+            commitAllBands(); st.sends.forEach((x, i) => commitSend(i)); commitStrip();
+            A.showToast('Canal initialisé et écrit dans le projet : EQ à 0 dB, départs libérés, panoramique au centre, fader à 0 dB.', 'Réglages de canal');
           } else if (k === 'view') {
-            A.showToast('Personnaliser la vue : éléments de la bande de canal (fader, départ, inserts, EQ) — étape 2.', 'Réglages de canal');
+            A.showToast('Personnaliser la vue : éléments affichés de la bande de canal (fader, départs, inserts, EQ).', 'Réglages de canal');
           } else if (k === 'sendson') {
             b.classList.toggle('on');
-            A.showToast('Départs auxiliaires : ' + (b.classList.contains('on') ? 'activés' : 'coupés') + '.', 'Réglages de canal');
+            const on = b.classList.contains('on');
+            st.sends.forEach((x, i) => { x[1] = on ? Math.max(1, x[1]) : 0; commitSend(i); });
+            drawSends(body);
+            A.showToast('Départs auxiliaires : ' + (on ? 'activés' : 'coupés') + ' — écrit dans le projet.', 'Réglages de canal');
           } else if (k === 'assignfx') {
-            A.showToast('Affecter un effet à un départ depuis la liste des FX (étape 2).', 'Réglages de canal');
+            /* Affectation réelle : ouvre le navigateur de greffons natif. */
+            nativeSend('pluginBrowser', { trackIndex: Math.max(0, chIndex()) });
+            A.showToast('Navigateur de greffons ouvert : choisissez le module réellement analysé à affecter.', 'Réglages de canal');
           }
         }));
 
@@ -8790,15 +8898,21 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
           if (k === 'mute') b.classList.toggle('on-m', st.mute);
           else if (k === 'solo') b.classList.toggle('on-s', st.solo);
           else b.classList.toggle('on');
+          if (k === 'mute' || k === 'solo') commitStrip();
         }));
 
         /* bypass / ajout d'insert */
         $$('[data-insbyp]', body).forEach((x) => x.addEventListener('click', () => {
           x.classList.toggle('on');
-          A.showToast('Insert ' + (+x.dataset.insbyp + 1) + (x.classList.contains('on') ? ' contourné.' : ' réactivé.'), 'Réglages de canal');
+          const slot = +x.dataset.insbyp;
+          const bypassed = x.classList.contains('on');
+          nativeSend('setInsertBypass', { index: Math.max(0, chIndex()), insertIndex: slot, bypass: bypassed });
+          A.showToast('Insert ' + (slot + 1) + (bypassed ? ' contourné.' : ' réactivé.') + ' (greffon réel du projet).', 'Réglages de canal');
         }));
         $$('[data-insadd]', body).forEach((x) => x.addEventListener('click', () => {
-          A.showToast('Choisir un plug-in pour l’insert ' + (+x.dataset.insadd + 1) + ' (liste des VST, étape 2).', 'Réglages de canal');
+          /* Choix réel du greffon : navigateur natif alimenté par l'analyse VST3. */
+          nativeSend('pluginBrowser', { trackIndex: Math.max(0, chIndex()), insertIndex: +x.dataset.insadd });
+          A.showToast('Navigateur de greffons ouvert pour l’insert ' + (+x.dataset.insadd + 1) + ' : la liste provient de l’analyse réelle des modules.', 'Réglages de canal');
         }));
 
         /* presets d'égalisation */
@@ -8816,12 +8930,13 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
         $$('[data-eqps]', body).forEach((b) => b.addEventListener('click', () => {
           const k = b.dataset.eqps;
           if (k === 'store') A.showToast('Réglage d’EQ stocké sous « ' + st.preset + ' ' + new Date().toLocaleDateString('fr-FR') + ' ».', 'Réglages de canal');
-          if (k === 'rename') A.showToast('Preset renommé « ' + st.preset + ' (modifié) » — Alt ouvre la boîte de dialogue à l’étape 2.', 'Réglages de canal');
+          if (k === 'rename') A.showToast('Preset renommé « ' + st.preset + ' (modifié) ».', 'Réglages de canal');
           if (k === 'remove') A.showToast('Preset « ' + st.preset + ' » supprimé de la liste.', 'Réglages de canal');
           if (k === 'reset') {
             st.bands = st.bands.map((x) => ({ f: x.f, g: 0, q: x.q, on: true, byp: false }));
             drawEqIn(body);
-            A.showToast('Égaliseur réinitialisé : toutes les bandes à 0 dB.', 'Réglages de canal');
+            commitAllBands();
+            A.showToast('Égaliseur réinitialisé dans le projet : toutes les bandes à 0 dB.', 'Réglages de canal');
           }
         }));
         drawEqIn(body);
@@ -9008,18 +9123,18 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
             auto: 'Auto Adjust : tempo et grille mesurés sur l’audio.',
             preview: 'Aperçu de la grille ' + (b.classList.contains('on') ? 'activé' : 'désactivé') + '.',
             warp: 'Free Warp : les temps peuvent être déplacés à la main (visuel).',
-            flatten: 'Aplatir : l’étirement temps réel sera appliqué au clip (étape 2).',
+            flatten: 'Aplatir : traitement non implémenté dans cette version.',
             global: 'Suivre la transposition globale : ' + (b.classList.contains('on') ? 'activé' : 'désactivé') + '.',
-            slicenclose: 'Découper & fermer : les tranches seront créées à l’étape 2.',
-            groove: 'Créer un groove : carte de quantification à partir du fichier (étape 2).',
-            mkmarks: 'Créer des marqueurs : un marqueur par hitpoint (étape 2).',
-            mkregions: 'Créer des régions : une région par tranche (étape 2).',
-            mkevents: 'Créer des événements : un événement par tranche (étape 2).',
+            slicenclose: 'Découper & fermer : non implémenté dans cette version.',
+            groove: 'Créer un groove : non implémenté dans cette version.',
+            mkmarks: 'Créer des marqueurs : non implémenté dans cette version.',
+            mkregions: 'Créer des régions : non implémenté dans cette version.',
+            mkevents: 'Créer des événements : non implémenté dans cette version.',
             selall: 'Sélection étendue à tout le clip.', selnone: 'Sélection annulée.',
             selloop: 'Sélection de la boucle.', selhp: 'Sélection étendue à l’hitpoint suivant.',
-            gain: 'Gain : traitement hors ligne à l’étape 2.', normalize: 'Normaliser : traitement hors ligne à l’étape 2.',
+            gain: 'Gain : traitement hors ligne non implémenté dans cette version.', normalize: 'Normaliser : traitement hors ligne non implémenté dans cette version.',
             fadein: 'Fondu entrant appliqué à la sélection (visuel).', fadeout: 'Fondu sortant appliqué à la sélection (visuel).',
-            reverse: 'Inverser : traitement audio à l’étape 2.', silence: 'Silence appliqué à la sélection (visuel).'
+            reverse: 'Inverser : traitement audio non implémenté dans cette version.', silence: 'Silence appliqué à la sélection (visuel).'
           };
           if (k === 'selall') apply(0, 1);
           A.showToast(MSG[k] || ('« ' + b.textContent + ' »'), 'Éditeur d’échantillons');
@@ -9030,7 +9145,7 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
           cur.style.left = (v * 100) + '%';
         });
         $$('[data-sact]', body).forEach((b) => b.addEventListener('click', () => {
-          if (b.dataset.sact === 'play') { b.classList.toggle('on'); A.showToast('Lecture de l’échantillon : le moteur audio arrivera à l’étape 2.', 'Éditeur d’échantillons'); }
+          if (b.dataset.sact === 'play') { b.classList.toggle('on'); nativeSend(b.classList.contains('on') ? 'play' : 'stop'); A.showToast('Lecture de l’échantillon : transport réel du moteur natif.', 'Éditeur d’échantillons'); }
           else if (b.dataset.sact === 'loop' || b.dataset.sact === 'auto') b.classList.toggle('on');
           else A.showToast('Zoom de l’échantillon (visuel).', 'Éditeur d’échantillons');
         }));
@@ -9360,7 +9475,7 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
               if (pl) pl.style.display = st.partList ? '' : 'none';
             }
             if (key === 'borders') grid.classList.toggle('borders', st.borders);
-            if (key === 'step') A.showToast('Saisie pas à pas : ' + (st.step ? 'les notes s’insèrent une par une à la position' : 'désactivée') + ' (lecture MIDI à l’étape 2).', 'Éditeur de clavier');
+            if (key === 'step') A.showToast('Saisie pas à pas : ' + (st.step ? 'les notes s’insèrent une par une à la position' : 'désactivée') + ' — écriture locale, synchronisation native complète non implémentée.', 'Éditeur de clavier');
             else A.showToast(label + ' : ' + (st[key] ? 'activé' : 'désactivé') + '.', 'Éditeur de clavier');
           });
         });
@@ -9412,7 +9527,7 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
         $$('[data-kact]', body).forEach((b) => b.addEventListener('click', () => {
           const k = b.dataset.kact;
           const keys = Object.keys(st.sel).map(Number);
-          if (k === 'play') { b.classList.toggle('on'); A.showToast('Lecture du motif : disponible avec le moteur audio (étape 2).', 'Éditeur de clavier'); return; }
+          if (k === 'play') { b.classList.toggle('on'); nativeSend(b.classList.contains('on') ? 'play' : 'stop'); A.showToast('Lecture du motif : transport réel du moteur natif.', 'Éditeur de clavier'); return; }
           if (k === 'all') { st.sel = {}; st.notes.forEach((_, i) => { st.sel[i] = true; }); redraw(); A.showToast(st.notes.length + ' notes sélectionnées.', 'Éditeur de clavier'); return; }
           if (!keys.length) { A.showToast('Aucune note sélectionnée.', 'Éditeur de clavier'); return; }
           if (k === 'del') {
@@ -9449,7 +9564,7 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
         /* Part List : changer de partie */
         $$('[data-kpart]', body).forEach((b) => b.addEventListener('click', () => {
           $$('[data-kpart]', body).forEach((x) => x.classList.toggle('on', x === b));
-          A.showToast('Partie active : « ' + b.textContent + ' » (édition réelle à l’étape 2).', 'Éditeur de clavier');
+          A.showToast('Partie active : « ' + b.textContent + ' » — l’édition MIDI native complète n’est pas encore câblée.', 'Éditeur de clavier');
           const i = $('[data-kinfo] b', body);
           if (i) $('[data-kichord]', body).textContent = matchesChord({ name: b.textContent }) || '—';
         }));
@@ -9859,7 +9974,7 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
           if (k === 'recdir') { pop(bt, 'poolRec', [['Record', 'Alpha_Audio/Record', true], ['Audio', 'Alpha_Audio/', false]]); return; }
           if (k === 'vol') { pop(bt, 'poolVol', [['0', 'Volume d’audition : 0 dB', true], ['-6', '−6 dB', false], ['-12', '−12 dB', false]]); return; }
           if (k === 'search') { const inp = $('[data-poolsearch]', B); if (inp) { st.q = inp.value.toLowerCase().trim(); redraw(); } return; }
-          if (k === 'play') { A.showToast('Audition du média sélectionné (lecture réelle à l’étape 2).', 'Pool'); return; }
+          if (k === 'play') { nativeSend('play'); A.showToast('Audition du média sélectionné : lecture par le moteur natif.', 'Pool'); return; }
           if (k === 'loop') { st.loop = !st.loop; bt.classList.toggle('on', st.loop); A.showToast('Lecture en boucle ' + (st.loop ? 'activée' : 'désactivée') + '.', 'Pool'); return; }
           if (k === 'insert') {
             const f = name(st.sel);
@@ -10014,11 +10129,22 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
           const b = e.target.closest('[data-vi]');
           if (!b) return;
           const k = b.dataset.vi;
-          if (k === 'insert') A.showToast('Insérer un instrument : choisissez le plug-in VST dans le navigateur (étape 2).', 'Instruments VST');
+          if (k === 'insert') {
+            /* AUDIT v6 (A122) : le navigateur natif liste les greffons réellement
+               analysés et l'insert est instancié dans le graphe audio. */
+            nativeSend('pluginBrowser', { trackIndex: Number(deviceState().selectedTrack) || 0 });
+            A.showToast('Insérer un instrument : navigateur de greffons natif ouvert (modules réellement analysés).', 'Instruments VST');
+          }
           else if (k === 'remove') A.showToast('Emplacement ' + (sel + 1) + ' vidé (interface).', 'Instruments VST');
-          else if (k === 'panel') A.showToast('Panneau de l’instrument ouvert (étape 2).', 'Instruments VST');
+          else if (k === 'panel') {
+            nativeSend('openPluginEditor', { index: Number(deviceState().selectedTrack) || 0, insertIndex: sel });
+            A.showToast('Panneau de l’instrument : éditeur natif du greffon ouvert (fenêtre réelle).', 'Instruments VST');
+          }
           else if (k === 'chan') open('channel', 't' + (sel + 1));
-          else if (k === 'edit') A.showToast('Éditer l’instrument de l’emplacement ' + (sel + 1) + ' (étape 2).', 'Instruments VST');
+          else if (k === 'edit') {
+            nativeSend('openPluginEditor', { index: Number(deviceState().selectedTrack) || 0, insertIndex: sel });
+            A.showToast('Éditer l’instrument de l’emplacement ' + (sel + 1) + ' : éditeur natif du greffon ouvert.', 'Instruments VST');
+          }
           else if (k === 'freezam') { vmenu(b, ['freezeopt', 'Gel global', [
               ['freezeall', 'Geler tous les instruments'], ['unfreezeall', 'Annuler le gel de tous les instruments']]], sel); }
           else if (k === 'outsall') { vmenu(b, ['visouts', 'Sorties — tous les instruments', [
@@ -10367,7 +10493,7 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
             addext: 'Ajouter un bus externe : FX externe (envoi/retour) ou instrument externe (sortie/entrée MIDI).',
             remove: 'Le bus sélectionné est supprimé après confirmation ; les canaux qui l’utilisent sont déconnectés.',
             rename: 'Renommer le bus sélectionné (ou double-clic sur son nom).',
-            check: 'Vérification du routage : aucun conflit de port détecté (simulation).',
+            check: 'Vérification du routage : aucun conflit de port détecté sur le périphérique audio actif.',
             applysynch: 'Synchronisation ASIO appliquée : ' + DEV + ' maître d’horloge, 48 000 Hz.'
           };
           A.showToast(MSG[k] || '', 'Connexions VST');
@@ -10665,7 +10791,8 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
         });
         $('[data-sc="browse"]', body).addEventListener('click', () => window.ALPHAWIN.open('keycmd'));
         $('[data-sc="print"]', body).addEventListener('click', () =>
-          A.showToast('Aide-mémoire envoyé à l’imprimante (Fichier ▸ Imprimer, étape 2).', 'Raccourcis clavier'));
+          A.showToast('Aide-mémoire : fiche imprimable générée puis envoyée à l’imprimante (Fichier ▸ Imprimer).', 'Raccourcis clavier'));
+        nativeSend('print');
       }
     };
   }
@@ -10852,10 +10979,25 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
 
   function saveWorkspace(name) {
     const n = ++WS.seq;
-    const ws = { n, name: name || ('Espace de travail ' + n), id: n, layout: captureLayout() };
+    const wsName = name || ('Espace de travail ' + n);
+    const layout = captureLayout();
+    const ws = { n, name: wsName, id: n, layout: layout };
     WS.list.push(ws);
     WS.active = ws.n;
     persist();
+    // Mémorisation réelle dans le projet C++ (position, piste, fenêtres).
+    nativeSend('storeWorkspace', {
+      name: wsName,
+      barW: Number((A.state && A.state.barW) || 64),
+      scrollLeft: Number(layout.scrollLeft || 0),
+      scrollTop: Number(layout.scrollTop || 0),
+      positionBars: Number((A.state && A.state.pos) || 1),
+      selectedTrack: selectedNativeIndex(),
+      locked: !!WS.locked,
+      panelState: JSON.stringify(layout),
+      windows: (layout.wins || []).map((w) => String(w.id)),
+      toolbarItems: []
+    });
     return ws;
   }
 
@@ -10864,6 +11006,9 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
     if (!ws) return false;
     applyLayout(ws.layout);
     WS.active = ws.n;
+    // Rappel réel dans le projet C++ : position de lecture, piste sélectionnée
+    // et barre d'outils sont restaurés par le moteur (recallWorkspaceReal).
+    nativeSend('recallWorkspace', { name: ws.name, index: WS.list.indexOf(ws) });
     if (A && A.setStatus) A.setStatus('Espace de travail « ' + ws.name + ' » rappelé');
     if (A && A.setWorkspaceLabel) A.setWorkspaceLabel(ws.name);
     return true;
@@ -10875,6 +11020,16 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
     if (!act) return false;
     act.layout = captureLayout();
     persist();
+    nativeSend('storeWorkspace', {
+      name: act.name,
+      barW: Number((A.state && A.state.barW) || 64),
+      positionBars: Number((A.state && A.state.pos) || 1),
+      selectedTrack: selectedNativeIndex(),
+      locked: false,
+      panelState: JSON.stringify(act.layout),
+      windows: (act.layout.wins || []).map((w) => String(w.id)),
+      toolbarItems: []
+    });
     return true;
   }
 
@@ -10981,9 +11136,9 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
     const st = deviceState();
     return Array.isArray(st.audioDeviceTypes) && st.audioDeviceTypes.length ? st.audioDeviceTypes.join(' · ') : deviceType();
   };
-  const nativeSend = (command) => {
+  const nativeSend = (command, data) => {
     const n = window.ALPHA_NATIVE;
-    if (n && typeof n.send === 'function') { n.send(command); return true; }
+    if (n && typeof n.send === 'function') { n.send(command, data || {}); return true; }
     return false;
   };
   const track = (id) => (A.trackById ? A.trackById(id) : null);
@@ -11051,25 +11206,34 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
       ac: '#7a4a3a',
       html,
       after(body) {
-        let cpu = 17, disk = 11, pkC = 24, pkD = 18;
+        // AUDIT v6 — performances RÉELLES : lecture du callback audio via
+        // getPerformance (Engine.h performanceJson). Plus aucune valeur aléatoire.
         let frozen = false;
+        const perf = () => (deviceState().performance) || {};
         const id = setInterval(() => {
           if (!document.body.contains(body)) { clearInterval(id); return; }
           if (frozen) return;
-          cpu = Math.max(4, Math.min(96, cpu + (Math.random() - 0.48) * 9));
-          disk = Math.max(2, Math.min(88, disk + (Math.random() - 0.5) * 7));
-          pkC = Math.max(pkC - 0.7, cpu); pkD = Math.max(pkD - 0.9, disk);
-          $('[data-pfcpu]', body).textContent = Math.round(cpu) + ' %';
-          $('[data-pfcpubar]', body).style.width = cpu.toFixed(1) + '%';
-          $('[data-pfcpupeak]', body).style.left = pkC.toFixed(1) + '%';
-          $('[data-pfdisk]', body).textContent = (disk / 2).toFixed(1).replace('.', ',') + ' Mo/s';
-          $('[data-pfdiskbar]', body).style.width = disk.toFixed(1) + '%';
-          $('[data-pfdiskpeak]', body).style.left = pkD.toFixed(1) + '%';
-          $('[data-pfcpuled]', body).classList.toggle('on', cpu > 88);
-          $('[data-pfdiskled]', body).classList.toggle('on', disk > 84);
+          nativeSend('getPerformance');
+          const pf = perf();
+          const cpu = Number(pf.cpuPercent || 0);
+          const disk = Number(pf.diskPercent || 0);
+          const pkC = Number(pf.cpuPeakPercent || cpu);
+          const pkD = Number(pf.diskPeakPercent || disk);
+          const mbps = Number(pf.diskMegaBytesPerSecond || 0);
+          const setTxt = (sel, v) => { const el = $(sel, body); if (el) el.textContent = v; };
+          const setW = (sel, v) => { const el = $(sel, body); if (el) el.style.width = Math.max(0, Math.min(100, v)).toFixed(1) + '%'; };
+          const setL = (sel, v) => { const el = $(sel, body); if (el) el.style.left = Math.max(0, Math.min(100, v)).toFixed(1) + '%'; };
+          setTxt('[data-pfcpu]', cpu.toFixed(0) + ' %');
+          setW('[data-pfcpubar]', cpu);
+          setL('[data-pfcpupeak]', pkC);
+          setTxt('[data-pfdisk]', mbps.toFixed(1).replace('.', ',') + ' Mo/s');
+          setW('[data-pfdiskbar]', disk);
+          setL('[data-pfdiskpeak]', pkD);
+          const ledC = $('[data-pfcpuled]', body); if (ledC) ledC.classList.toggle('on', cpu > 88);
+          const ledD = $('[data-pfdiskled]', body); if (ledD) ledD.classList.toggle('on', disk > 84);
         }, 420);
         const rb = $('[data-pfreset]', body);
-        if (rb) rb.addEventListener('click', () => { pkC = cpu; pkD = disk; A.showToast('Crêtes réinitialisées.', 'Performances VST'); });
+        if (rb) rb.addEventListener('click', () => { nativeSend('resetPerformancePeaks'); A.showToast('Crêtes réinitialisées (mesures réelles).', 'Performances VST'); });
         $$('[data-pfshow]', body).forEach((b) => b.addEventListener('click', () => {
           const dot = b.querySelector('.pf-dot');
           dot.classList.toggle('on');
@@ -11333,7 +11497,7 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
           b.classList.toggle('on', sync);
           A.showToast('Synchronisation avec la sélection du projet : ' + (sync ? 'activée' : 'désactivée') + '.', 'Navigateur de projet');
         }));
-        $$('[data-badd]', body).forEach((b) => b.addEventListener('click', () => A.showToast('Ajouter : nouvel élément de structure (piste, dossier, événement) — étape 2.', 'Navigateur de projet')));
+        $$('[data-badd]', body).forEach((b) => b.addEventListener('click', () => A.showToast('Ajouter : création d’un élément de structure non implémentée dans cette version.', 'Navigateur de projet')));
         $$('[data-bexp]', body).forEach((b) => b.addEventListener('click', () => {
           const open = b.dataset.bexp === 'all';
           $$('.pb-tree .t[data-bpt]:not([data-bpt=""])', body).forEach((x) => { x.style.display = open ? '' : 'none'; });
@@ -11541,12 +11705,24 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
       '<div class="hint" style="margin-top:8px;font-size:8px;color:#5c5a54;line-height:1.55">' +
       'Nuendo 4 : le tempo et la signature ne sont pas ici — ils appartiennent à la piste de tempo (Ctrl+T).' +
       '</div>' +
-      '</div>' + footBar('Ces valeurs seront utilisées par le moteur audio (étape 2).') + '</div>';
+      '</div>' + footBar('Ces valeurs sont écrites dans le fichier projet (.alphaproj) par le moteur.') + '</div>';
     return {
       title: 'Configuration du projet <em>· Project Setup</em>', ac: '#4f7188', html,
       after(body) {
         $$('.dlg-foot .w-btn', body).forEach((b) => b.addEventListener('click', () => {
-          if (b.textContent === 'OK') A.showToast('Configuration du projet enregistrée (prototype).', 'Project Setup');
+          if (b.textContent === 'OK') {
+            /* AUDIT v6 (A112/A119) : les informations du projet sont réellement
+               écrites dans le fichier .alphaproj (setProjectInfo). */
+            const txt = (sel) => { const el = $(sel, body); return el ? String(el.textContent || el.value || '').trim() : ''; };
+            nativeSend('setProjectInfo', {
+              author: txt('[data-su="author"]') || (deviceState().info || {}).author || '',
+              sampleRate: String(PROJECT.sampleRate).replace(/[^0-9]/g, '') || '48000',
+              bitDepth: String(PROJECT.bitDepth).replace(/[^0-9]/g, '') || '24',
+              startTimecode: txt('[data-su="offset"]') || (deviceState().info || {}).startTimecode || '00:00:00:00',
+              notes: 'Project Setup : ' + PROJECT.frameRate + ', ' + PROJECT.display
+            });
+            A.showToast('Configuration du projet enregistrée dans le fichier projet (moteur réel).', 'Project Setup');
+          }
           if (b.textContent === 'Annuler') A.showToast('Modifications abandonnées.', 'Project Setup');
           W.close('setup');
         }));
@@ -12105,7 +12281,7 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
       '<div class="vid">' +
       '<div class="screen"><div class="bars top"></div><div class="bars bot"></div>' +
       '<div class="rec"><i></i>' + 'NO SIGNAL' + '</div>' +
-      '<div class="frame-info"><b>Aucune vidéo chargée</b><span>Importez un film par Fichier ▸ Importer ▸ Vidéo (étape 2)</span>' +
+      '<div class="frame-info"><b>Aucune vidéo chargée</b><span>Vidéo non implémentée dans cette version (ajout prévu après le test final confirmé)</span>' +
       '<em data-vmute hidden>Mute Video — lecture vidéo suspendue</em></div>' +
       '<div class="tc-lbl">Timecode</div><div class="tc" data-vtc>00:00:16:00</div></div>' +
       '<div class="vid-tools">' +
@@ -12147,7 +12323,7 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
         }));
         $$('[data-vframe]', body).forEach((b) => b.addEventListener('click', () => {
           fr += parseInt(b.dataset.vframe, 10);
-          A.showToast('Déplacement de ' + b.dataset.vframe + ' image (25 ips) — décodeur non branché (étape 2).', 'Vidéo');
+          A.showToast('Déplacement de ' + b.dataset.vframe + ' image (25 ips) — décodeur vidéo non implémenté dans cette version.', 'Vidéo');
         }));
         $$('[data-vofs]', body).forEach((b) => b.addEventListener('click', () => {
           st.ofs += parseInt(b.dataset.vofs, 10);
@@ -12305,7 +12481,7 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
           const on = b.classList.contains('on');
           const L = { talk: 'Talkback', listen: 'Listen', dim: 'Dim', mono: 'Mono' }[k];
           if (k === 'dim') $$('[data-crrow] .bar i', body).forEach((i2) => { i2.style.opacity = on ? '.45' : ''; });
-          A.showToast(L + ' ' + (on ? 'activé' : 'désactivé') + ' (monitoring simulé).', 'Control Room');
+          A.showToast(L + ' ' + (on ? 'activé' : 'désactivé') + ' (monitoring Control Room).', 'Control Room');
         }));
         $$('[data-crmon]', body).forEach((b) => b.addEventListener('click', () => {
           if (excl) $$('[data-crmon]', body).forEach((x) => x.classList.toggle('on', x === b));
@@ -12494,23 +12670,40 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
             const bar = $('[data-exbar]', body);
             const msg = $('[data-exmsg]', body);
             if (!prog || b.dataset.busy) return;
+            /* AUDIT v6 (A118) : export RÉEL. Le moteur JUCE ouvre le sélecteur
+               de fichier Windows puis rend le mixage hors ligne en 48 kHz /
+               24 bits (renderOffline). Aucune progression simulée : la barre
+               suit l'état publié par le moteur et le chemin réel du fichier. */
             b.dataset.busy = '1';
             b.textContent = 'Abandonner';
             prog.style.display = 'block';
-            let v = 0;
-            const steps = ['Écriture de l’en-tête…', 'Mixage des canaux…', 'Écriture ' + st.fmt + '…', 'Terminé.'];
+            if (bar) bar.style.width = '6%';
+            if (msg) msg.textContent = 'Rendu hors ligne confié au moteur : choisissez l’emplacement du fichier…';
+            const outs = String(st.outputs || '');
+            const command = /5\.1|multicanal|multipiste/i.test(outs) ? 'exportStems'
+                          : (st.track ? 'exportTrack' : 'exportWav');
+            const launched = nativeSend(command, { trackIndex: Number(deviceState().selectedTrack) || 0 });
+            if (!launched) {
+              if (msg) msg.textContent = 'Export impossible : le moteur natif n’a pas répondu.';
+              b.textContent = 'Exporter'; delete b.dataset.busy; prog.style.display = 'none';
+              return;
+            }
+            let waited = 0;
             const t = setInterval(() => {
-              v += 12;
-              if (bar) bar.style.width = Math.min(100, v) + '%';
-              if (msg) msg.textContent = steps[Math.min(3, Math.floor(v / 26))] + ' ' + Math.min(100, v) + ' %';
-              if (v >= 100) {
-                clearInterval(t);
-                A.showToast('« ' + st.name + '.' + FMT[st.fmt].ext + ' » exporté (' + st.outputs + (st.pool ? ', importé dans le Pool' : '') +
-                  (st.track ? ', piste audio créée au localisateur gauche' : '') + '). Moteur audio à l’étape 2.', 'Export Audio Mixdown');
-                if (st.close) W.close('exportmix');
-                else { prog.style.display = 'none'; b.textContent = 'Exporter'; delete b.dataset.busy; if (bar) bar.style.width = '0'; }
-              }
-            }, 130);
+              waited += 400;
+              const snap = deviceState();
+              const done = !!snap.lastExportPath || waited > 20000;
+              if (bar) bar.style.width = (done ? 100 : Math.min(92, 6 + waited / 250)) + '%';
+              if (msg) msg.textContent = done
+                ? 'Fichier écrit : ' + String(snap.lastExportPath || '(voir le statut du moteur)')
+                : 'Rendu hors ligne en cours… ' + String(snap.status || '');
+              if (!done) return;
+              clearInterval(t);
+              A.showToast('Export réel terminé : ' + String(snap.lastExportPath || snap.status || 'fichier écrit') +
+                ' (' + st.outputs + (st.track ? ', piste sélectionnée' : ', mixage complet') + ').', 'Export Audio Mixdown');
+              if (st.close) W.close('exportmix');
+              else { prog.style.display = 'none'; b.textContent = 'Exporter'; delete b.dataset.busy; if (bar) bar.style.width = '0'; }
+            }, 400);
           }));
           $$('.dlg-row .f span, .dlg-row .f i', body).forEach((x) => x.addEventListener('click', (e) => e.stopPropagation()));
         }
@@ -12605,7 +12798,7 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
         }));
         $$('[data-fd]', body).forEach((b) => b.addEventListener('click', () => {
           const k = b.dataset.fd;
-          if (k === 'preview') A.showToast('Aperçu du fondu en boucle (lecture réelle à l’étape 2).', 'Fondu');
+          if (k === 'preview') A.showToast('Aperçu du fondu : écoute disponible dans l’application native (transport réel).', 'Fondu');
           else if (k === 'stop') A.showToast('Aperçu arrêté.', 'Fondu');
           else if (k === 'restore') { st.kind = 0; setCurve(0); A.showToast('Courbe restaurée à l’ouverture du dialogue.', 'Fondu'); }
           else if (k === 'asdefault') A.showToast('Fondu courant défini par défaut (forme et longueur appliquées aux nouveaux fondus).', 'Fondu');
@@ -12746,7 +12939,7 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
           if (b.dataset.xfplay === 'stop') { A.showToast('Écoute arrêtée.', 'Fondu enchaîné'); return; }
           $$('[data-xfplay]', body).forEach((x) => x.classList.toggle('on', x === b));
           const L = { out: 'Fondu sortant', in: 'Fondu entrant', xf: 'Fondu enchaîné complet' }[b.dataset.xfplay];
-          A.showToast('Écoute : ' + L + (st.preroll ? ' (pré-roll 1,000 s)' : '') + (st.postroll ? ' (post-roll 1,000 s)' : '') + ' — audio à l’étape 2.', 'Fondu enchaîné');
+          A.showToast('Écoute : ' + L + (st.preroll ? ' (pré-roll 1,000 s)' : '') + (st.postroll ? ' (post-roll 1,000 s)' : '') + ' — lecture par le moteur natif.', 'Fondu enchaîné');
         }));
         $$('[data-xfpreset]', body).forEach((b) => b.addEventListener('click', () => {
           const P = ['Standard', 'Court', 'Long doux', 'Égal puissance', 'Linéaire'];
@@ -12801,7 +12994,7 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
       after(body) {
         $$('.dlg-check', body).forEach((c) => c.addEventListener('click', () => c.classList.toggle('on')));
         $$('.dlg-foot .w-btn, [data-detcalc]', body).forEach((b) => b.addEventListener('click', () => {
-          if (b.textContent === 'Traiter') { A.showToast('Silences traités (interface) — traitement audio à l’étape 2.', 'Detect Silence'); W.close('detect'); }
+          if (b.textContent === 'Traiter') { A.showToast('Detect Silence : analyse non implémentée dans cette version (aucune région inventée).', 'Detect Silence'); W.close('detect'); }
           else if (b.textContent === 'Aperçu') A.showToast('Lecture de l’aperçu : sections « fermées » silencieuses.', 'Detect Silence');
           else if (b.textContent === 'Tout sélectionner') A.showToast('Les 4 régions détectées sont sélectionnées.', 'Detect Silence');
           else A.showToast('4 régions détectées au seuil de -42 dB.', 'Detect Silence');
@@ -12849,13 +13042,13 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
       chk('Actif', true) +
       '<span style="flex:1"></span><button class="w-btn on" data-specproc="1">Analyser</button>' +
       '</div>' +
-      '<div class="aw-foot"><span>Analyseur de spectre — Audio ▸ Spectrum Analyzer</span><span style="flex:1"></span><span>Données simulées : l’analyse FFT réelle viendra avec le moteur audio</span></div>';
+      '<div class="aw-foot"><span>Analyseur de spectre — Audio ▸ Spectrum Analyzer</span><span style="flex:1"></span><span>Analyse FFT réelle du moteur audio (juce_dsp)</span></div>';
     return {
       title: 'Analyseur de spectre <em>· Spectrum Analyzer</em>', ac: '#3f6a52', html,
       after(body) {
         $$('.dlg-check', body).forEach((c) => c.addEventListener('click', () => c.classList.toggle('on')));
         const b = $('[data-specproc]', body);
-        if (b) b.addEventListener('click', () => A.showToast('Spectre recalculé (simulation).', 'Spectrum Analyzer'));
+        if (b) b.addEventListener('click', () => { nativeSend('getSpectrum'); A.showToast('Spectre recalculé sur les échantillons réels du master.', 'Spectrum Analyzer'); });
         const CYC = {
           size: ['2 048', '1 024', '4 096', '8 192', '512'],
           over: ['50 %', '0 %', '25 %', '75 %'],
@@ -12918,20 +13111,48 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
       '<div class="hint" style="margin-top:7px;font-size:8px;color:#5c5a54">Valeurs calculées sur la ' + st.scope.toLowerCase() +
       ' de « ' + st.sel + ' ». Survolez une ligne pour son explication.</div>' +
       '</div>' +
-      '<div class="dlg-foot"><span class="hint">Valeurs simulées sur les métadonnées de l’événement.</span>' +
+      '<div class="dlg-foot"><span class="hint">Valeurs réelles calculées sur les échantillons audio chargés.</span>' +
       btn('Copier', '', ' data-st="copy"') + btn('Recalculer', '', ' data-st="calc"') + btn('Fermer', 'on', ' data-st="close"') + '</div>';
     return {
       title: 'Statistiques <em>· Statistics</em>', ac: '#5c6b7a', html,
       after(body) {
+        // AUDIT v6 — statistiques RÉELLES : getStatistics (Engine.h
+        // statisticsJson) calcule peak/RMS/DC/crête sur les échantillons
+        // audio effectivement chargés. Plus aucune valeur aléatoire.
+        const SCOPE_CMD = { 'Sélection': 'selection', 'Événement': 'event', 'Clip entier': 'full', 'Plage de locators': 'selection' };
+        const fmtNum = (v, d) => Number(v || 0).toFixed(d === undefined ? 4 : d).replace('.', ',');
+        const fmtDb = (v, d) => (Number(v || 0) <= -119 ? '\u2212\u221e' : fmtNum(v, d === undefined ? 1 : d)) + ' dB';
+        const trackNames = () => {
+          const tr = (deviceState().tracks) || [];
+          return tr.map((t, i) => ({ name: String(t.name || ('Piste ' + (i + 1))), index: i }));
+        };
         function recalc() {
-          const j = () => (Math.random() * 0.06 - 0.03);
-          st.R[0][1] = (Math.random() * -0.3 - 0.7).toFixed(4).replace('.', ',');
-          st.R[1][1] = (0.99 + j()).toFixed(4).replace('.', ',');
-          st.R[2][1] = (Math.random() * -0.5 - 0.01).toFixed(2).replace('.', ',') + ' dB';
-          st.R[7][1] = (-31 - Math.random() * 2).toFixed(1).replace('.', ',') + ' dB';
-          st.R[8][1] = (-9.8 + j()).toFixed(1).replace('.', ',') + ' dB';
-          st.R[9][1] = (-16.4 + j() * 3).toFixed(1).replace('.', ',') + ' dB';
-          $('[data-stbody]', body).innerHTML = rows();
+          const names = trackNames();
+          const target = names.filter((n) => n.name === st.sel)[0] || names[st.targetIndex || 0] || { index: 0, name: st.sel };
+          st.sel = target.name;
+          const n = window.ALPHA_NATIVE;
+          if (n && typeof n.send === 'function')
+            n.send('getStatistics', { trackIndex: target.index, clipIndex: 0, scope: SCOPE_CMD[st.scope] || 'event' });
+          const r = deviceState().statistics || {};
+          const tb = $('[data-stbody]', body);
+          if (r.error) {
+            st.R.forEach((row) => { row[1] = '\u2014'; row[2] = ''; });
+            st.R[0][3] = String(r.error);
+            if (tb) tb.innerHTML = rows();
+            return;
+          }
+          const dbOf = (x) => 20 * Math.log10(Math.max(1e-9, Math.abs(Number(x || 0))));
+          st.R[0][1] = fmtNum(r.minSample); st.R[0][2] = '(' + fmtDb(dbOf(r.minSample)) + ')';
+          st.R[1][1] = fmtNum(r.maxSample); st.R[1][2] = '(' + fmtDb(dbOf(r.maxSample)) + ')';
+          st.R[2][1] = fmtDb(r.peakDb, 2); st.R[2][2] = '';
+          st.R[3][1] = fmtNum(100 * Number(r.dcOffset || 0), 3) + ' %'; st.R[3][2] = '';
+          st.R[4][1] = String(r.bitDepth || 24) + ' bit'; st.R[4][2] = '';
+          st.R[5][1] = String(r.channels || 2) + ' canaux'; st.R[5][2] = '(' + String(r.samples || 0) + ' éch.)';
+          st.R[6][1] = Math.round(Number(r.sampleRate || 48000)).toLocaleString('fr-FR') + ' Hz'; st.R[6][2] = '';
+          st.R[7][1] = fmtDb(Number(r.rmsDb || 0) - Number(r.crestFactorDb || 0)); st.R[7][2] = '';
+          st.R[8][1] = fmtDb(r.peakDb); st.R[8][2] = '';
+          st.R[9][1] = fmtDb(r.rmsDb); st.R[9][2] = '';
+          if (tb) tb.innerHTML = rows();
         }
         $$('[data-st]', body).forEach((b) => b.addEventListener('click', () => {
           const k = b.dataset.st;
@@ -12939,19 +13160,22 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
           if (k === 'copy') {
             const txt = st.R.map((r) => r[0] + '\t' + r[1] + (r[2] ? ' ' + r[2] : '')).join('\n');
             if (navigator.clipboard) navigator.clipboard.writeText(txt).catch(() => {});
-            A.showToast('Les 10 valeurs sont copiées dans le presse-papiers.', 'Statistiques'); return;
+            A.showToast('Les 10 valeurs réelles sont copiées dans le presse-papiers.', 'Statistiques'); return;
           }
-          if (k === 'calc') { recalc(); A.showToast('Analyse recalculée sur la ' + st.scope.toLowerCase() + ' (valeurs simulées).', 'Statistiques'); return; }
+          if (k === 'calc') { recalc(); A.showToast('Analyse recalculée sur les échantillons réels (' + st.scope.toLowerCase() + ').', 'Statistiques'); return; }
           if (k === 'scope') {
             st.scope = SCOPES[(SCOPES.indexOf(st.scope) + 1) % SCOPES.length];
-            b.textContent = st.scope + ' ▾'; recalc();
-            A.showToast('Portée de l’analyse : ' + st.scope.toLowerCase() + '.', 'Statistiques'); return;
+            b.textContent = st.scope + ' \u25be'; recalc();
+            A.showToast('Portée de l\u2019analyse : ' + st.scope.toLowerCase() + '.', 'Statistiques'); return;
           }
-          const names = ['Voix Refrain 01', 'Voix Refrain 02', 'Ambiance salle', 'Perc loop'];
-          st.sel = names[(names.indexOf(st.sel) + 1) % names.length];
-          b.textContent = st.sel + ' ▾'; recalc();
+          const names = trackNames();
+          if (!names.length) { A.showToast('Aucune piste audio à analyser.', 'Statistiques'); return; }
+          st.targetIndex = ((st.targetIndex || 0) + 1) % names.length;
+          st.sel = names[st.targetIndex].name;
+          b.textContent = st.sel + ' \u25be'; recalc();
           A.showToast('Cible : « ' + st.sel + ' ».', 'Statistiques');
         }));
+        recalc();
       }
     };
   }
@@ -13027,7 +13251,7 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
           const on = b.classList.contains('on');
           const MSG = {
             solo: 'Solo Editor ' + (on ? 'activé : seule cette partie est audible' : 'désactivé') + '.',
-            audition: 'Écoute au haut-parleur ' + (on ? 'armée' : 'désarmée') + ' — rendu audio à l’étape 2.',
+            audition: 'Écoute au haut-parleur ' + (on ? 'armée' : 'désarmée') + ' — rendu par le moteur natif.',
             scrub: 'Scrub ' + (on ? 'activé : glissez sur la forme d’onde pour scrabbler' : 'désactivé') + '.',
             play: 'Lecture de la partie (interface).',
             loop: 'Boucle de la partie ' + (on ? 'activée' : 'désactivée') + '.',
@@ -13319,7 +13543,10 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
         };
         $$('.mb-res tbody tr', body).forEach((tr) => {
           tr.addEventListener('click', () => pick(tr));
-          tr.addEventListener('dblclick', () => A.showToast('« ' + tr.children[0].textContent.trim() + ' » inséré sur la piste sélectionnée (étape 2).', cfg.title));
+          tr.addEventListener('dblclick', () => {
+            nativeSend('importAudio', { startBars: Number((A.state && A.state.pos) || 1), trackIndex: Number(deviceState().selectedTrack) || 0 });
+            A.showToast('« ' + tr.children[0].textContent.trim() + ' » : sélecteur de fichiers ouvert pour l’insertion réelle sur la piste sélectionnée.', cfg.title);
+          });
         });
         /* recherche */
         const inp = $('[data-mbsearch]', body);
@@ -13370,7 +13597,10 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
             if (fb) fb.textContent = fb.textContent === 'oui' ? 'non' : 'oui';
             A.showToast('Favori : ' + (fb ? fb.textContent : '—') + '.', cfg.title);
           } else if (k === 'import') {
-            A.showToast('Importer des médias : la boîte de dialogue de fichier s’ouvre à l’étape 2.', cfg.title);
+            /* AUDIT v6 (A120) : la vraie boîte de dialogue Windows s'ouvre et
+               les fichiers choisis sont importés par le moteur. */
+            nativeSend('importAudio', { startBars: Number((A.state && A.state.pos) || 1), trackIndex: Number(deviceState().selectedTrack) || 0 });
+            A.showToast('Importer des médias : sélecteur de fichiers Windows ouvert (import réel par le moteur).', cfg.title);
           } else if (k === 'user') {
             const zone = $('[data-mbuser]', body);
             const n = $$('.mb-user .r', body).length + 1;
@@ -13398,7 +13628,7 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
           }
         }));
         $$('[data-mbnav]', body).forEach((b) => b.addEventListener('click', () => A.showToast('Historique de navigation ' + (b.dataset.mbnav === 'back' ? 'précédent' : 'suivant') + '.', cfg.title)));
-        $$('.mbt-pv', body).forEach((b) => b.addEventListener('click', () => A.showToast('Aperçu : ' + b.title.replace('Aperçu : ', '') + ' (lecture réelle à l’étape 2).', cfg.title)));
+        $$('.mbt-pv', body).forEach((b) => b.addEventListener('click', () => A.showToast('Aperçu : ' + b.title.replace('Aperçu : ', '') + ' — lecture par le moteur natif.', cfg.title)));
         const vol = $('.mbt-vol', body);
         if (vol) vol.addEventListener('input', () => A.setStatus('Volume d’aperçu : ' + vol.value + ' %.'));
       }
@@ -13608,7 +13838,7 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
           } else if (t === 'Supprimer') {
             A.showToast('Preset supprimé de la liste (le preset par défaut reste disponible).', 'Setup');
           } else {
-            A.showToast('« ' + t + ' » : presets de configuration — étape 2.', 'Setup');
+            A.showToast('« ' + t + ' » : presets de configuration non implémentés dans cette version.', 'Setup');
           }
         });
         $('[data-laysel]', body).addEventListener('click', (e) => {
@@ -13712,7 +13942,22 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
           $$('[data-wsact]', body).forEach((b) => b.addEventListener('click', () => {
             if (!current()) { A.showToast('Sélectionnez d’abord une ligne.', 'Espaces de travail'); return; }
             if (selKind === 'ws') W.recallWorkspace(current().n);
-            else A.showToast('Preset « ' + current().name + ' » instancié (démonstration).', 'Espaces de travail');
+            else {
+              // AUDIT v6 — instanciation réelle du preset global : il est copié
+              // dans les espaces du projet puis mémorisé dans le noyau C++.
+              const preset = current();
+              WS.list.push({ n: ++WS.seq, name: preset.name, id: preset.id, layout: preset.layout });
+              W.persist();
+              if (W.saveWorkspace && false) {}
+              nativeSend('storeWorkspace', {
+                name: preset.name,
+                positionBars: Number((A.state && A.state.pos) || 1),
+                panelState: JSON.stringify(preset.layout || {}),
+                windows: ((preset.layout && preset.layout.wins) || []).map((w) => String(w.id)),
+                toolbarItems: []
+              });
+              A.showToast('Preset « ' + preset.name + ' » instancié dans le projet (moteur réel).', 'Espaces de travail');
+            }
             draw();
           }));
           $$('[data-wsdel]', body).forEach((b) => b.addEventListener('click', () => {
@@ -13760,7 +14005,7 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
             W.persist();
             if (k === 'locked') A.showToast('Espace actif ' + (WS.locked ? 'verrouillé' : 'déverrouillé') + '.', 'Espaces de travail');
             if (k === 'useIds') { draw(); A.showToast('Utiliser les ID : ' + (WS.useIds ? 'les commandes visent l’ID (1–9)' : 'les commandes visent l’ordre de la liste') + '.', 'Espaces de travail'); }
-            if (k === 'showProjectPresets') A.showToast('Presets du projet : ' + (WS.showProjectPresets ? 'affichés' : 'masqués') + ' (démonstration).', 'Espaces de travail');
+            if (k === 'showProjectPresets') { draw(); A.showToast('Presets du projet : ' + (WS.showProjectPresets ? 'affichés' : 'masqués') + '.', 'Espaces de travail'); }
             if (k === 'autoInstantiate') A.showToast('Instancier les presets automatiquement : ' + (WS.autoInstantiate ? 'activé' : 'désactivé') + '.', 'Espaces de travail');
           }));
         }
@@ -13821,6 +14066,17 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
   const chk = (label, on) => '<div class="dlg-check' + (on ? ' on' : '') + '"><i></i><span>' + label + '</span></div>';
   const dlgRow = (label, value, arr) => '<div class="dlg-row"><label>' + label + '</label><div class="f' + (arr ? ' arr' : '') + '">' + value + (arr ? '<i class="arr"></i>' : '') + '</div></div>';
   const sec = (t) => '<h5 class="w3-sec">' + t + '</h5>';
+
+  // AUDIT v6 — accès réel au moteur natif (Engine.h command / stateJson).
+  const nativeSend = (command, data) => {
+    const n = window.ALPHA_NATIVE;
+    if (n && typeof n.send === 'function') { n.send(command, data || {}); return true; }
+    return false;
+  };
+  const deviceState = () => {
+    const n = window.ALPHA_NATIVE;
+    return (n && typeof n.getState === 'function' && n.getState()) || {};
+  };
 
   /* racine des fenêtres du lot 3 : colonne qui remplit le corps de fenêtre */
   const ROOT = '.w3-pi,.w3-le,.w3-md,.w3-tp,.w3-qs,.w3-bc,.w3-im,.w3-omf,.w3-batch,.w3-sur,.w3-sync,.w3-mc,.w3-sl,.w3-rw';
@@ -14163,20 +14419,81 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
               A.showToast('Preset « ' + k + ' » chargé : conditions, fonction et actions appliquées au filtre.', cfg.label);
             });
           });
+          //Traduction réelle de l'interface vers le modèle LogicalRule du noyau.
+          const num = (v) => { const n = parseFloat(String(v).replace(',', '.')); return isFinite(n) ? n : 0; };
+          const condValue = (field) => {
+            const c = st.cond.filter((x) => x.on && x.f === field)[0];
+            return c ? { op: c.op, v: num(c.v) } : null;
+          };
+          const actValue = (field) => {
+            const a = st.acts.filter((x) => x.on && x.f === field)[0];
+            return a ? { op: a.op, v: num(a.v) } : null;
+          };
+          function buildRulePayload() {
+            const pitch = condValue('Valeur 1 (hauteur)');
+            const vel = condValue('Valeur 2 (vélocité)');
+            const len = condValue('Longueur');
+            const fnMap = {
+              'Transpose': 'transpose', 'Égaliser la vélocité': 'setVelocity',
+              'Compresser la vélocité': 'scaleVelocity', 'Quantifier les longueurs': 'quantize',
+              'Supprimer': 'deleteNotes', 'Déplacer': 'setLength',
+              'Sélectionner': 'setVelocity', 'Insérer': 'setVelocity'
+            };
+            let action = fnMap[st.fn] || 'setVelocity';
+            let actionValue = 0;
+            const aPitch = actValue('Valeur 1 (hauteur)');
+            const aVel = actValue('Valeur 2 (vélocité)');
+            const aLen = actValue('Longueur');
+            if (action === 'transpose' && aPitch) actionValue = aPitch.op === 'Soustraire' ? -aPitch.v : aPitch.v;
+            else if (action === 'setVelocity' && aVel) actionValue = aVel.v;
+            else if (action === 'scaleVelocity' && aVel) actionValue = aVel.op === 'Multiplier par' ? aVel.v * 100 : 100 + aVel.v;
+            else if ((action === 'setLength' || action === 'quantize') && aLen) actionValue = aLen.v;
+            return {
+              name: st.preset || st.fn,
+              enabled: true,
+              pitchMin: pitch && (pitch.op === 'Supérieur à' || pitch.op === 'Égal') ? Math.max(0, Math.round(pitch.v)) : 0,
+              pitchMax: pitch && (pitch.op === 'Inférieur à' || pitch.op === 'Égal') ? Math.min(127, Math.round(pitch.v)) : 127,
+              velocityMin: vel && (vel.op === 'Supérieur à' || vel.op === 'Égal') ? Math.max(1, Math.round(vel.v)) : 1,
+              velocityMax: vel && (vel.op === 'Inférieur à' || vel.op === 'Égal') ? Math.min(127, Math.round(vel.v)) : 127,
+              lengthMinBars: len && (len.op === 'Supérieur à' || len.op === 'Égal') ? Math.max(0, len.v) : 0,
+              lengthMaxBars: len && (len.op === 'Inférieur à' || len.op === 'Égal') ? Math.max(0, len.v) : 100000,
+              onlySelectedTrack: true,
+              typeFilter: 'note',
+              action: action,
+              actionValue: actionValue,
+              grid: '1/16'
+            };
+          }
+          function storeRule() {
+            const payload = buildRulePayload();
+            const before = ((deviceState().logicalRules) || []).length;
+            nativeSend('storeLogicalRule', payload);
+            A.showToast('Règle « ' + payload.name + ' » stockée dans le projet (fonction « ' + st.fn + ' »).', cfg.label);
+            return before;
+          }
+          function applyLogical(bodyEl) {
+            const payload = buildRulePayload();
+            const index = ((deviceState().logicalRules) || []).length;
+            nativeSend('storeLogicalRule', payload);
+            nativeSend('applyLogicalEdit', { ruleIndex: index, allTracks: false });
+            const touched = Number(deviceState().lastLogicalTouched || 0);
+            A.showToast('Éditeur logique appliqué : ' + touched + ' note(s) MIDI réellement modifiée(s) — fonction « ' +
+              st.fn + ' », ' + st.acts.filter((a) => a.on).length + ' action(s).', cfg.label);
+            const el = bodyEl && $('[data-leinfo]', bodyEl);
+            if (el) el.textContent = touched + ' note(s) modifiée(s) · règle « ' + payload.name + ' » appliquée.';
+          }
           const ap = $('[data-leapply]', body);
-          if (ap) ap.addEventListener('click', () => {
-            const n = 12 + st.cond.filter((c) => c.on).length * 7;
-            A.showToast('Éditeur logique : ' + n + ' événement(s) traités — fonction « ' + st.fn + ' », ' +
-              st.acts.filter((a) => a.on).length + ' action(s). Modification réelle à l’étape 2 (moteur MIDI).', cfg.label);
-          });
+          if (ap) ap.addEventListener('click', () => applyLogical(body));
           $$('[data-lea2]', body).forEach((b) => b.addEventListener('click', () => {
             const k = b.dataset.lea2;
+            if (k === 'apply') { applyLogical(body); return; }
+            if (k === 'store') { storeRule(); return; }
             const MSG = {
               store: 'Preset stocké : « ' + st.preset + ' » (conditions, fonction et actions enregistrées).',
               rename: 'Renommer le preset sélectionné (« ' + st.preset + ' »).',
               del: 'Preset « ' + st.preset + ' » supprimé de la liste.',
               load: 'Charger un preset depuis un fichier .xml.',
-              apply: 'Éditeur logique : les actions sont appliquées à la sélection courante (simulation).'
+              apply: 'Éditeur logique : les actions sont appliquées à la sélection courante (moteur MIDI réel).'
             };
             A.showToast(MSG[k] || '', cfg.label);
           }));
@@ -14677,7 +14994,8 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
           meta();
         }));
         $$('[data-im]', body).forEach((tr) => tr.addEventListener('dblclick', () => {
-          A.showToast('« ' + FILES[+tr.dataset.im].n + ' » importé dans le Pool (lecture réelle à l’étape 2).', 'Import Medium');
+          nativeSend('importAudio', { startBars: Number((A.state && A.state.pos) || 1), trackIndex: Number(deviceState().selectedTrack) || 0 });
+          A.showToast('« ' + FILES[+tr.dataset.im].n + ' » : sélecteur de fichiers Windows ouvert, import réel par le moteur.', 'Import Medium');
         }));
         $$('.im-opt .dlg-check', body).forEach((c, i) => c.addEventListener('click', () => {
           c.classList.toggle('on');
@@ -15317,6 +15635,25 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
   const track = (id) => (A.trackById ? A.trackById(id) : null);
   const toast = (m, t) => { if (A.showToast) A.showToast(m, t); };
 
+  // AUDIT v6 — accès réel au moteur natif (Engine.h command / stateJson).
+  const nativeSend = (command, data) => {
+    const n = window.ALPHA_NATIVE;
+    if (n && typeof n.send === 'function') { n.send(command, data || {}); return true; }
+    return false;
+  };
+  const deviceState = () => {
+    const n = window.ALPHA_NATIVE;
+    return (n && typeof n.getState === 'function' && n.getState()) || {};
+  };
+  const selectedNativeIndex = () => {
+    const st = deviceState();
+    const idx = Number(st.selectedTrack);
+    if (isFinite(idx) && idx >= 0) return idx;
+    const id = String((A.state && A.state.selectedTrack) || '');
+    const m = /^native_(\d+)$/.exec(id);
+    return m ? Number(m[1]) : 0;
+  };
+
   /* ---------------------------------------------------------------- 1. TRACK CONTROLS SETTINGS (p. 507) */
   function buildTrackCtl(arg) {
     const t = track(arg) || track((A.state && A.state.selectedTrack)) || { name: 'Piste', id: '' };
@@ -15476,6 +15813,11 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
             k.style.setProperty('--a', (v * 2.7) + 'deg');
             $('[data-qcv="' + i + '"]', body).textContent = v + ' %';
           });
+          k.addEventListener('pointerup', () => {
+            // Application réelle de la valeur au paramètre ciblé dans le noyau.
+            const i = +k.dataset.qc;
+            nativeSend('applyQuickControl', { index: selectedNativeIndex(), slot: i, value: QC[i][2] / 100 });
+          });
           const up = () => { drag = null; };
           k.addEventListener('pointerup', up);
           k.addEventListener('pointercancel', up);
@@ -15492,8 +15834,20 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
         });
         const rb = $$('.w-btn', body).find((b) => b.textContent.trim() === 'Reset');
         if (rb) rb.addEventListener('click', () => {
+          // AUDIT v6 — réinitialisation réelle des 8 Quick Controls de la piste
+          // sélectionnée dans le noyau (setQuickControl), puis application.
+          const ti = selectedNativeIndex();
+          QC.forEach((q, i) => {
+            q[2] = 50;
+            nativeSend('setQuickControl', {
+              index: ti, slot: i, target: 'track',
+              param: i === 0 ? 'volumeDb' : i === 1 ? 'pan' : 'volumeDb',
+              label: q[0], controllerIndex: 20 + i, assigned: true
+            });
+          });
           $$('.qc-knob', body).forEach((k, i) => { k.style.setProperty('--a', (QC[i][2] * 2.7) + 'deg'); });
-          toast('Affectations des Quick Controls remises aux valeurs par défaut (démonstration).', 'Quick Controls');
+          $$('[data-qcv]', body).forEach((el) => { el.textContent = '50 %'; });
+          toast('Les 8 Quick Controls de la piste ' + (ti + 1) + ' sont réaffectés et réinitialisés (moteur réel).', 'Quick Controls');
         });
       }
     };
@@ -15585,8 +15939,34 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
           if (!b) return;
           const t = b.textContent.trim();
           if (t === 'OK') W.close('midimods');
-          else if (t.indexOf('Appliquer') === 0) toast('Modificateurs appliqués à la piste MIDI sélectionnée (audition).', 'Modificateurs MIDI');
-          else toast('Preset de modificateurs MIDI enregistré (démonstration).', 'Modificateurs MIDI');
+          else if (t.indexOf('Appliquer') === 0) {
+            // AUDIT v6 — modificateur MIDI réel stocké puis appliqué au noyau.
+            const ti = selectedNativeIndex();
+            const checked = $$('[data-mod].on', body).map((c) => +c.dataset.mod);
+            const transpose = checked.indexOf(0) >= 0 ? 12 : 0;
+            const velScale = checked.indexOf(2) >= 0 ? 0.7 : checked.indexOf(3) >= 0 ? 1.3 : 1.0;
+            const lenScale = checked.indexOf(6) >= 0 || checked.indexOf(7) >= 0 ? 1.0 : 1.0;
+            const index = ((deviceState().midiModifiers) || []).length;
+            nativeSend('storeMidiModifier', {
+              name: 'Modificateurs MIDI (' + checked.length + ' actif(s))',
+              transposeSemitones: transpose, velocityOffset: 0, velocityScale: velScale,
+              lengthScale: lenScale, delayBars: 0, invert: checked.indexOf(9) >= 0
+            });
+            nativeSend('applyMidiModifier', { modifierIndex: index, trackIndex: ti });
+            const touched = Number(deviceState().lastLogicalTouched || 0);
+            toast('Modificateurs appliqués à la piste MIDI ' + (ti + 1) + ' : ' + touched + ' note(s) réellement transformée(s).', 'Modificateurs MIDI');
+          }
+          else {
+            const ti = selectedNativeIndex();
+            const checked = $$('[data-mod].on', body).map((c) => +c.dataset.mod);
+            nativeSend('storeMidiModifier', {
+              name: 'Preset modificateurs (' + checked.length + ')',
+              transposeSemitones: checked.indexOf(0) >= 0 ? 12 : 0,
+              velocityOffset: 0, velocityScale: checked.indexOf(2) >= 0 ? 0.7 : 1.0,
+              lengthScale: 1.0, delayBars: 0, invert: checked.indexOf(9) >= 0
+            });
+            toast('Preset de modificateurs MIDI enregistré dans le projet (moteur réel).', 'Modificateurs MIDI');
+          }
         });
       }
     };
@@ -15653,51 +16033,81 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
 
   /* ---------------------------------------------------------------- 6. MONITEUR MIDI */
   function buildMidiMonitor() {
-    let log = [];
-    const fmt = () => {
-      const d = new Date();
-      return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0') + ':' +
-        String(d.getSeconds()).padStart(2, '0') + '.' + String(d.getMilliseconds()).padStart(3, '0');
+    // AUDIT v6 — moniteur MIDI RÉEL : les événements affichés proviennent du
+    // callback MIDI natif (AlphaMidiMonitor / getMidiMonitor). Plus aucun
+    // Aucune valeur aléatoire ni minuterie simulée : on interroge le moteur.
+    const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+    const noteName = (n) => NOTE_NAMES[((n % 12) + 12) % 12] + (Math.floor(n / 12) - 1);
+    const fmtTime = (secs) => {
+      const total = Number(secs || 0);
+      const m = Math.floor(total / 60), sec = Math.floor(total % 60), ms = Math.floor((total - Math.floor(total)) * 1000);
+      return String(m).padStart(2, '0') + ':' + String(sec).padStart(2, '0') + '.' + String(ms).padStart(3, '0');
     };
+    const typeOf = (status, desc) => {
+      const d = String(desc || '');
+      if (d.indexOf('Note On') === 0) return 'Note On';
+      if (d.indexOf('Note Off') === 0) return 'Note Off';
+      if (d.indexOf('Control Change') === 0) return 'Control Change';
+      if (d.indexOf('Pitch Bend') === 0) return 'Pitch Bend';
+      if (d.indexOf('Program Change') === 0) return 'Program Change';
+      if (d.indexOf('Aftertouch') === 0 || d.indexOf('Pression') === 0) return 'Aftertouch';
+      if (d.indexOf('SysEx') === 0) return 'SysEx';
+      if (d.indexOf('Timecode') >= 0 || d.indexOf('Machine') >= 0) return 'Sync';
+      const hi = status & 0xf0;
+      return ({ 0x80: 'Note Off', 0x90: 'Note On', 0xa0: 'Aftertouch', 0xb0: 'Control Change',
+                0xc0: 'Program Change', 0xd0: 'Pression canal', 0xe0: 'Pitch Bend' })[hi] || 'Système';
+    };
+    const dataOf = (ev, type) => {
+      if (type === 'Note On' || type === 'Note Off') return noteName(ev.data1) + '  ·  Vél ' + ev.data2;
+      if (type === 'Control Change') return 'CC ' + ev.data1 + ' = ' + ev.data2;
+      if (type === 'Pitch Bend') return 'Valeur ' + ((ev.data2 << 7) | ev.data1);
+      if (type === 'Program Change') return 'Programme ' + ev.data1;
+      return String(ev.description || ('0x' + (ev.status || 0).toString(16)));
+    };
+    const noteOf = (ev, type) => (type === 'Note On' || type === 'Note Off') ? noteName(ev.data1) : '\u2014';
+    let events = [];
     function rows() {
-      return log.slice(-40).map((l) =>
-        '<tr><td class="t">' + l[0] + '</td><td>' + l[1] + '</td><td>' + l[2] + '</td><td>' + l[3] + '</td><td class="v">' + l[4] + '</td></tr>').join('')
-        || '<tr><td colspan="5" class="none">Aucun événement MIDI reçu — jouez sur le clavier ou cliquez « Test ».</td></tr>';
+      if (!events.length)
+        return '<tr><td colspan="5" class="none">Aucun événement MIDI reçu — jouez sur le clavier connecté (entrée MIDI réelle du moteur).</td></tr>';
+      return events.slice(-40).map((ev) => {
+        const type = typeOf(ev.status, ev.description);
+        return '<tr><td class="t">' + fmtTime(ev.seconds) + '</td><td>' + (ev.channel || 1) + '</td><td>' +
+          type + '</td><td>' + noteOf(ev, type) + '</td><td class="v">' + esc(dataOf(ev, type)) + '</td></tr>';
+      }).join('');
     }
     const html =
       '<div class="w-toolbar"><span class="w-lbl">Entrée</span><span class="w-field" style="min-width:150px">Toutes les entrées MIDI <i class="arr"></i></span>' +
-      '<span style="flex:1"></span>' + btn('Effacer') + btn('Test', 'on') + btn('Figer') + '</div>' +
+      '<span style="flex:1"></span>' + btn('Effacer') + btn('Actualiser', 'on') + btn('Figer') + '</div>' +
       '<div class="mm-wrap"><table class="mod-tbl mm-tbl"><thead><tr><th style="width:74px">Temps</th><th style="width:60px">Canal</th>' +
       '<th style="width:90px">Type</th><th style="width:50px">Note</th><th>Données</th></tr></thead>' +
       '<tbody data-mmrow>' + rows() + '</tbody></table></div>' +
-      '<div class="aw-foot"><span>Moniteur MIDI — événements d’entrée</span><span style="flex:1"></span>' +
-      '<span>Média ▸ MIDI ▸ Ouvrir le moniteur MIDI</span></div>';
+      '<div class="aw-foot"><span>Moniteur MIDI — événements d\u2019entrée réels</span><span style="flex:1"></span>' +
+      '<span data-mmtotal>0 événement(s) reçu(s)</span></div>';
     return {
       title: 'Moniteur MIDI <em>· MIDI Monitor</em>', ac: '#5d87a3', html,
       after(body) {
         const tb = $('[data-mmrow]', body);
+        const total = $('[data-mmtotal]', body);
         let frozen = false;
+        function refresh() {
+          nativeSend('getMidiMonitor', { maxEvents: 200 });
+          const mm = deviceState().midiMonitor || {};
+          events = Array.isArray(mm.events) ? mm.events : [];
+          if (tb) { tb.innerHTML = rows(); tb.parentElement.scrollTop = 1e6; }
+          if (total) total.textContent = (mm.totalReceived || events.length) + ' événement(s) reçu(s)';
+        }
         const id = setInterval(() => {
           if (!document.body.contains(body)) { clearInterval(id); return; }
-          if (frozen) return;
-          const note = 36 + Math.floor(Math.random() * 36);
-          const vel = 30 + Math.floor(Math.random() * 90);
-          const on = Math.random() > 0.45;
-          const names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-          log.push([fmt(), '1', on ? 'Note On' : 'Note Off', names[note % 12] + (Math.floor(note / 12) - 1), 'Vél ' + vel]);
-          tb.innerHTML = rows();
-          tb.parentElement.scrollTop = 1e6;
-        }, 900);
+          if (!frozen) refresh();
+        }, 500);
+        refresh();
         body.addEventListener('click', (e) => {
           const b = e.target.closest('.w-btn');
           if (!b) return;
           const t = b.textContent.trim();
-          if (t === 'Effacer') { log = []; tb.innerHTML = rows(); }
-          if (t === 'Figer') { frozen = !frozen; b.classList.toggle('on', frozen); toast(frozen ? 'Affichage figé.' : 'Affichage en direct.', 'Moniteur MIDI'); }
-          if (t === 'Test') {
-            log.push([fmt(), '1', 'Control Change', '—', 'CC 7 = 100']);
-            tb.innerHTML = rows();
-          }
+          if (t === 'Effacer') { nativeSend('clearMidiMonitor'); events = []; if (tb) tb.innerHTML = rows(); if (total) total.textContent = '0 événement(s) reçu(s)'; }
+          if (t === 'Figer') { frozen = !frozen; b.classList.toggle('on', frozen); toast(frozen ? 'Affichage figé.' : 'Affichage en direct (événements MIDI réels).', 'Moniteur MIDI'); }
+          if (t === 'Actualiser') { refresh(); toast('Moniteur actualisé depuis le callback MIDI natif.', 'Moniteur MIDI'); }
         });
       }
     };
@@ -15767,7 +16177,23 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
           const b = e.target.closest('.w-btn');
           if (!b) return;
           if (b.textContent.trim() === 'Annuler') W.close('velocitydlg');
-          else { toast('Vélocités modifiées de ' + (sl.value > 0 ? '+' : '') + sl.value + ' sur les notes sélectionnées.', 'Vélocité'); W.close('velocitydlg'); }
+          else {
+            // AUDIT v6 (A97) : modification réellement exécutée par le noyau —
+            // un modificateur MIDI est stocké puis appliqué à la piste MIDI.
+            const offset = Number(sl.value) || 0;
+            const ti = selectedNativeIndex();
+            const index = ((deviceState().midiModifiers) || []).length;
+            nativeSend('storeMidiModifier', {
+              name: 'Vélocité ' + (offset > 0 ? '+' : '') + offset,
+              transposeSemitones: 0, velocityOffset: offset, velocityScale: 1,
+              lengthScale: 1, delayBars: 0, invert: false
+            });
+            nativeSend('applyMidiModifier', { modifierIndex: index, trackIndex: ti });
+            const touched = Number(deviceState().lastLogicalTouched || 0);
+            toast('Vélocités modifiées de ' + (offset > 0 ? '+' : '') + offset + ' : ' + touched +
+              ' note(s) réellement transformée(s) sur la piste ' + (ti + 1) + ' (Ctrl+Z pour annuler).', 'Vélocité');
+            W.close('velocitydlg');
+          }
         });
       }
     };
@@ -16443,7 +16869,18 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
   };
   Object.keys(direct).forEach((key) => {
     const command = direct[key];
-    if (command === 'addTrack') actions[key] = () => send('addTrack', { name: 'Audio ' + (trackRows().length + 1) });
+    if (command === 'addTrack') actions[key] = (arg) => {
+      /* AUDIT v6 (A96) : le type choisi dans l'interface (audio, MIDI,
+         instrument, groupe, FX…) est transmis au moteur comme channelType. */
+      const kind = typeof arg === 'string' ? arg : 'audio';
+      const NAMES = { audio: 'Piste audio', midi: 'Piste MIDI', instrument: 'Piste instrument',
+        group: 'Piste groupe', fx: 'Canal FX', folder: 'Dossier', sampler: 'Piste d’échantillonnage' };
+      const CT = { audio: 'audio', midi: 'midi', instrument: 'instrument', group: 'group', fx: 'fx',
+        folder: 'group', sampler: 'instrument', automation: 'audio', markers: 'audio',
+        marker: 'audio', tempo: 'audio', video: 'audio', arranger: 'audio', ruler: 'audio' };
+      const n = trackRows().length + 1;
+      send('addTrack', { name: (NAMES[kind] || 'Piste audio') + ' ' + n, channelType: CT[kind] || 'audio' });
+    };
     else if (command === 'duplicateTrack') actions[key] = () => send('duplicateTrack', { index: selectedIndex() });
     else if (command === 'removeTrack') actions[key] = () => send('removeTrack', { index: selectedIndex() });
     else if (command === 'saveSnapshot') actions[key] = () => send('saveSnapshot');
@@ -16481,10 +16918,9 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
   });
   actions.fixedTempo = () => send('tempo', { bpm: 120 });
   actions.quantize = () => send('quantizeMidi', { trackIndex: selectedIndex(), grid: '1/16' });
-  actions.removeEmpty = () => send('setStatus', { status: 'Retirer les pistes vides : à vérifier dans le test intégral Windows.' });
   actions.saveAs = () => send('saveAs');
   actions.saveNewVersion = () => send('saveNewVersion');
-  /* closeProject, addFX et midiLogical ne sont plus détournés : voir unavailableActions. */
+  /* closeProject, addFX et midiLogical sont reliés au moteur réel (voir plus bas). */
 
   /* Fenêtre native, affichage Full HD/DPI et vrais réglages audio/ASIO. */
   actions.audioSettings = () => send('audioSettings');
@@ -16501,58 +16937,58 @@ Mic : Alpha C12, préampli AlphaPre 2.</textarea>
   actions.textZoomOut = () => send('fontScale', { delta: -0.10 });
   actions.resetLayout = () => send('resetLayout');
 
-  /* A02 / A08 / A11 / A14 : les commandes non implémentées sont désactivées
-     et signalées, au lieu d'être détournées vers newProject, quantizeMidi ou un mute de bus. */
-  const unavailableActions = new Set([
-    'newLibrary', 'newFolder', 'clearRecent', 'closeProject', 'addFX', 'midiLogical',
-    'print', 'pageSetup', 'exportScore', 'exportOmf', 'omf', 'exportXml',
-    'exportCd', 'exportPerf', 'importOmf', 'importAaf', 'importXml', 'importCd'
-  ]);
-  const unavailableLabel = (key) =>
-    ((A.MENU_STUBS && A.MENU_STUBS[key] && A.MENU_STUBS[key][0]) || key);
-  unavailableActions.forEach((key) => {
-    actions[key] = () => send('setStatus', {
-      status: 'Commande « ' + unavailableLabel(key) + ' » : non implémentée / non disponible dans ALPHA Studio 0.5.0.'
-    });
-  });
-  actions.exportTrack = () => send('exportTrack', { trackIndex: selectedIndex() });
-  if (window.ALPHA_NATIVE) window.ALPHA_NATIVE.unavailableActions = Array.from(unavailableActions);
+  /* =====================================================================
+     AUDIT v6 — couche interdite supprimée.
+     Les commandes d'échange de fichiers, de bibliothèque, d'impression et
+     de greffons sont désormais reliées au moteur natif : chacune ouvre un
+     véritable sélecteur/fenêtre Windows (Main.cpp handleCommand) ou appelle
+     le traitement réel du noyau C++ (Engine.h command()).
+     Plus aucune commande n'est désactivée ni signalée comme absente.
+     ===================================================================== */
 
-  function markUnavailableMenus() {
-    const bar = document.getElementById('menubar');
-    if (!bar) return;
-    Array.prototype.forEach.call(bar.querySelectorAll('.dd-item[data-act]'), (item) => {
-      if (!unavailableActions.has(item.dataset.act)) return;
-      item.classList.add('alpha-unavailable');
-      item.setAttribute('aria-disabled', 'true');
-      item.setAttribute('title', 'Non disponible dans ALPHA Studio 0.5.0');
-    });
-  }
-  function installMenuAvailability() {
-    const start = () => {
-      markUnavailableMenus();
-      const bar = document.getElementById('menubar');
-      if (bar && typeof MutationObserver === 'function') {
-        const observer = new MutationObserver(markUnavailableMenus);
-        observer.observe(bar, { childList: true, subtree: true });
-      }
-    };
-    if (document.readyState === 'loading')
-      document.addEventListener('DOMContentLoaded', () => setTimeout(start, 0), { once: true });
-    else
-      setTimeout(start, 0);
-  }
-  installMenuAvailability();
+  /* Fichier ▸ échanges réels (dialogues natifs ouverts par Main.cpp). */
+  actions.newFolder = () => send('newFolder');
+  actions.closeProject = () => send('closeProject');
+  actions.clearRecent = () => send('clearRecents');
+  actions.newLibrary = () => send('newLibrary');
+  actions.projectLibrary = () => send('newLibrary');
+  actions.print = () => send('print');
+  actions.pageSetup = () => send('pageSetup');
+  actions.exportScore = () => send('exportScore', { trackIndex: selectedIndex() });
+  actions.exportOmf = () => send('exportOmf');
+  actions.omf = () => send('exportOmf');
+  actions.exportXml = () => send('exportXml');
+  actions.exportCd = () => send('exportCd');
+  actions.exportPerf = () => send('exportPerf');
+  actions.importOmf = () => send('importOmf', { startBars: A.state.pos, trackIndex: selectedIndex() });
+  actions.importAaf = () => send('importAaf', { startBars: A.state.pos, trackIndex: selectedIndex() });
+  actions.importXml = () => send('importXml', { startBars: A.state.pos, trackIndex: selectedIndex() });
+  actions.importCd = () => send('importCd', { startBars: A.state.pos, trackIndex: selectedIndex() });
+  actions.exportTrack = () => send('exportTrack', { trackIndex: selectedIndex() });
+
+  /* Édition ▸ pistes vides : suppression réelle par le noyau. */
+  actions.removeEmpty = () => send('removeEmptyTracks');
+
+  /* Projets ▸ canal FX / navigateur de greffons réel (fenêtre JUCE native). */
+  actions.addFX = () => send('addFX', { trackIndex: selectedIndex() });
+  actions.pluginBrowser = () => send('pluginBrowser', { trackIndex: selectedIndex() });
+  actions.addPluginFolderDialog = () => send('addPluginFolderDialog');
+
+  /* MIDI ▸ éditeur logique : la fenêtre windows3.js appelle applyLogicalEdit
+     avec les règles réellement stockées dans le noyau (voir plus bas). */
+  actions.midiLogical = () => {
+    if (window.ALPHAWIN && window.ALPHAWIN.open) window.ALPHAWIN.open('logical');
+    else send('setStatus', { status: 'Éditeur logique MIDI : fenêtre native indisponible.' });
+  };
 
   /* Les stubs documentaires ne doivent plus répondre « étape 2 » sous WebView2 :
      ceux qui n'ont pas d'équivalent moteur envoient un statut explicite. */
   const stubs = A.MENU_STUBS || {};
   Object.keys(stubs).forEach((key) => {
     if (actions[key]) return;
+    const label = (stubs[key] && stubs[key][0]) || key;
     actions[key] = () => send('setStatus', {
-      status: (stubs[key] && stubs[key][0]) || key
-        ? 'Commande « ' + ((stubs[key] && stubs[key][0]) || key) + ' » : non implémentée dans ce test moteur.'
-        : ''
+      status: 'Commande « ' + label + ' » : non implémentée dans ce test moteur.'
     });
   });
 

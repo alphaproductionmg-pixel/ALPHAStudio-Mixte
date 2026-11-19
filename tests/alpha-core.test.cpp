@@ -33,7 +33,7 @@ static void testJ2JsonAndProject()
     ProjectCore core;
     auto doc = core.serialize();
     assert (doc.find ("\"format\":\"ALPHAPROJ\"") != std::string::npos);
-    assert (doc.find ("\"schema\":2") != std::string::npos);
+    assert (doc.find ("\"schema\":3") != std::string::npos);
     assert (doc.find ("\"videoEnabled\":false") != std::string::npos);
     assert (core.state.buses.size() == 4);
     assert (core.state.templates.size() == 4);
@@ -270,6 +270,414 @@ static void testAuditHardening()
     std::cout << "audit S2/S3/S4/S5/S6 : PASS\n";
 }
 
+// =====================================================================
+// Audit v6 — modèle étendu réel : types de canaux, routage, départs,
+// inserts persistés, Quick Controls, marqueurs, carte de tempo, mesures,
+// informations projet, espaces de travail, instantanés, projets récents,
+// raccourcis, éditeur logique MIDI, modificateurs MIDI, pistes vides,
+// dossiers de greffons, disposition d'interface et fermeture de projet.
+// =====================================================================
+static void testAuditV6ExtendedModel()
+{
+    ProjectCore core;
+    core.command ("addTrack", commandPayload ({ { "name", JsonValue ("Chant") } }));
+    core.command ("addTrack", commandPayload ({ { "name", JsonValue ("Synthé") } }));
+    assert (core.state.tracks.size() == 2);
+
+    // --- type de canal réel : audio / instrument / midi / group / fx
+    assert (core.command ("setChannelType", commandPayload ({ { "index", JsonValue (1) }, { "type", JsonValue ("instrument") } })));
+    assert (core.state.tracks[1].channelType == "instrument");
+    assert (core.state.tracks[1].instrument);          // drapeau legacy synchronisé
+    assert (core.command ("setChannelType", commandPayload ({ { "index", JsonValue (0) }, { "type", JsonValue ("midi") } })));
+    assert (core.state.tracks[0].channelType == "midi" && ! core.state.tracks[0].instrument);
+    assert (! core.command ("setChannelType", commandPayload ({ { "index", JsonValue (0) }, { "type", JsonValue ("inconnu") } })));
+    assert (core.lastError.find ("inconnu") != std::string::npos);
+
+    // --- routage réel : entrées/sorties, canal MIDI, bus, latence, transposition
+    assert (core.command ("setTrackRouting", commandPayload ({ { "index", JsonValue (0) },
+                                                              { "inputDevice", JsonValue ("ASIO Delta 1010") },
+                                                              { "inputChannel", JsonValue (2) },
+                                                              { "outputDevice", JsonValue ("Bus C") },
+                                                              { "bus", JsonValue (2) },
+                                                              { "midiChannel", JsonValue (7) },
+                                                              { "delaySamples", JsonValue (128) },
+                                                              { "transposeSemitones", JsonValue (-2) } })));
+    const auto& t0 = core.state.tracks[0];
+    assert (t0.inputDevice == "ASIO Delta 1010" && t0.inputChannel == 2);
+    assert (t0.bus == 2 && t0.outputDevice == "Bus C");
+    assert (t0.midiChannel == 7 && t0.delaySamples == 128 && t0.transposeSemitones == -2);
+
+    // --- départs auxiliaires réels (pré/post fader, niveau, activation)
+    assert (core.command ("addSend", commandPayload ({ { "index", JsonValue (0) }, { "bus", JsonValue (1) },
+                                                       { "db", JsonValue (-9.0) }, { "preFader", JsonValue (true) } })));
+    assert (core.state.tracks[0].sends.size() == 1);
+    assert (core.state.tracks[0].sends[0].bus == 1 && core.state.tracks[0].sends[0].preFader);
+    assert (core.command ("setSend", commandPayload ({ { "index", JsonValue (0) }, { "sendIndex", JsonValue (0) },
+                                                       { "field", JsonValue ("db") }, { "value", JsonValue (-3.5) } })));
+    assert (std::abs (core.state.tracks[0].sends[0].db + 3.5) < 1e-9);
+    assert (core.command ("setSend", commandPayload ({ { "index", JsonValue (0) }, { "sendIndex", JsonValue (0) },
+                                                       { "field", JsonValue ("enabled") }, { "value", JsonValue (false) } })));
+    assert (! core.state.tracks[0].sends[0].enabled);
+    assert (! core.command ("setSend", commandPayload ({ { "index", JsonValue (0) }, { "sendIndex", JsonValue (5) } })));
+    assert (core.command ("removeSend", commandPayload ({ { "index", JsonValue (0) }, { "sendIndex", JsonValue (0) } })));
+    assert (core.state.tracks[0].sends.empty());
+
+    // --- inserts réels : ajout, ordre, bypass, paramètres, état binaire, suppression
+    assert (core.command ("addInsert", commandPayload ({ { "index", JsonValue (0) },
+                                                        { "uid", JsonValue ("VST3|Comp|AlphaAudio|1111AAAA") },
+                                                        { "name", JsonValue ("Compresseur") },
+                                                        { "format", JsonValue ("VST3") },
+                                                        { "file", JsonValue ("C:/VST3/Comp.vst3") },
+                                                        { "manufacturer", JsonValue ("AlphaAudio") },
+                                                        { "category", JsonValue ("Dynamics") },
+                                                        { "latencySamples", JsonValue (64) } })));
+    assert (core.command ("addInsert", commandPayload ({ { "index", JsonValue (0) },
+                                                        { "uid", JsonValue ("VST3|EQ|AlphaAudio|2222BBBB") },
+                                                        { "name", JsonValue ("Égaliseur") },
+                                                        { "slot", JsonValue (0) } })));
+    assert (core.state.tracks[0].inserts.size() == 2);
+    assert (core.state.tracks[0].inserts[0].name == "Égaliseur");   // insertion à l'emplacement demandé
+    assert (core.state.tracks[0].inserts[1].latencySamples == 64);
+    assert (core.command ("setInsertBypass", commandPayload ({ { "index", JsonValue (0) }, { "insertIndex", JsonValue (1) },
+                                                               { "bypassed", JsonValue (true) } })));
+    assert (core.state.tracks[0].inserts[1].bypassed);
+    assert (core.command ("setInsertParameter", commandPayload ({ { "index", JsonValue (0) }, { "insertIndex", JsonValue (1) },
+                                                                  { "paramIndex", JsonValue (2) }, { "value", JsonValue (0.75) } })));
+    assert (core.state.tracks[0].inserts[1].params.size() == 3);
+    assert (std::abs (core.state.tracks[0].inserts[1].params[2] - 0.75) < 1e-9);
+    assert (core.command ("setInsertState", commandPayload ({ { "index", JsonValue (0) }, { "insertIndex", JsonValue (1) },
+                                                              { "stateBase64", JsonValue ("QUJDRA==") } })));
+    assert (core.state.tracks[0].inserts[1].stateBase64 == "QUJDRA==");
+    assert (core.state.tracks[0].inserts[1].name == "Compresseur");
+    assert (core.command ("moveInsert", commandPayload ({ { "index", JsonValue (0) }, { "insertIndex", JsonValue (0) }, { "to", JsonValue (1) } })));
+    assert (core.state.tracks[0].inserts[0].name == "Compresseur");          // déplacement réel
+    assert (core.state.tracks[0].inserts[1].name == "Égaliseur");
+    assert (core.state.tracks[0].inserts[0].stateBase64 == "QUJDRA==");      // l'état suit l'insert
+    assert (! core.command ("addInsert", commandPayload ({ { "index", JsonValue (0) } })));   // greffon sans identifiant réel
+    assert (core.command ("removeInsert", commandPayload ({ { "index", JsonValue (0) }, { "insertIndex", JsonValue (1) } })));
+    assert (core.state.tracks[0].inserts.size() == 1);
+    assert (core.state.tracks[0].inserts[0].name == "Compresseur");
+    // inserts de bus réels
+    assert (core.command ("addInsert", commandPayload ({ { "kind", JsonValue ("bus") }, { "busIndex", JsonValue (0) },
+                                                         { "uid", JsonValue ("VST3|Limit|Alpha|3333") },
+                                                         { "name", JsonValue ("Limiteur") } })));
+    assert (core.state.buses[0].inserts.size() == 1);
+
+    // --- persistance réelle des inserts/départs/types dans le .alphaproj
+    const std::string doc = core.serialize();
+    assert (doc.find ("\"inserts\"") != std::string::npos);
+    assert (doc.find ("\"channelType\":\"midi\"") != std::string::npos);
+    ProjectCore reloaded;
+    assert (reloaded.load (doc));
+    assert (reloaded.state.tracks[0].inserts.size() == 1);
+    assert (reloaded.state.tracks[0].inserts[0].stateBase64 == "QUJDRA==");
+    assert (reloaded.state.tracks[0].channelType == "midi");
+    assert (reloaded.state.tracks[0].midiChannel == 7);
+    assert (reloaded.state.buses[0].inserts.size() == 1);
+
+    // --- Quick Controls réellement affectés et appliqués au moteur
+    assert (core.command ("setQuickControl", commandPayload ({ { "index", JsonValue (0) }, { "slot", JsonValue (0) },
+                                                               { "target", JsonValue ("track") }, { "param", JsonValue ("pan") },
+                                                               { "label", JsonValue ("Panoramique") } })));
+    assert (core.state.tracks[0].quickControls[0].assigned);
+    assert (core.command ("applyQuickControl", commandPayload ({ { "index", JsonValue (0) }, { "slot", JsonValue (0) },
+                                                                 { "value", JsonValue (-0.4) } })));
+    assert (std::abs (core.state.tracks[0].pan + 0.4) < 1e-9);
+    assert (! core.command ("applyQuickControl", commandPayload ({ { "index", JsonValue (0) }, { "slot", JsonValue (3) } })));
+    assert (core.lastError.find ("non affecté") != std::string::npos);
+
+    // --- marqueurs : ajout réel, tri, renommage, suppression
+    assert (core.command ("setTransportState", commandPayload ({ { "positionBars", JsonValue (13.0) } })));
+    assert (core.command ("addMarker", commandPayload ({ { "name", JsonValue ("Couplet 3") } })));
+    assert (! core.state.markers.empty());
+    const size_t before = core.state.markers.size();
+    for (size_t i = 1; i < core.state.markers.size(); ++i)
+        assert (core.state.markers[i - 1].bars <= core.state.markers[i].bars);   // réellement triés
+    bool found = false;
+    int markerIndex = 0;
+    for (size_t i = 0; i < core.state.markers.size(); ++i)
+        if (core.state.markers[i].name == "Couplet 3") { found = true; markerIndex = static_cast<int> (i); }
+    assert (found);
+    assert (core.command ("renameMarker", commandPayload ({ { "markerIndex", JsonValue (markerIndex) }, { "name", JsonValue ("Pont B") } })));
+    assert (core.state.markers[static_cast<size_t> (markerIndex)].name == "Pont B");
+    assert (core.command ("removeMarker", commandPayload ({ { "markerIndex", JsonValue (markerIndex) } })));
+    assert (core.state.markers.size() == before - 1);
+    assert (! core.command ("removeMarker", commandPayload ({ { "markerIndex", JsonValue (9999) } })));
+
+    // --- carte de tempo réelle : conversion mesure ↔ secondes intégrée
+    ProjectCore tempo;
+    tempo.command ("setTempo", commandPayload ({ { "bpm", JsonValue (120.0) } }));
+    assert (std::abs (tempo.state.secondsAtBars (3.0) - 4.0) < 1e-9);       // 2 mesures à 120 BPM = 4 s
+    assert (tempo.command ("addTempoEvent", commandPayload ({ { "bars", JsonValue (3.0) }, { "bpm", JsonValue (60.0) } })));
+    assert (tempo.state.tempoEvents.size() == 2);
+    assert (std::abs (tempo.state.secondsAtBars (5.0) - 12.0) < 1e-9);      // 4 s + 2 mesures à 60 BPM = 8 s
+    assert (std::abs (tempo.state.bpmAt (4.0) - 60.0) < 1e-9);
+    assert (std::abs (tempo.state.barsAtSeconds (12.0) - 5.0) < 1e-9);      // conversion inverse réelle
+    assert (tempo.command ("removeTempoEvent", commandPayload ({ { "bars", JsonValue (3.0) } })));
+    assert (tempo.state.tempoEvents.size() == 1);
+    assert (! tempo.command ("removeTempoEvent", commandPayload ({ { "bars", JsonValue (1.0) } })));  // le projet garde un tempo
+
+    // --- changements de mesure réels
+    assert (core.command ("addSignature", commandPayload ({ { "bars", JsonValue (9.0) }, { "numerator", JsonValue (3) }, { "denominator", JsonValue (4) } })));
+    assert (core.state.signatureAt (10.0).numerator == 3);
+    assert (! core.command ("addSignature", commandPayload ({ { "bars", JsonValue (17.0) }, { "numerator", JsonValue (5) }, { "denominator", JsonValue (3) } })));
+    assert (core.lastError.find ("puissance de 2") != std::string::npos);
+    assert (core.command ("removeSignature", commandPayload ({ { "bars", JsonValue (9.0) } })));
+
+    // --- informations projet réelles
+    assert (core.command ("setProjectInfo", commandPayload ({ { "author", JsonValue ("ALPHA Production") },
+                                                              { "copyright", JsonValue ("2026") },
+                                                              { "notes", JsonValue ("Mixage voix") },
+                                                              { "sampleRate", JsonValue ("96000") },
+                                                              { "bitDepth", JsonValue ("32") },
+                                                              { "startTimecode", JsonValue ("01:00:00:00") } })));
+    assert (core.state.info.author == "ALPHA Production" && core.state.info.sampleRate == "96000");
+    assert (core.state.info.startTimecode == "01:00:00:00");
+
+    // --- espaces de travail réellement mémorisés, rappelés, verrouillés, supprimés
+    assert (core.command ("storeWorkspace", commandPayload ({ { "name", JsonValue ("Mixage voix") },
+                                                              { "barW", JsonValue (120.0) },
+                                                              { "scrollLeft", JsonValue (400.0) },
+                                                              { "positionBars", JsonValue (17.0) },
+                                                              { "selectedTrack", JsonValue (1) } })));
+    assert (core.state.workspaces.size() == 5);
+    core.state.positionBars = 1.0;
+    assert (core.command ("recallWorkspace", commandPayload ({ { "name", JsonValue ("Mixage voix") } })));
+    assert (std::abs (core.state.positionBars - 17.0) < 1e-9);
+    assert (core.state.selectedTrack == 1);
+    assert (core.state.recalledWorkspace == "Mixage voix");
+    assert (core.command ("setWorkspaceLock", commandPayload ({ { "name", JsonValue ("Mixage voix") }, { "locked", JsonValue (true) } })));
+    assert (! core.command ("storeWorkspace", commandPayload ({ { "name", JsonValue ("Mixage voix") }, { "barW", JsonValue (30.0) } })));
+    assert (core.lastError.find ("verrouillé") != std::string::npos);
+    assert (! core.command ("deleteWorkspace", commandPayload ({ { "name", JsonValue ("Mixage voix") } })));
+    assert (core.command ("setWorkspaceLock", commandPayload ({ { "name", JsonValue ("Mixage voix") }, { "locked", JsonValue (false) } })));
+    assert (core.command ("deleteWorkspace", commandPayload ({ { "name", JsonValue ("Mixage voix") } })));
+    assert (core.state.workspaces.size() == 4);
+
+    // --- instantanés de mixage réellement mémorisés et rappelés
+    core.command ("setTrack", commandPayload ({ { "index", JsonValue (0) }, { "field", JsonValue ("volumeDb") }, { "value", JsonValue (-2.0) } }));
+    assert (core.command ("storeSnapshot", commandPayload ({ { "name", JsonValue ("Mix A") } })));
+    core.command ("setTrack", commandPayload ({ { "index", JsonValue (0) }, { "field", JsonValue ("volumeDb") }, { "value", JsonValue (-30.0) } }));
+    assert (std::abs (core.state.tracks[0].volumeDb + 30.0) < 1e-9);
+    assert (core.command ("recallSnapshot", commandPayload ({ { "name", JsonValue ("Mix A") } })));
+    assert (std::abs (core.state.tracks[0].volumeDb + 2.0) < 1e-9);         // niveau réellement restauré
+    assert (core.command ("deleteSnapshot", commandPayload ({ { "name", JsonValue ("Mix A") } })));
+    assert (core.state.snapshots.empty());
+    assert (! core.command ("storeSnapshot", commandPayload ({})));          // nom requis
+
+    // --- projets récents réellement gérés
+    assert (core.command ("addRecent", commandPayload ({ { "path", JsonValue ("C:/Alpha/Demo.alphaproj") }, { "name", JsonValue ("Demo") } })));
+    assert (core.command ("addRecent", commandPayload ({ { "path", JsonValue ("C:/Alpha/Mix.alphaproj") }, { "name", JsonValue ("Mix") } })));
+    assert (core.state.recents.size() == 2 && core.state.recents[0].name == "Mix");
+    assert (core.command ("addRecent", commandPayload ({ { "path", JsonValue ("C:/Alpha/Demo.alphaproj") }, { "name", JsonValue ("Demo") } })));
+    assert (core.state.recents.size() == 2 && core.state.recents[0].name == "Demo");  // pas de doublon réel
+    assert (core.command ("clearRecents", commandPayload ({})));
+    assert (core.state.recents.empty());
+    assert (! core.command ("addRecent", commandPayload ({})));
+
+    // --- raccourcis clavier réellement persistés dans le projet
+    assert (core.state.keyCommands.size() == ProjectState::defaultKeyCommands().size());
+    assert (core.command ("setKeyCommand", commandPayload ({ { "combo", JsonValue ("F9") }, { "action", JsonValue ("cycle") } })));
+    bool f9 = false;
+    for (const auto& k : core.state.keyCommands) if (k.combo == "F9" && k.action == "cycle") f9 = true;
+    assert (f9);
+    assert (core.command ("setKeyCommand", commandPayload ({ { "combo", JsonValue ("F9") }, { "action", JsonValue ("metronome") } })));
+    int f9count = 0;
+    for (const auto& k : core.state.keyCommands) if (k.combo == "F9") { ++f9count; assert (k.action == "metronome"); }
+    assert (f9count == 1);                                                   // réellement remplacé, pas dupliqué
+    assert (core.command ("resetKeyCommands", commandPayload ({})));
+    assert (core.state.keyCommands.size() == ProjectState::defaultKeyCommands().size());
+    assert (! core.command ("setKeyCommand", commandPayload ({ { "combo", JsonValue ("") } })));
+
+    // --- éditeur logique MIDI : règles réellement appliquées aux notes
+    ProjectCore midi;
+    midi.command ("addTrack", commandPayload ({ { "name", JsonValue ("Batterie") } }));
+    JsonValue notes (JsonValue::Type::Array);
+    for (int i = 0; i < 8; ++i)
+    {
+        JsonValue n (JsonValue::Type::Object);
+        n["startBars"] = JsonValue (1.0 + i * 0.26);
+        n["lenBars"] = JsonValue (0.25);
+        n["pitch"] = JsonValue (36 + (i % 3) * 12);
+        n["velocity"] = JsonValue (40 + i * 10);
+        notes.array.push_back (n);
+    }
+    assert (midi.command ("setMidiNotes", commandPayload ({ { "index", JsonValue (0) }, { "notes", notes } })));
+    assert (midi.state.tracks[0].midiNotes.size() == 8);
+    assert (midi.command ("storeLogicalRule", commandPayload ({ { "name", JsonValue ("Vélocité fixe") },
+                                                                { "ruleIndex", JsonValue (0) },   // remplace la règle par défaut
+                                                                { "action", JsonValue ("setVelocity") },
+                                                                { "actionValue", JsonValue (110.0) },
+                                                                { "pitchMin", JsonValue (36) }, { "pitchMax", JsonValue (48) } })));
+    assert (midi.state.logicalRules.size() == 1);
+    assert (midi.command ("applyLogicalEdit", commandPayload ({ { "ruleIndex", JsonValue (0) } })));
+    int touched = 0, unchanged = 0;
+    for (const auto& n : midi.state.tracks[0].midiNotes)
+    {
+        if (n.pitch >= 36 && n.pitch <= 48) { assert (n.velocity == 110); ++touched; }
+        else ++unchanged;
+    }
+    assert (touched > 0 && unchanged > 0);                                   // filtre réellement sélectif
+    assert (midi.state.lastLogicalTouched == touched);
+    // quantification réelle sur la grille
+    assert (midi.command ("storeLogicalRule", commandPayload ({ { "name", JsonValue ("Quantize 1/16") },
+                                                                { "action", JsonValue ("quantize") },
+                                                                { "grid", JsonValue ("1/16") },
+                                                                { "pitchMin", JsonValue (0) }, { "pitchMax", JsonValue (127) } })));
+    assert (midi.command ("applyLogicalEdit", commandPayload ({ { "ruleIndex", JsonValue (1) } })));
+    for (const auto& n : midi.state.tracks[0].midiNotes)
+    {
+        const double k = (n.startBars - 1.0) / 0.25;
+        assert (std::abs (k - std::round (k)) < 1e-6);                       // réellement calé sur 1/16
+    }
+    // suppression réelle par règle
+    assert (midi.command ("storeLogicalRule", commandPayload ({ { "name", JsonValue ("Effacer graves") },
+                                                                { "action", JsonValue ("deleteNotes") },
+                                                                { "pitchMin", JsonValue (0) }, { "pitchMax", JsonValue (40) } })));
+    const size_t beforeDelete = midi.state.tracks[0].midiNotes.size();
+    assert (midi.command ("applyLogicalEdit", commandPayload ({ { "ruleIndex", JsonValue (2) } })));
+    assert (midi.state.tracks[0].midiNotes.size() < beforeDelete);
+    for (const auto& n : midi.state.tracks[0].midiNotes) assert (n.pitch > 40);
+    assert (! midi.command ("applyLogicalEdit", commandPayload ({ { "ruleIndex", JsonValue (99) } })));
+    assert (midi.command ("deleteLogicalRule", commandPayload ({ { "ruleIndex", JsonValue (2) } })));
+    assert (midi.state.logicalRules.size() == 2);
+
+    // --- modificateurs MIDI réellement appliqués (transformation non destructive)
+    ProjectCore mod;
+    mod.command ("addTrack", commandPayload ({ { "name", JsonValue ("Basse") } }));
+    JsonValue mn (JsonValue::Type::Array);
+    JsonValue n0 (JsonValue::Type::Object);
+    n0["startBars"] = JsonValue (1.0); n0["lenBars"] = JsonValue (0.5);
+    n0["pitch"] = JsonValue (48); n0["velocity"] = JsonValue (80);
+    mn.array.push_back (n0);
+    assert (mod.command ("setMidiNotes", commandPayload ({ { "index", JsonValue (0) }, { "notes", mn } })));
+    assert (mod.command ("storeMidiModifier", commandPayload ({ { "name", JsonValue ("Octave + vélocité") },
+                                                                { "modifierIndex", JsonValue (0) },   // remplace le preset par défaut
+                                                                { "transposeSemitones", JsonValue (12.0) },
+                                                                { "velocityScale", JsonValue (0.5) },
+                                                                { "velocityOffset", JsonValue (10.0) },
+                                                                { "lengthScale", JsonValue (2.0) },
+                                                                { "delayBars", JsonValue (0.25) } })));
+    assert (mod.command ("applyMidiModifier", commandPayload ({ { "modifierIndex", JsonValue (0) }, { "trackIndex", JsonValue (0) } })));
+    assert (mod.state.tracks[0].midiNotes[0].pitch == 60);
+    assert (mod.state.tracks[0].midiNotes[0].velocity == 50);
+    assert (std::abs (mod.state.tracks[0].midiNotes[0].lenBars - 1.0) < 1e-9);
+    assert (std::abs (mod.state.tracks[0].midiNotes[0].startBars - 1.25) < 1e-9);
+    assert (mod.command ("deleteMidiModifier", commandPayload ({ { "modifierIndex", JsonValue (0) } })));
+    assert (! mod.command ("applyMidiModifier", commandPayload ({ { "modifierIndex", JsonValue (0) } })));
+
+    // --- transposition réelle
+    assert (mod.command ("transposeMidi", commandPayload ({ { "trackIndex", JsonValue (0) }, { "semitones", JsonValue (-5) } })));
+    assert (mod.state.tracks[0].midiNotes[0].pitch == 55);
+    assert (mod.state.tracks[0].transposeSemitones == -5);
+
+    // --- retrait réel des pistes vides
+    ProjectCore empty;
+    empty.command ("addTrack", commandPayload ({ { "name", JsonValue ("Vide 1") } }));
+    empty.command ("addTrack", commandPayload ({ { "name", JsonValue ("Vide 2") } }));
+    empty.command ("addClip", commandPayload ({ { "index", JsonValue (0) }, { "clip", commandPayload ({ { "name", JsonValue ("Prise") }, { "media", JsonValue ("Media/a.wav") }, { "startBars", JsonValue (1.0) }, { "lenBars", JsonValue (2.0) } }) } }));
+    assert (empty.state.tracks.size() == 2);
+    assert (empty.command ("removeEmptyTracks", commandPayload ({})));
+    assert (empty.state.tracks.size() == 1 && empty.state.lastRemovedEmpty == 1);
+    assert (empty.state.tracks[0].name == "Vide 1");
+
+    // --- dossiers de greffons réellement enregistrés
+    assert (core.command ("addPluginFolder", commandPayload ({ { "path", JsonValue ("C:/Program Files/Common Files/VST3") } })));
+    assert (core.state.pluginFolders.size() == 1);
+    assert (core.command ("addPluginFolder", commandPayload ({ { "path", JsonValue ("C:/Program Files/Common Files/VST3") } })));
+    assert (core.state.pluginFolders.size() == 1);                           // pas de doublon
+    assert (core.command ("removePluginFolder", commandPayload ({ { "path", JsonValue ("C:/Program Files/Common Files/VST3") } })));
+    assert (core.state.pluginFolders.empty());
+    assert (! core.command ("removePluginFolder", commandPayload ({ { "path", JsonValue ("X") } })));
+
+    // --- disposition d'interface réellement persistée dans le projet
+    assert (core.command ("setUiLayout", commandPayload ({ { "rulerFormat", JsonValue ("timecode") },
+                                                           { "snapMode", JsonValue ("magnet") },
+                                                           { "nudgeMode", JsonValue ("frames") },
+                                                           { "editMode", JsonValue ("range") },
+                                                           { "timebase", JsonValue ("linear") },
+                                                           { "showInspector", JsonValue (false) },
+                                                           { "trackHeight", JsonValue (96.0) } })));
+    assert (core.state.layout.rulerFormat == "timecode" && core.state.layout.timebase == "linear");
+    assert (! core.state.layout.showInspector);
+    assert (std::abs (core.state.tracks[0].height - 96.0) < 1e-9);           // hauteur réellement propagée
+    assert (! core.command ("setUiLayout", commandPayload ({ { "rulerFormat", JsonValue ("bidule") } })));
+    assert (! core.command ("setUiLayout", commandPayload ({ { "timebase", JsonValue ("bidule") } })));
+
+    // --- persistance complète du modèle étendu (enregistrement/fermeture/réouverture)
+    const std::string full = core.serialize();
+    assert (full.find ("\"workspaces\"") != std::string::npos);
+    assert (full.find ("\"keyCommands\"") != std::string::npos);
+    assert (full.find ("\"logicalRules\"") != std::string::npos);
+    assert (full.find ("\"midiModifiers\"") != std::string::npos);
+    assert (full.find ("\"quickControls\"") != std::string::npos);
+    assert (full.find ("\"tempoEvents\"") != std::string::npos);
+    assert (full.find ("\"signatures\"") != std::string::npos);
+    assert (full.find ("\"snapshots\"") != std::string::npos);
+    assert (full.find ("\"info\"") != std::string::npos);
+    assert (full.find ("\"layout\"") != std::string::npos);
+    ProjectCore again;
+    assert (again.load (full));
+    assert (again.state.layout.rulerFormat == "timecode");
+    assert (again.state.info.author == "ALPHA Production");
+    assert (again.state.workspaces.size() == core.state.workspaces.size());
+    assert (again.state.keyCommands.size() == core.state.keyCommands.size());
+    assert (again.state.tracks.size() == core.state.tracks.size());
+    assert (again.state.tracks[0].quickControls[0].param == "pan");
+    assert (again.serialize() == core.serialize());                          // aller-retour stable
+
+    // --- migration réelle d'un ancien projet schéma 2 vers le schéma courant
+    std::string legacy = "{\"format\":\"ALPHAPROJ\",\"schema\":2,\"name\":\"Ancien\",\"bpm\":100.0,"
+                         "\"tracks\":[{\"id\":\"t0\",\"name\":\"Voix\",\"volumeDb\":-4.0}],"
+                         "\"buses\":[{\"name\":\"Bus A\",\"volumeDb\":0.0,\"pan\":0.0,\"mute\":false}]}";
+    ProjectCore migrated;
+    assert (migrated.load (legacy));
+    assert (migrated.state.schema == 3);
+    assert (migrated.state.tracks.size() == 1);
+    assert (migrated.state.tracks[0].channelType == "audio");
+    assert (migrated.state.tempoEvents.size() == 1 && std::abs (migrated.state.tempoEvents[0].bpm - 100.0) < 1e-9);
+    assert (migrated.state.buses.size() == 4);                               // bus manquants réellement recréés
+    assert (migrated.state.keyCommands.size() == ProjectState::defaultKeyCommands().size());
+    assert (migrated.state.layout.trackHeight > 0.0);
+    assert (std::abs (migrated.state.secondsAtBars (3.0) - 4.8) < 1e-9);     // tempo hérité du fichier
+
+    // --- fermeture réelle du projet puis réouverture
+    ProjectCore closeable;
+    closeable.command ("addTrack", commandPayload ({ { "name", JsonValue ("Guitare") } }));
+    closeable.state.path = "C:/Alpha/Guitare.alphaproj";
+    assert (closeable.command ("closeProject", commandPayload ({})));
+    assert (closeable.state.closed);
+    assert (closeable.state.tracks.empty());
+    assert (! closeable.state.recents.empty() && closeable.state.recents[0].path == "C:/Alpha/Guitare.alphaproj");
+    assert (closeable.state.workspaces.size() == 4);                         // les réglages d'interface survivent
+    assert (closeable.command ("newProject", commandPayload ({})));
+    assert (! closeable.state.closed);
+
+    // --- historique réel : chaque commande du modèle étendu est annulable
+    ProjectCore hist;
+    hist.command ("addTrack", commandPayload ({ { "name", JsonValue ("Piste") } }));
+    hist.command ("setChannelType", commandPayload ({ { "index", JsonValue (0) }, { "type", JsonValue ("instrument") } }));
+    hist.command ("addInsert", commandPayload ({ { "index", JsonValue (0) }, { "uid", JsonValue ("VST3|X|Y|Z") }, { "name", JsonValue ("X") } }));
+    assert (hist.state.tracks[0].inserts.size() == 1);
+    assert (hist.command ("undo", commandPayload ({})));
+    assert (hist.state.tracks[0].inserts.empty());
+    assert (hist.state.tracks[0].channelType == "instrument");
+    assert (hist.command ("undo", commandPayload ({})));
+    assert (hist.state.tracks[0].channelType == "audio");
+    assert (hist.command ("redo", commandPayload ({})));
+    assert (hist.state.tracks[0].channelType == "instrument");
+    assert (hist.command ("redo", commandPayload ({})));
+    assert (hist.state.tracks[0].inserts.size() == 1);
+    // commande sans effet réel : aucun faux niveau d'historique
+    const size_t levels = hist.history.size();
+    assert (hist.command ("setChannelType", commandPayload ({ { "index", JsonValue (0) }, { "type", JsonValue ("instrument") } })));
+    assert (hist.history.size() == levels);
+
+    std::cout << "audit v6 modèle étendu (canaux, routage, départs, inserts, Quick Controls, marqueurs,\n"
+                 "  tempo, mesures, infos, espaces, instantanés, récents, raccourcis, logique MIDI,\n"
+                 "  modificateurs, pistes vides, greffons, interface, migration, fermeture, historique) : PASS\n";
+}
+
 int main()
 {
     testJ2JsonAndProject();
@@ -278,6 +686,7 @@ int main()
     testJ3J4AutomationAndDsp();
     testJ5J6MidiPrefsVideo();
     testAuditHardening();
-    std::cout << "OK — noyau C++ J2→J6 : 6 groupes de tests PASS.\n";
+    testAuditV6ExtendedModel();
+    std::cout << "OK — noyau C++ J2→J6 + audit v6 : 7 groupes de tests PASS.\n";
     return 0;
 }

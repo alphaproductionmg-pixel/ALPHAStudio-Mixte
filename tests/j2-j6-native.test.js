@@ -244,47 +244,89 @@ test('j2d — glisser-déposer WAV, MIDI et .alphaproj vers le moteur', async ()
   await h.flush();
 });
 
-test('j2e — les stubs de menu envoient un statut explicite, sans « étape 2 »', async () => {
+test('j2e — les stubs purement documentaires envoient un statut explicite, sans « étape 2 »', async () => {
   const h = createHarness({
     nativeBridge: true,
-    menuStubs: { newLibrary: ['Bibliothèque de projets', 'Message historique.'] }
+    menuStubs: { docManual: ['Manuel Nuendo 4', 'Message historique.'] }
   });
   h.runTimers(0);
   const snapshot = makeSnapshot();
   h.native.completeNative(snapshot);
   await h.flush();
-  h.A.ACTIONS.newLibrary();
+  h.A.ACTIONS.docManual();
   const call = h.native.calls[h.native.calls.length - 1];
   assert.equal(call.name, 'setStatus');
-  assert.match(call.data.status, /Bibliothèque de projets/);
+  assert.match(call.data.status, /Manuel Nuendo 4/);
   assert.match(call.data.status, /non implémentée/);
   assert.ok(!/étape 2/i.test(call.data.status));
   h.native.completeNative(snapshot);
   await h.flush();
 });
 
-test('audit-ui — closeProject, addFX et midiLogical ne sont plus détournés', async () => {
-  const h = createHarness({
-    nativeBridge: true,
-    menuStubs: {
-      closeProject: ['Fermer le projet', 'Message historique.'],
-      addFX: ['Ajouter un canal FX', 'Message historique.'],
-      midiLogical: ['Éditeur logique MIDI', 'Message historique.']
-    }
-  });
+test('audit v6 — les commandes d’échange et de bibliothèque appellent le moteur réel', async () => {
+  const h = createHarness({ nativeBridge: true });
   h.runTimers(0);
   const snapshot = makeSnapshot();
   h.native.completeNative(snapshot);
   await h.flush();
-  ['closeProject', 'addFX', 'midiLogical'].forEach((key) => {
+
+  const expected = {
+    newLibrary: 'newLibrary',
+    newFolder: 'newFolder',
+    clearRecent: 'clearRecents',
+    closeProject: 'closeProject',
+    print: 'print',
+    pageSetup: 'pageSetup',
+    exportScore: 'exportScore',
+    exportOmf: 'exportOmf',
+    omf: 'exportOmf',
+    exportXml: 'exportXml',
+    exportCd: 'exportCd',
+    exportPerf: 'exportPerf',
+    importOmf: 'importOmf',
+    importAaf: 'importAaf',
+    importXml: 'importXml',
+    importCd: 'importCd',
+    removeEmpty: 'removeEmptyTracks',
+    addFX: 'addFX'
+  };
+  Object.keys(expected).forEach((key) => {
     h.A.ACTIONS[key]();
     const call = h.native.calls[h.native.calls.length - 1];
-    assert.equal(call.name, 'setStatus');
-    assert.match(call.data.status, /non implémentée/);
-    assert.match(call.data.status, /non disponible/);
-    assert.ok(!/étape 2/i.test(call.data.status));
+    assert.equal(call.name, expected[key], 'commande « ' + key + ' » mal reliée');
+    assert.notEqual(call.name, 'setStatus', 'commande « ' + key + ' » encore détournée vers setStatus');
     h.native.completeNative(snapshot);
   });
+
+  // Les imports d’échange transmettent réellement la position et la piste.
+  h.A.ACTIONS.importOmf();
+  const omf = h.native.calls[h.native.calls.length - 1];
+  assert.equal(typeof omf.data.startBars, 'number');
+  assert.equal(typeof omf.data.trackIndex, 'number');
+  h.native.completeNative(snapshot);
+
+  // L’export de partition vise la piste réellement sélectionnée.
+  h.A.ACTIONS.exportScore();
+  const score = h.native.calls[h.native.calls.length - 1];
+  assert.equal(typeof score.data.trackIndex, 'number');
+  h.native.completeNative(snapshot);
+  await h.flush();
+});
+
+test('audit v6 — l’éditeur logique MIDI ouvre la fenêtre réelle, sans statut de repli', async () => {
+  const h = createHarness({ nativeBridge: true });
+  h.runTimers(0);
+  const snapshot = makeSnapshot();
+  h.native.completeNative(snapshot);
+  await h.flush();
+
+  const opened = [];
+  h.window.ALPHAWIN = { open: (id) => { opened.push(id); return { id }; } };
+  h.A.ACTIONS.midiLogical();
+  assert.deepEqual(opened, ['logical']);
+  const names = h.native.calls.map((c) => c.name);
+  assert.ok(!names.includes('quantizeMidi'), 'midiLogical ne doit plus être détourné vers quantizeMidi');
+  h.native.completeNative(snapshot);
   await h.flush();
 });
 

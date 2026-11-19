@@ -460,6 +460,91 @@ struct AudioClip
     double startBars = 1.0, lenBars = 1.0, offsetBars = 0.0;
     bool loop = false;
 };
+// Départ auxiliaire réel : chaque piste peut envoyer vers n'importe quel bus,
+// en pré- ou post-fader, avec un niveau en dB et un état activé/coupé.
+struct SendState
+{
+    int bus = 0;
+    double db = -60.0;
+    bool preFader = false;
+    bool enabled = true;
+};
+// Insert réel : référence un greffon analysé sur le disque (VST3/VST/LV2/AU),
+// conserve son état binaire et les valeurs réelles de ses paramètres.
+struct InsertState
+{
+    std::string uid;                 // identifiant unique du greffon (format + UID)
+    std::string name = "Insert";     // nom réel renvoyé par le greffon
+    std::string format = "VST3";
+    std::string file;                // chemin réel du module analysé
+    std::string manufacturer;
+    std::string category;
+    bool bypassed = false;           // bypass réel appliqué au nœud du graphe
+    bool enabled = true;
+    std::string stateBase64;         // état binaire réel (getStateInformation)
+    std::vector<double> params;      // valeurs réelles des paramètres
+    std::vector<std::string> paramNames;
+    int latencySamples = 0;          // compensation de latence réelle du greffon
+};
+// Quick Control réel : chaque emplacement pointe vers un paramètre du moteur.
+struct QuickControl
+{
+    std::string target = "track";    // track | bus | eq | dynamics | insert | send
+    std::string param = "volumeDb";
+    std::string label = "Volume";
+    int index = 0;                   // indice de bus / insert / bande
+    double value = 0.0;
+    bool assigned = false;
+};
+struct TempoEvent { double bars = 1.0, bpm = 120.0; };
+struct SignatureEvent { double bars = 1.0; int numerator = 4, denominator = 4; };
+struct WorkspaceState
+{
+    std::string name = "Espace 1";
+    bool locked = false;
+    double barW = 64.0, scrollLeft = 0.0, scrollTop = 0.0, positionBars = 1.0;
+    std::vector<std::string> windows;       // fenêtres réellement ouvertes
+    std::vector<std::string> toolbarItems;  // éléments réellement affichés
+    std::string panelState;                 // panneaux visibles sérialisés
+    int selectedTrack = 0;
+};
+struct ProjectInfo
+{
+    std::string author, copyright, notes, originator, reference;
+    std::string sampleRate = "48000", bitDepth = "24", startTimecode = "00:00:00:00";
+};
+struct RecentProject { std::string name, path, openedUtc; };
+struct KeyCommand { std::string combo, action; };
+// Règle d'éditeur logique MIDI réellement appliquée aux notes du projet.
+struct LogicalRule
+{
+    std::string name = "Règle 1";
+    bool enabled = true;
+    int pitchMin = 0, pitchMax = 127, velocityMin = 1, velocityMax = 127;
+    double lengthMinBars = 0.0, lengthMaxBars = 100000.0;
+    bool onlySelectedTrack = true;
+    std::string typeFilter = "note";                 // note | all
+    std::string action = "setVelocity";              // setVelocity | scaleVelocity | transpose | setLength | scaleLength | quantize | deleteNotes | invertVelocity
+    double actionValue = 100.0;
+    std::string grid = "1/16";
+};
+// Preset de modificateurs MIDI réellement appliqué (transformation non destructive).
+struct MidiModifier
+{
+    std::string name = "Modificateur 1";
+    double transposeSemitones = 0.0;
+    double velocityOffset = 0.0, velocityScale = 1.0;
+    double lengthScale = 1.0;
+    double delayBars = 0.0;
+    bool invert = false;
+};
+struct UiLayout
+{
+    std::string rulerFormat = "bars", snapMode = "grid", nudgeMode = "tick", editMode = "normal", timebase = "musical";
+    bool showToolbar = true, showInspector = true, showOverview = true, showInfoline = true, showMarkerTrack = true;
+    double trackHeight = 62.0;
+    std::vector<std::string> toolbarItems;
+};
 struct TrackState
 {
     std::string id, name = "Audio", colour = "#4f7fa8";
@@ -471,12 +556,53 @@ struct TrackState
     std::vector<MidiNote> midiNotes;
     std::vector<AutomationCurve> automation;
     FxState fx;
+    // ---- modèle étendu : type de canal, routage, inserts, départs, contrôles
+    std::string channelType = "audio";            // audio | instrument | midi | group | fx
+    std::string inputDevice = "Entrées stéréo", outputDevice = "Bus A";
+    int inputChannel = 0, outputChannel = 0, midiChannel = 1;
+    double height = 62.0;
+    bool visible = true, frozen = false, locked = false;
+    int transposeSemitones = 0;
+    long long delaySamples = 0;
+    std::vector<SendState> sends;
+    std::vector<InsertState> inserts;
+    std::array<QuickControl, 8> quickControls;
+
+    // Le type de canal est la source de vérité ; le drapeau historique
+    // « instrument » reste synchronisé pour la compatibilité ascendante.
+    // Recevoir des notes MIDI promeut réellement une piste audio en piste
+    // d'instrument, comme le faisait le moteur avant l'extension du modèle.
+    void syncChannelFlags()
+    {
+        static const char* valid[] = { "audio", "instrument", "midi", "group", "fx" };
+        if (std::find (std::begin (valid), std::end (valid), channelType) == std::end (valid))
+            channelType = instrument ? "instrument" : "audio";
+        else if (instrument && channelType == "audio")
+            channelType = "instrument";
+        else if (! instrument && ! midiNotes.empty() && channelType == "audio")
+            channelType = "instrument";
+        instrument = (channelType == "instrument");
+    }
 };
 struct BusState
 {
     std::string name = "Bus";
     double volumeDb = 0.0, pan = 0.0;
     bool mute = false;
+    // ---- modèle étendu : bus réels avec routage de sortie et inserts
+    std::string channelType = "group";
+    std::string outputDevice = "Sortie principale";
+    int outputChannel = 0;
+    bool solo = false;
+    std::vector<SendState> sends;
+    std::vector<InsertState> inserts;
+};
+struct SnapshotState
+{
+    std::string name = "Instantané";
+    double masterDb = 0.0;
+    std::vector<TrackState> tracks;
+    std::vector<BusState> buses;
 };
 struct MarkerState
 {
@@ -495,12 +621,18 @@ struct ControlRoom
     double monitorDb = 0.0;
     bool dim = false, mono = false;
     std::string source = "Mix";
+    // ---- monitoring réel : talkback, listen, casque et niveaux par sortie
+    bool talkback = false, listen = false, dimActive = false;
+    double dimDb = -20.0, phonesDb = -12.0, monADb = -2.0, monBDb = -6.0;
+    std::string activeMonitor = "A";     // A | B | C | PH
+    bool exclusiveMonitor = true;
 };
 struct ProjectState
 {
-    int schema = 2;
+    int schema = 3;
     std::string format = "ALPHAPROJ";
     std::string name = "Projet sans titre", createdUtc = utcNow(), modifiedUtc = utcNow();
+    std::string path;                              // chemin réel du projet ouvert
     double bpm = 120.0, masterDb = 0.0;
     bool looping = true, metronome = false;
     double loopStartBars = 1.0, loopEndBars = 9.0;
@@ -516,15 +648,125 @@ struct ProjectState
     ControlRoom controlRoom;
     bool videoEnabled = false; // verrouillé : la vidéo attend le test final confirmé.
 
+    // ---- modèle étendu réel : carte de tempo, mesures, espaces, instantanés,
+    //      projets récents, raccourcis, éditeur logique, modificateurs MIDI,
+    //      dossiers de greffons, informations projet et disposition d'interface.
+    std::vector<TempoEvent> tempoEvents;
+    std::vector<SignatureEvent> signatures;
+    std::vector<WorkspaceState> workspaces;
+    std::vector<SnapshotState> snapshots;
+    std::vector<RecentProject> recents;
+    std::vector<KeyCommand> keyCommands;
+    std::vector<LogicalRule> logicalRules;
+    std::vector<MidiModifier> midiModifiers;
+    std::vector<std::string> pluginFolders;
+    ProjectInfo info;
+    UiLayout layout;
+    double positionBars = 1.0;
+    int selectedTrack = 0;
+    bool closed = false;                           // vrai après « Fermer le projet »
+    // Résultats réels des derniers traitements, exposés à l'interface :
+    std::string recalledWorkspace;                 // dernier espace de travail rappelé
+    int lastLogicalTouched = 0;                    // notes réellement modifiées
+    int lastRemovedEmpty = 0;                      // pistes vides réellement retirées
+    std::string lastImportSummary;                 // rapport réel du dernier import
+    std::string lastExportPath;                    // fichier réellement écrit
+    double lastDetectedBpm = 0.0;                  // tempo réellement détecté
+
     ProjectState()
     {
-        buses = { { "Bus A", 0.0, 0.0, false }, { "Bus B", 0.0, 0.0, false },
-                  { "Bus C", 0.0, 0.0, false }, { "Bus D", 0.0, 0.0, false } };
+        buses = defaultBuses();
         markers = { { 1.0, 1.0, "Intro", false }, { 9.0, 9.0, "Couplet 1", false },
                     { 17.0, 17.0, "Refrain 1", false }, { 25.0, 25.0, "Couplet 2", false },
                     { 33.0, 33.0, "Refrain 2", false }, { 41.0, 41.0, "Pont", false },
                     { 49.0, 49.0, "Final", false }, { 57.0, 57.0, "Fin", false } };
         templates = { "Vide", "Démo 4 pistes", "Podcast", "Mixage" };
+        tempoEvents = { { 1.0, 120.0 } };
+        signatures = { { 1.0, 4, 4 } };
+        workspaces = { { "Mixage", false, 64.0, 0.0, 0.0, 1.0, {}, {}, "", 0 },
+                       { "Édition", false, 96.0, 0.0, 0.0, 1.0, {}, {}, "", 0 },
+                       { "Arrangement", false, 48.0, 0.0, 0.0, 1.0, {}, {}, "", 0 },
+                       { "Pistes", false, 64.0, 0.0, 0.0, 1.0, {}, {}, "", 0 } };
+        logicalRules = { LogicalRule() };
+        midiModifiers = { MidiModifier() };
+        keyCommands = defaultKeyCommands();
+        layout.toolbarItems = { "play", "stop", "record", "rtz", "cycle", "click", "tempo", "position", "zoom" };
+    }
+
+    static std::vector<BusState> defaultBuses()
+    {
+        std::vector<BusState> out;
+        const char* names[4] = { "Bus A", "Bus B", "Bus C", "Bus D" };
+        for (int i = 0; i < 4; ++i)
+        {
+            BusState b;
+            b.name = names[i];
+            b.channelType = "group";
+            b.outputDevice = "Sortie principale";
+            b.outputChannel = i * 2;
+            out.push_back (b);
+        }
+        return out;
+    }
+
+    static std::vector<KeyCommand> defaultKeyCommands()
+    {
+        return { { "Space", "play" }, { "Enter", "stop" }, { "Ctrl+R", "record" },
+                 { "Home", "rtz" }, { "End", "end" }, { "Ctrl+Z", "undo" },
+                 { "Ctrl+Shift+Z", "redo" }, { "Ctrl+S", "saveProject" },
+                 { "Ctrl+N", "newProject" }, { "Ctrl+O", "openProject" },
+                 { "Ctrl+M", "muteSelected" }, { "F3", "mixer" }, { "F6", "automation" },
+                 { "Alt+B", "mediabay" }, { "Ctrl+E", "splitAtCursor" },
+                 { "Delete", "deleteSelected" }, { "Ctrl+D", "duplicateSelected" } };
+    }
+
+    double bpmAt (double bars) const
+    {
+        double bpmHere = bpm;
+        for (const auto& e : tempoEvents) if (bars >= e.bars) bpmHere = e.bpm;
+        return clampValue (bpmHere, 20.0, 300.0);
+    }
+    SignatureEvent signatureAt (double bars) const
+    {
+        SignatureEvent here { 1.0, 4, 4 };
+        for (const auto& e : signatures) if (bars >= e.bars) here = e;
+        if (here.denominator <= 0) here.denominator = 4;
+        return here;
+    }
+    // Conversion réelle mesure → secondes en intégrant la carte de tempo.
+    double secondsAtBars (double bars) const
+    {
+        if (tempoEvents.empty()) return (bars - 1.0) * 4.0 * 60.0 / bpm;
+        std::vector<TempoEvent> sorted = tempoEvents;
+        std::sort (sorted.begin(), sorted.end(), [] (const TempoEvent& a, const TempoEvent& b) { return a.bars < b.bars; });
+        double seconds = 0.0, cursor = sorted.front().bars, currentBpm = sorted.front().bpm;
+        for (size_t i = 1; i < sorted.size(); ++i)
+        {
+            const double next = sorted[i].bars;
+            if (next >= bars) break;
+            seconds += (std::min (bars, next) - cursor) * 4.0 * 60.0 / clampValue (currentBpm, 20.0, 300.0);
+            cursor = std::max (cursor, next);
+            currentBpm = sorted[i].bpm;
+        }
+        seconds += (bars - cursor) * 4.0 * 60.0 / clampValue (currentBpm, 20.0, 300.0);
+        return std::max (0.0, seconds);
+    }
+    double barsAtSeconds (double seconds) const
+    {
+        if (tempoEvents.empty()) return 1.0 + seconds * bpm / (4.0 * 60.0);
+        std::vector<TempoEvent> sorted = tempoEvents;
+        std::sort (sorted.begin(), sorted.end(), [] (const TempoEvent& a, const TempoEvent& b) { return a.bars < b.bars; });
+        double remaining = seconds, cursor = sorted.front().bars, currentBpm = sorted.front().bpm;
+        for (size_t i = 1; i < sorted.size(); ++i)
+        {
+            const double span = sorted[i].bars - cursor;
+            const double spanSeconds = span * 4.0 * 60.0 / clampValue (currentBpm, 20.0, 300.0);
+            if (remaining <= spanSeconds) return cursor + remaining * clampValue (currentBpm, 20.0, 300.0) / (4.0 * 60.0);
+            remaining -= spanSeconds;
+            cursor = sorted[i].bars;
+            currentBpm = sorted[i].bpm;
+        }
+        return cursor + remaining * clampValue (currentBpm, 20.0, 300.0) / (4.0 * 60.0);
     }
 
     double projectLengthBars() const
@@ -540,10 +782,31 @@ struct ProjectState
     }
     void normaliseMedia()
     {
+        for (auto& t : tracks)
+        {
+            t.syncChannelFlags();
+            for (auto& s : t.sends)
+            {
+                s.bus = static_cast<int> (clampValue (static_cast<double> (s.bus), 0.0, std::max (0.0, static_cast<double> (buses.size()) - 1.0)));
+                s.db = clampValue (s.db, -60.0, 12.0);
+            }
+            for (auto& q : t.quickControls) q.index = std::max (0, q.index);
+        }
+        for (auto& b : buses)
+            for (auto& s : b.sends)
+                s.db = clampValue (s.db, -60.0, 12.0);
         for (const auto& t : tracks)
             for (const auto& c : t.clips)
                 if (! c.media.empty() && std::find (media.begin(), media.end(), c.media) == media.end())
                     media.push_back (c.media);
+        std::sort (tempoEvents.begin(), tempoEvents.end(), [] (const TempoEvent& a, const TempoEvent& b) { return a.bars < b.bars; });
+        std::sort (signatures.begin(), signatures.end(), [] (const SignatureEvent& a, const SignatureEvent& b) { return a.bars < b.bars; });
+        std::sort (markers.begin(), markers.end(), [] (const MarkerState& a, const MarkerState& b) { return a.bars < b.bars; });
+        if (tempoEvents.empty()) tempoEvents = { { 1.0, bpm } };
+        if (signatures.empty()) signatures = { { 1.0, 4, 4 } };
+        selectedTrack = static_cast<int> (clampValue (static_cast<double> (selectedTrack), 0.0,
+                                                      std::max (0.0, static_cast<double> (tracks.size()) - 1.0)));
+        positionBars = clampValue (positionBars, 1.0, 1000000.0);
     }
 };
 
@@ -599,6 +862,114 @@ inline FxState fxFromJson (const JsonValue& j)
     fx.dynamics.enabled = jBool (d, "enabled", false);
     return fx;
 }
+inline JsonValue sendsToJson (const std::vector<SendState>& sends)
+{
+    JsonValue a (JsonValue::Type::Array);
+    for (const auto& s : sends)
+    {
+        JsonValue e (JsonValue::Type::Object);
+        e["bus"] = JsonValue (s.bus);
+        e["db"] = JsonValue (s.db);
+        e["preFader"] = JsonValue (s.preFader);
+        e["enabled"] = JsonValue (s.enabled);
+        a.array.push_back (e);
+    }
+    return a;
+}
+inline std::vector<SendState> sendsFromJson (const JsonValue& j)
+{
+    std::vector<SendState> out;
+    const auto& a = j.isArray() ? j : JsonValue();
+    for (const auto& e : a.array)
+    {
+        SendState s;
+        s.bus = std::max (0, jInt (e, "bus", 0));
+        s.db = clampValue (jNumber (e, "db", -60.0), -60.0, 12.0);
+        s.preFader = jBool (e, "preFader", false);
+        s.enabled = jBool (e, "enabled", true);
+        out.push_back (s);
+    }
+    return out;
+}
+inline JsonValue insertsToJson (const std::vector<InsertState>& inserts)
+{
+    JsonValue a (JsonValue::Type::Array);
+    for (const auto& i : inserts)
+    {
+        JsonValue e (JsonValue::Type::Object);
+        e["uid"] = JsonValue (i.uid);
+        e["name"] = JsonValue (i.name);
+        e["format"] = JsonValue (i.format);
+        e["file"] = JsonValue (i.file);
+        e["manufacturer"] = JsonValue (i.manufacturer);
+        e["category"] = JsonValue (i.category);
+        e["bypassed"] = JsonValue (i.bypassed);
+        e["enabled"] = JsonValue (i.enabled);
+        e["stateBase64"] = JsonValue (i.stateBase64);
+        e["latencySamples"] = JsonValue (i.latencySamples);
+        JsonValue p (JsonValue::Type::Array);
+        for (double v : i.params) p.array.push_back (JsonValue (v));
+        e["params"] = p;
+        JsonValue n (JsonValue::Type::Array);
+        for (const auto& s : i.paramNames) n.array.push_back (JsonValue (s));
+        e["paramNames"] = n;
+        a.array.push_back (e);
+    }
+    return a;
+}
+inline std::vector<InsertState> insertsFromJson (const JsonValue& j)
+{
+    std::vector<InsertState> out;
+    for (const auto& e : j.array)
+    {
+        InsertState i;
+        i.uid = jString (e, "uid");
+        i.name = jString (e, "name", "Insert");
+        i.format = jString (e, "format", "VST3");
+        i.file = jString (e, "file");
+        i.manufacturer = jString (e, "manufacturer");
+        i.category = jString (e, "category");
+        i.bypassed = jBool (e, "bypassed", false);
+        i.enabled = jBool (e, "enabled", true);
+        i.stateBase64 = jString (e, "stateBase64");
+        i.latencySamples = jInt (e, "latencySamples", 0);
+        for (const auto& v : e.get ("params").array) i.params.push_back (v.number);
+        for (const auto& v : e.get ("paramNames").array) i.paramNames.push_back (v.string);
+        out.push_back (i);
+    }
+    return out;
+}
+inline JsonValue quickControlsToJson (const std::array<QuickControl, 8>& q)
+{
+    JsonValue a (JsonValue::Type::Array);
+    for (const auto& c : q)
+    {
+        JsonValue e (JsonValue::Type::Object);
+        e["target"] = JsonValue (c.target);
+        e["param"] = JsonValue (c.param);
+        e["label"] = JsonValue (c.label);
+        e["index"] = JsonValue (c.index);
+        e["value"] = JsonValue (c.value);
+        e["assigned"] = JsonValue (c.assigned);
+        a.array.push_back (e);
+    }
+    return a;
+}
+inline void quickControlsFromJson (const JsonValue& j, std::array<QuickControl, 8>& q)
+{
+    size_t i = 0;
+    for (const auto& e : j.array)
+    {
+        if (i >= q.size()) break;
+        q[i].target = jString (e, "target", q[i].target);
+        q[i].param = jString (e, "param", q[i].param);
+        q[i].label = jString (e, "label", q[i].label);
+        q[i].index = jInt (e, "index", q[i].index);
+        q[i].value = jNumber (e, "value", q[i].value);
+        q[i].assigned = jBool (e, "assigned", q[i].assigned);
+        ++i;
+    }
+}
 inline JsonValue stateToJson (const ProjectState& s)
 {
     JsonValue j (JsonValue::Type::Object);
@@ -638,6 +1009,21 @@ inline JsonValue stateToJson (const ProjectState& s)
         e["bus"] = JsonValue (t.bus);
         e["sendDb"] = JsonValue (t.sendDb);
         e["fx"] = fxToJson (t.fx);
+        e["channelType"] = JsonValue (t.channelType);
+        e["inputDevice"] = JsonValue (t.inputDevice);
+        e["outputDevice"] = JsonValue (t.outputDevice);
+        e["inputChannel"] = JsonValue (t.inputChannel);
+        e["outputChannel"] = JsonValue (t.outputChannel);
+        e["midiChannel"] = JsonValue (t.midiChannel);
+        e["height"] = JsonValue (t.height);
+        e["visible"] = JsonValue (t.visible);
+        e["frozen"] = JsonValue (t.frozen);
+        e["locked"] = JsonValue (t.locked);
+        e["transposeSemitones"] = JsonValue (t.transposeSemitones);
+        e["delaySamples"] = JsonValue (t.delaySamples);
+        e["sends"] = sendsToJson (t.sends);
+        e["inserts"] = insertsToJson (t.inserts);
+        e["quickControls"] = quickControlsToJson (t.quickControls);
         JsonValue clips (JsonValue::Type::Array);
         for (const auto& c : t.clips)
         {
@@ -694,6 +1080,12 @@ inline JsonValue stateToJson (const ProjectState& s)
         e["volumeDb"] = JsonValue (b.volumeDb);
         e["pan"] = JsonValue (b.pan);
         e["mute"] = JsonValue (b.mute);
+        e["channelType"] = JsonValue (b.channelType);
+        e["outputDevice"] = JsonValue (b.outputDevice);
+        e["outputChannel"] = JsonValue (b.outputChannel);
+        e["solo"] = JsonValue (b.solo);
+        e["sends"] = sendsToJson (b.sends);
+        e["inserts"] = insertsToJson (b.inserts);
         buses.array.push_back (e);
     }
     j["buses"] = buses;
@@ -733,13 +1125,197 @@ inline JsonValue stateToJson (const ProjectState& s)
     cr["dim"] = JsonValue (s.controlRoom.dim);
     cr["mono"] = JsonValue (s.controlRoom.mono);
     cr["source"] = JsonValue (s.controlRoom.source);
+    cr["talkback"] = JsonValue (s.controlRoom.talkback);
+    cr["listen"] = JsonValue (s.controlRoom.listen);
+    cr["dimDb"] = JsonValue (s.controlRoom.dimDb);
+    cr["phonesDb"] = JsonValue (s.controlRoom.phonesDb);
+    cr["monADb"] = JsonValue (s.controlRoom.monADb);
+    cr["monBDb"] = JsonValue (s.controlRoom.monBDb);
+    cr["activeMonitor"] = JsonValue (s.controlRoom.activeMonitor);
+    cr["exclusiveMonitor"] = JsonValue (s.controlRoom.exclusiveMonitor);
     j["controlRoom"] = cr;
+
+    // ---- modèle étendu réel
+    j["path"] = JsonValue (s.path);
+    j["positionBars"] = JsonValue (s.positionBars);
+    j["selectedTrack"] = JsonValue (s.selectedTrack);
+    j["closed"] = JsonValue (s.closed);
+
+    JsonValue tempo (JsonValue::Type::Array);
+    for (const auto& e : s.tempoEvents)
+    {
+        JsonValue v (JsonValue::Type::Object);
+        v["bars"] = JsonValue (e.bars);
+        v["bpm"] = JsonValue (e.bpm);
+        tempo.array.push_back (v);
+    }
+    j["tempoEvents"] = tempo;
+
+    JsonValue sigs (JsonValue::Type::Array);
+    for (const auto& e : s.signatures)
+    {
+        JsonValue v (JsonValue::Type::Object);
+        v["bars"] = JsonValue (e.bars);
+        v["numerator"] = JsonValue (e.numerator);
+        v["denominator"] = JsonValue (e.denominator);
+        sigs.array.push_back (v);
+    }
+    j["signatures"] = sigs;
+
+    JsonValue ws (JsonValue::Type::Array);
+    for (const auto& w : s.workspaces)
+    {
+        JsonValue v (JsonValue::Type::Object);
+        v["name"] = JsonValue (w.name);
+        v["locked"] = JsonValue (w.locked);
+        v["barW"] = JsonValue (w.barW);
+        v["scrollLeft"] = JsonValue (w.scrollLeft);
+        v["scrollTop"] = JsonValue (w.scrollTop);
+        v["positionBars"] = JsonValue (w.positionBars);
+        v["selectedTrack"] = JsonValue (w.selectedTrack);
+        v["panelState"] = JsonValue (w.panelState);
+        JsonValue wins (JsonValue::Type::Array);
+        for (const auto& n : w.windows) wins.array.push_back (JsonValue (n));
+        v["windows"] = wins;
+        JsonValue items (JsonValue::Type::Array);
+        for (const auto& n : w.toolbarItems) items.array.push_back (JsonValue (n));
+        v["toolbarItems"] = items;
+        ws.array.push_back (v);
+    }
+    j["workspaces"] = ws;
+
+    JsonValue snaps (JsonValue::Type::Array);
+    for (const auto& sn : s.snapshots)
+    {
+        JsonValue v (JsonValue::Type::Object);
+        v["name"] = JsonValue (sn.name);
+        v["masterDb"] = JsonValue (sn.masterDb);
+        JsonValue ts (JsonValue::Type::Array);
+        for (const auto& t : sn.tracks)
+        {
+            JsonValue e (JsonValue::Type::Object);
+            e["name"] = JsonValue (t.name);
+            e["volumeDb"] = JsonValue (t.volumeDb);
+            e["pan"] = JsonValue (t.pan);
+            e["mute"] = JsonValue (t.mute);
+            e["solo"] = JsonValue (t.solo);
+            e["bus"] = JsonValue (t.bus);
+            e["sendDb"] = JsonValue (t.sendDb);
+            e["fx"] = fxToJson (t.fx);
+            e["sends"] = sendsToJson (t.sends);
+            ts.array.push_back (e);
+        }
+        v["tracks"] = ts;
+        JsonValue bs (JsonValue::Type::Array);
+        for (const auto& b : sn.buses)
+        {
+            JsonValue e (JsonValue::Type::Object);
+            e["name"] = JsonValue (b.name);
+            e["volumeDb"] = JsonValue (b.volumeDb);
+            e["pan"] = JsonValue (b.pan);
+            e["mute"] = JsonValue (b.mute);
+            bs.array.push_back (e);
+        }
+        v["buses"] = bs;
+        snaps.array.push_back (v);
+    }
+    j["snapshots"] = snaps;
+
+    JsonValue rec (JsonValue::Type::Array);
+    for (const auto& r : s.recents)
+    {
+        JsonValue v (JsonValue::Type::Object);
+        v["name"] = JsonValue (r.name);
+        v["path"] = JsonValue (r.path);
+        v["openedUtc"] = JsonValue (r.openedUtc);
+        rec.array.push_back (v);
+    }
+    j["recents"] = rec;
+
+    JsonValue keys (JsonValue::Type::Array);
+    for (const auto& k : s.keyCommands)
+    {
+        JsonValue v (JsonValue::Type::Object);
+        v["combo"] = JsonValue (k.combo);
+        v["action"] = JsonValue (k.action);
+        keys.array.push_back (v);
+    }
+    j["keyCommands"] = keys;
+
+    JsonValue rules (JsonValue::Type::Array);
+    for (const auto& r : s.logicalRules)
+    {
+        JsonValue v (JsonValue::Type::Object);
+        v["name"] = JsonValue (r.name);
+        v["enabled"] = JsonValue (r.enabled);
+        v["pitchMin"] = JsonValue (r.pitchMin);
+        v["pitchMax"] = JsonValue (r.pitchMax);
+        v["velocityMin"] = JsonValue (r.velocityMin);
+        v["velocityMax"] = JsonValue (r.velocityMax);
+        v["lengthMinBars"] = JsonValue (r.lengthMinBars);
+        v["lengthMaxBars"] = JsonValue (r.lengthMaxBars);
+        v["onlySelectedTrack"] = JsonValue (r.onlySelectedTrack);
+        v["typeFilter"] = JsonValue (r.typeFilter);
+        v["action"] = JsonValue (r.action);
+        v["actionValue"] = JsonValue (r.actionValue);
+        v["grid"] = JsonValue (r.grid);
+        rules.array.push_back (v);
+    }
+    j["logicalRules"] = rules;
+
+    JsonValue mods (JsonValue::Type::Array);
+    for (const auto& m : s.midiModifiers)
+    {
+        JsonValue v (JsonValue::Type::Object);
+        v["name"] = JsonValue (m.name);
+        v["transposeSemitones"] = JsonValue (m.transposeSemitones);
+        v["velocityOffset"] = JsonValue (m.velocityOffset);
+        v["velocityScale"] = JsonValue (m.velocityScale);
+        v["lengthScale"] = JsonValue (m.lengthScale);
+        v["delayBars"] = JsonValue (m.delayBars);
+        v["invert"] = JsonValue (m.invert);
+        mods.array.push_back (v);
+    }
+    j["midiModifiers"] = mods;
+
+    JsonValue folders (JsonValue::Type::Array);
+    for (const auto& f : s.pluginFolders) folders.array.push_back (JsonValue (f));
+    j["pluginFolders"] = folders;
+
+    JsonValue pi (JsonValue::Type::Object);
+    pi["author"] = JsonValue (s.info.author);
+    pi["copyright"] = JsonValue (s.info.copyright);
+    pi["notes"] = JsonValue (s.info.notes);
+    pi["originator"] = JsonValue (s.info.originator);
+    pi["reference"] = JsonValue (s.info.reference);
+    pi["sampleRate"] = JsonValue (s.info.sampleRate);
+    pi["bitDepth"] = JsonValue (s.info.bitDepth);
+    pi["startTimecode"] = JsonValue (s.info.startTimecode);
+    j["info"] = pi;
+
+    JsonValue lo (JsonValue::Type::Object);
+    lo["rulerFormat"] = JsonValue (s.layout.rulerFormat);
+    lo["snapMode"] = JsonValue (s.layout.snapMode);
+    lo["nudgeMode"] = JsonValue (s.layout.nudgeMode);
+    lo["editMode"] = JsonValue (s.layout.editMode);
+    lo["timebase"] = JsonValue (s.layout.timebase);
+    lo["showToolbar"] = JsonValue (s.layout.showToolbar);
+    lo["showInspector"] = JsonValue (s.layout.showInspector);
+    lo["showOverview"] = JsonValue (s.layout.showOverview);
+    lo["showInfoline"] = JsonValue (s.layout.showInfoline);
+    lo["showMarkerTrack"] = JsonValue (s.layout.showMarkerTrack);
+    lo["trackHeight"] = JsonValue (s.layout.trackHeight);
+    JsonValue ti (JsonValue::Type::Array);
+    for (const auto& n : s.layout.toolbarItems) ti.array.push_back (JsonValue (n));
+    lo["toolbarItems"] = ti;
+    j["layout"] = lo;
+
     return j;
 }
 inline ProjectState stateFromJson (const JsonValue& j)
 {
     ProjectState s;
-    s.schema = jInt (j, "schema", 2);
+    s.schema = ProjectState().schema; // le chargeur migre tout projet vers le schéma courant
     s.format = jString (j, "format", "ALPHAPROJ");
     s.name = jString (j, "name", s.name);
     s.createdUtc = jString (j, "createdUtc", utcNow());
@@ -774,6 +1350,22 @@ inline ProjectState stateFromJson (const JsonValue& j)
         t.bus = static_cast<int> (clampValue (static_cast<double> (jInt (e, "bus", 0)), 0.0, 3.0));
         t.sendDb = clampValue (jNumber (e, "sendDb", 0.0), -60.0, 12.0);
         t.fx = fxFromJson (e.get ("fx"));
+        t.channelType = jString (e, "channelType", t.instrument ? "instrument" : "audio");
+        t.inputDevice = jString (e, "inputDevice", t.inputDevice);
+        t.outputDevice = jString (e, "outputDevice", t.outputDevice);
+        t.inputChannel = std::max (0, jInt (e, "inputChannel", 0));
+        t.outputChannel = std::max (0, jInt (e, "outputChannel", 0));
+        t.midiChannel = static_cast<int> (clampValue (static_cast<double> (jInt (e, "midiChannel", 1)), 1.0, 16.0));
+        t.height = clampValue (jNumber (e, "height", 62.0), 24.0, 400.0);
+        t.visible = jBool (e, "visible", true);
+        t.frozen = jBool (e, "frozen", false);
+        t.locked = jBool (e, "locked", false);
+        t.transposeSemitones = static_cast<int> (clampValue (static_cast<double> (jInt (e, "transposeSemitones", 0)), -24.0, 24.0));
+        t.delaySamples = static_cast<long long> (clampValue (jNumber (e, "delaySamples", 0.0), 0.0, 1000000.0));
+        t.sends = sendsFromJson (e.get ("sends"));
+        t.inserts = insertsFromJson (e.get ("inserts"));
+        quickControlsFromJson (e.get ("quickControls"), t.quickControls);
+        t.syncChannelFlags();
         const auto& clips = e.get ("clips");
         if (clips.isArray()) for (const auto& k : clips.array)
         {
@@ -818,11 +1410,29 @@ inline ProjectState stateFromJson (const JsonValue& j)
     s.buses.clear();
     const auto& buses = j.get ("buses");
     if (buses.isArray()) for (const auto& e : buses.array)
-        s.buses.push_back ({ jString (e, "name", "Bus"),
-                             clampValue (jNumber (e, "volumeDb", 0.0), -60.0, 12.0),
-                             clampValue (jNumber (e, "pan", 0.0), -1.0, 1.0),
-                             jBool (e, "mute", false) });
-    if (s.buses.empty()) { ProjectState def; s.buses = def.buses; }
+    {
+        BusState b;
+        b.name = jString (e, "name", "Bus");
+        b.volumeDb = clampValue (jNumber (e, "volumeDb", 0.0), -60.0, 12.0);
+        b.pan = clampValue (jNumber (e, "pan", 0.0), -1.0, 1.0);
+        b.mute = jBool (e, "mute", false);
+        b.channelType = jString (e, "channelType", "group");
+        b.outputDevice = jString (e, "outputDevice", "Sortie principale");
+        b.outputChannel = std::max (0, jInt (e, "outputChannel", 0));
+        b.solo = jBool (e, "solo", false);
+        b.sends = sendsFromJson (e.get ("sends"));
+        b.inserts = insertsFromJson (e.get ("inserts"));
+        s.buses.push_back (b);
+    }
+    if (s.buses.empty()) { s.buses = ProjectState::defaultBuses(); }
+    else if (s.buses.size() < 4)
+    {
+        // Migration réelle : un projet ancien qui déclare moins de bus que
+        // l'architecture courante voit ses bus manquants recréés, sinon les
+        // pistes routées vers ces bus perdraient leur destination.
+        const auto defaults = ProjectState::defaultBuses();
+        for (size_t i = s.buses.size(); i < defaults.size(); ++i) s.buses.push_back (defaults[i]);
+    }
 
     s.markers.clear();
     const auto& markers = j.get ("markers");
@@ -855,6 +1465,162 @@ inline ProjectState stateFromJson (const JsonValue& j)
     s.controlRoom.dim = jBool (cr, "dim", false);
     s.controlRoom.mono = jBool (cr, "mono", false);
     s.controlRoom.source = jString (cr, "source", "Mix");
+    s.controlRoom.talkback = jBool (cr, "talkback", false);
+    s.controlRoom.listen = jBool (cr, "listen", false);
+    s.controlRoom.dimDb = clampValue (jNumber (cr, "dimDb", -20.0), -60.0, 0.0);
+    s.controlRoom.phonesDb = clampValue (jNumber (cr, "phonesDb", -12.0), -60.0, 12.0);
+    s.controlRoom.monADb = clampValue (jNumber (cr, "monADb", -2.0), -60.0, 12.0);
+    s.controlRoom.monBDb = clampValue (jNumber (cr, "monBDb", -6.0), -60.0, 12.0);
+    s.controlRoom.activeMonitor = jString (cr, "activeMonitor", "A");
+    s.controlRoom.exclusiveMonitor = jBool (cr, "exclusiveMonitor", true);
+
+    // ---- modèle étendu réel
+    s.path = jString (j, "path", "");
+    s.positionBars = clampValue (jNumber (j, "positionBars", 1.0), 1.0, 1000000.0);
+    s.selectedTrack = std::max (0, jInt (j, "selectedTrack", 0));
+    s.closed = jBool (j, "closed", false);
+
+    s.tempoEvents.clear();
+    for (const auto& e : j.get ("tempoEvents").array)
+        s.tempoEvents.push_back ({ clampValue (jNumber (e, "bars", 1.0), 1.0, 100000.0),
+                                   clampValue (jNumber (e, "bpm", 120.0), 20.0, 300.0) });
+    if (s.tempoEvents.empty()) s.tempoEvents = { { 1.0, s.bpm } };
+
+    s.signatures.clear();
+    for (const auto& e : j.get ("signatures").array)
+    {
+        SignatureEvent v;
+        v.bars = clampValue (jNumber (e, "bars", 1.0), 1.0, 100000.0);
+        v.numerator = static_cast<int> (clampValue (static_cast<double> (jInt (e, "numerator", 4)), 1.0, 16.0));
+        v.denominator = static_cast<int> (clampValue (static_cast<double> (jInt (e, "denominator", 4)), 1.0, 16.0));
+        s.signatures.push_back (v);
+    }
+    if (s.signatures.empty()) s.signatures = { { 1.0, 4, 4 } };
+
+    s.workspaces.clear();
+    for (const auto& e : j.get ("workspaces").array)
+    {
+        WorkspaceState w;
+        w.name = jString (e, "name", "Espace");
+        w.locked = jBool (e, "locked", false);
+        w.barW = clampValue (jNumber (e, "barW", 64.0), 4.0, 2000.0);
+        w.scrollLeft = std::max (0.0, jNumber (e, "scrollLeft", 0.0));
+        w.scrollTop = std::max (0.0, jNumber (e, "scrollTop", 0.0));
+        w.positionBars = clampValue (jNumber (e, "positionBars", 1.0), 1.0, 1000000.0);
+        w.selectedTrack = std::max (0, jInt (e, "selectedTrack", 0));
+        w.panelState = jString (e, "panelState", "");
+        for (const auto& n : e.get ("windows").array) if (n.type == JsonValue::Type::String) w.windows.push_back (n.string);
+        for (const auto& n : e.get ("toolbarItems").array) if (n.type == JsonValue::Type::String) w.toolbarItems.push_back (n.string);
+        s.workspaces.push_back (w);
+    }
+    if (s.workspaces.empty()) { ProjectState def; s.workspaces = def.workspaces; }
+
+    s.snapshots.clear();
+    for (const auto& e : j.get ("snapshots").array)
+    {
+        SnapshotState sn;
+        sn.name = jString (e, "name", "Instantané");
+        sn.masterDb = clampValue (jNumber (e, "masterDb", 0.0), -60.0, 12.0);
+        for (const auto& t : e.get ("tracks").array)
+        {
+            TrackState ts;
+            ts.name = jString (t, "name", "Audio");
+            ts.volumeDb = clampValue (jNumber (t, "volumeDb", -6.0), -60.0, 12.0);
+            ts.pan = clampValue (jNumber (t, "pan", 0.0), -1.0, 1.0);
+            ts.mute = jBool (t, "mute", false);
+            ts.solo = jBool (t, "solo", false);
+            ts.bus = static_cast<int> (clampValue (static_cast<double> (jInt (t, "bus", 0)), 0.0, 3.0));
+            ts.sendDb = clampValue (jNumber (t, "sendDb", 0.0), -60.0, 12.0);
+            ts.fx = fxFromJson (t.get ("fx"));
+            ts.sends = sendsFromJson (t.get ("sends"));
+            sn.tracks.push_back (ts);
+        }
+        for (const auto& b : e.get ("buses").array)
+        {
+            BusState bs;
+            bs.name = jString (b, "name", "Bus");
+            bs.volumeDb = clampValue (jNumber (b, "volumeDb", 0.0), -60.0, 12.0);
+            bs.pan = clampValue (jNumber (b, "pan", 0.0), -1.0, 1.0);
+            bs.mute = jBool (b, "mute", false);
+            sn.buses.push_back (bs);
+        }
+        s.snapshots.push_back (sn);
+    }
+
+    s.recents.clear();
+    for (const auto& e : j.get ("recents").array)
+        s.recents.push_back ({ jString (e, "name", "Projet"), jString (e, "path", ""), jString (e, "openedUtc", "") });
+
+    s.keyCommands.clear();
+    for (const auto& e : j.get ("keyCommands").array)
+        s.keyCommands.push_back ({ jString (e, "combo", ""), jString (e, "action", "") });
+    if (s.keyCommands.empty()) s.keyCommands = ProjectState::defaultKeyCommands();
+
+    s.logicalRules.clear();
+    for (const auto& e : j.get ("logicalRules").array)
+    {
+        LogicalRule r;
+        r.name = jString (e, "name", r.name);
+        r.enabled = jBool (e, "enabled", true);
+        r.pitchMin = static_cast<int> (clampValue (static_cast<double> (jInt (e, "pitchMin", 0)), 0.0, 127.0));
+        r.pitchMax = static_cast<int> (clampValue (static_cast<double> (jInt (e, "pitchMax", 127)), 0.0, 127.0));
+        r.velocityMin = static_cast<int> (clampValue (static_cast<double> (jInt (e, "velocityMin", 1)), 1.0, 127.0));
+        r.velocityMax = static_cast<int> (clampValue (static_cast<double> (jInt (e, "velocityMax", 127)), 1.0, 127.0));
+        r.lengthMinBars = clampValue (jNumber (e, "lengthMinBars", 0.0), 0.0, 100000.0);
+        r.lengthMaxBars = clampValue (jNumber (e, "lengthMaxBars", 100000.0), 0.0, 100000.0);
+        r.onlySelectedTrack = jBool (e, "onlySelectedTrack", true);
+        r.typeFilter = jString (e, "typeFilter", "note");
+        r.action = jString (e, "action", "setVelocity");
+        r.actionValue = jNumber (e, "actionValue", 0.0);
+        r.grid = jString (e, "grid", "1/16");
+        s.logicalRules.push_back (r);
+    }
+    if (s.logicalRules.empty()) s.logicalRules = { LogicalRule() };
+
+    s.midiModifiers.clear();
+    for (const auto& e : j.get ("midiModifiers").array)
+    {
+        MidiModifier m;
+        m.name = jString (e, "name", m.name);
+        m.transposeSemitones = clampValue (jNumber (e, "transposeSemitones", 0.0), -24.0, 24.0);
+        m.velocityOffset = clampValue (jNumber (e, "velocityOffset", 0.0), -127.0, 127.0);
+        m.velocityScale = clampValue (jNumber (e, "velocityScale", 1.0), 0.0, 4.0);
+        m.lengthScale = clampValue (jNumber (e, "lengthScale", 1.0), 0.01, 8.0);
+        m.delayBars = clampValue (jNumber (e, "delayBars", 0.0), -8.0, 8.0);
+        m.invert = jBool (e, "invert", false);
+        s.midiModifiers.push_back (m);
+    }
+    if (s.midiModifiers.empty()) s.midiModifiers = { MidiModifier() };
+
+    s.pluginFolders.clear();
+    for (const auto& e : j.get ("pluginFolders").array) if (e.type == JsonValue::Type::String) s.pluginFolders.push_back (e.string);
+
+    const auto& pi = j.get ("info");
+    s.info.author = jString (pi, "author", "");
+    s.info.copyright = jString (pi, "copyright", "");
+    s.info.notes = jString (pi, "notes", "");
+    s.info.originator = jString (pi, "originator", "");
+    s.info.reference = jString (pi, "reference", "");
+    s.info.sampleRate = jString (pi, "sampleRate", "48000");
+    s.info.bitDepth = jString (pi, "bitDepth", "24");
+    s.info.startTimecode = jString (pi, "startTimecode", "00:00:00:00");
+
+    const auto& lo = j.get ("layout");
+    s.layout.rulerFormat = jString (lo, "rulerFormat", "bars");
+    s.layout.snapMode = jString (lo, "snapMode", "grid");
+    s.layout.nudgeMode = jString (lo, "nudgeMode", "tick");
+    s.layout.editMode = jString (lo, "editMode", "normal");
+    s.layout.timebase = jString (lo, "timebase", "musical");
+    s.layout.showToolbar = jBool (lo, "showToolbar", true);
+    s.layout.showInspector = jBool (lo, "showInspector", true);
+    s.layout.showOverview = jBool (lo, "showOverview", true);
+    s.layout.showInfoline = jBool (lo, "showInfoline", true);
+    s.layout.showMarkerTrack = jBool (lo, "showMarkerTrack", true);
+    s.layout.trackHeight = clampValue (jNumber (lo, "trackHeight", 62.0), 24.0, 400.0);
+    s.layout.toolbarItems.clear();
+    for (const auto& n : lo.get ("toolbarItems").array) if (n.type == JsonValue::Type::String) s.layout.toolbarItems.push_back (n.string);
+    if (s.layout.toolbarItems.empty()) { ProjectState def; s.layout.toolbarItems = def.layout.toolbarItems; }
+
     s.normaliseMedia();
     return s;
 }
@@ -1115,7 +1881,56 @@ public:
             { "setMidiNotes", "Notes MIDI", setMidiNotes },
             { "quantizeMidi", "Quantification MIDI", quantizeMidi },
             { "importMedia", "Importer un média", importMedia },
-            { "replaceState", "Édition de l'interface", replaceState }
+            { "replaceState", "Édition de l'interface", replaceState },
+            // ---- commandes réelles du modèle étendu (audit v6)
+            { "setChannelType", "Type de canal", setChannelType },
+            { "setTrackRouting", "Routage de piste", setTrackRouting },
+            { "setTrackLayout", "Disposition de piste", setTrackLayout },
+            { "setBusRouting", "Routage de bus", setBusRouting },
+            { "addSend", "Ajouter un départ", addSend },
+            { "setSend", "Réglage de départ", setSend },
+            { "removeSend", "Supprimer un départ", removeSend },
+            { "addInsert", "Ajouter un insert", addInsert },
+            { "removeInsert", "Supprimer un insert", removeInsert },
+            { "moveInsert", "Déplacer un insert", moveInsert },
+            { "setInsertBypass", "Bypass d'insert", setInsertBypass },
+            { "setInsertParameter", "Paramètre d'insert", setInsertParameter },
+            { "setInsertState", "État d'insert", setInsertState },
+            { "setQuickControl", "Quick Control", setQuickControl },
+            { "applyQuickControl", "Appliquer un Quick Control", applyQuickControl },
+            { "addMarker", "Ajouter un marqueur", addMarker },
+            { "removeMarker", "Supprimer un marqueur", removeMarker },
+            { "renameMarker", "Renommer un marqueur", renameMarker },
+            { "addTempoEvent", "Événement de tempo", addTempoEvent },
+            { "removeTempoEvent", "Supprimer un événement de tempo", removeTempoEvent },
+            { "addSignature", "Changement de mesure", addSignature },
+            { "removeSignature", "Supprimer une mesure", removeSignature },
+            { "setProjectInfo", "Informations du projet", setProjectInfo },
+            { "storeWorkspace", "Mémoriser un espace de travail", storeWorkspace },
+            { "recallWorkspace", "Rappeler un espace de travail", recallWorkspace },
+            { "deleteWorkspace", "Supprimer un espace de travail", deleteWorkspace },
+            { "setWorkspaceLock", "Verrou d'espace de travail", setWorkspaceLock },
+            { "storeSnapshot", "Mémoriser un instantané de mix", storeSnapshot },
+            { "recallSnapshot", "Rappeler un instantané de mix", recallSnapshot },
+            { "deleteSnapshot", "Supprimer un instantané de mix", deleteSnapshot },
+            { "addRecent", "Projet récent", addRecent },
+            { "clearRecents", "Vider les projets récents", clearRecents },
+            { "setKeyCommand", "Raccourci clavier", setKeyCommand },
+            { "resetKeyCommands", "Raccourcis par défaut", resetKeyCommands },
+            { "storeLogicalRule", "Règle d'éditeur logique", storeLogicalRule },
+            { "deleteLogicalRule", "Supprimer une règle logique", deleteLogicalRule },
+            { "applyLogicalEdit", "Édition logique MIDI", applyLogicalEdit },
+            { "storeMidiModifier", "Modificateur MIDI", storeMidiModifier },
+            { "deleteMidiModifier", "Supprimer un modificateur MIDI", deleteMidiModifier },
+            { "applyMidiModifier", "Appliquer un modificateur MIDI", applyMidiModifier },
+            { "transposeMidi", "Transposition MIDI", transposeMidi },
+            { "removeEmptyTracks", "Retirer les pistes vides", removeEmptyTracks },
+            { "addPluginFolder", "Dossier de greffons", addPluginFolder },
+            { "removePluginFolder", "Retirer un dossier de greffons", removePluginFolder },
+            { "setUiLayout", "Disposition de l'interface", setUiLayout },
+            { "setTransportState", "Position du curseur", setTransportState },
+            { "setTrackColour", "Couleur de piste", setTrackColour },
+            { "closeProject", "Fermer le projet", closeProject }
         };
         for (const auto& e : table)
             if (name == e.name)
@@ -1191,10 +2006,25 @@ private:
     static bool addTrack (ProjectState& s, const JsonValue& p, std::string&)
     {
         TrackState t;
-        t.id = "native_" + std::to_string (s.tracks.size());
+        // AUDIT v6 (A121bis) : identifiant unique garanti — après suppression,
+        // la taille du vecteur peut réutiliser un indice déjà attribué.
+        int maxN = -1;
+        for (const auto& other : s.tracks)
+        {
+            const std::string oid = other.id;
+            if (oid.rfind ("native_", 0) == 0)
+                maxN = std::max (maxN, std::atoi (oid.c_str() + 7));
+        }
+        t.id = "native_" + std::to_string (maxN + 1);
         t.name = jString (p, "name", "Audio " + std::to_string (s.tracks.size() + 1));
         t.bus = jInt (p, "bus", 0);
+        // AUDIT v6 (A96) : le type choisi dans l'interface est réellement
+        // conservé par le modèle — plus de piste audio par défaut.
+        t.channelType = jString (p, "channelType", "audio");
+        t.midiChannel = jInt (p, "midiChannel", 1);
+        t.syncChannelFlags();
         s.tracks.push_back (t);
+        s.selectedTrack = static_cast<int> (s.tracks.size() - 1);
         return true;
     }
     static bool removeTrack (ProjectState& s, const JsonValue& p, std::string& err)
@@ -1354,6 +2184,7 @@ private:
                 b.highShelf = type == "highShelf";
             }
             else { err = "Champ EQ inconnu"; return false; }
+            return true; // bande EQ traitée — ne pas retomber sur la dynamique
         }
         const auto field = jString (p, "field");
         if (field == "thresholdDb") fx.dynamics.thresholdDb = clampValue (jNumber (p, "value", fx.dynamics.thresholdDb), -60.0, 0.0);
@@ -1362,6 +2193,9 @@ private:
         else if (field == "releaseMs") fx.dynamics.releaseMs = clampValue (jNumber (p, "value", fx.dynamics.releaseMs), 1.0, 2000.0);
         else if (field == "makeupDb") fx.dynamics.makeupDb = clampValue (jNumber (p, "value", fx.dynamics.makeupDb), -24.0, 24.0);
         else if (field == "dynamicsEnabled" || field == "compressor") fx.dynamics.enabled = jBool (p, "value", fx.dynamics.enabled);
+        // AUDIT v6 (A131) : un champ de dynamique inconnu est refusé au lieu
+        // d'être accepté silencieusement.
+        else if (! field.empty()) { err = "Champ de dynamique inconnu"; return false; }
         return true;
     }
     static bool setAutomation (ProjectState& s, const JsonValue& p, std::string& err)
@@ -1427,6 +2261,809 @@ private:
         if (! state.isObject()) { err = "Document d'interface invalide"; return false; }
         s = stateFromJson (state);
         s.videoEnabled = false;
+        return true;
+    }
+
+    // ============================================================ helpers réels
+    static double gridToBars (const std::string& grid)
+    {
+        if (grid == "1/1") return 4.0;
+        if (grid == "1/2") return 2.0;
+        if (grid == "1/2T") return 4.0 / 3.0;
+        if (grid == "1/4") return 1.0;
+        if (grid == "1/4T") return 2.0 / 3.0;
+        if (grid == "1/8") return 0.5;
+        if (grid == "1/8T") return 1.0 / 3.0;
+        if (grid == "1/16") return 0.25;
+        if (grid == "1/16T") return 1.0 / 6.0;
+        if (grid == "1/32") return 0.125;
+        if (grid == "1/64") return 0.0625;
+        if (grid == "tick") return 1.0 / 960.0;
+        return 0.25;
+    }
+    static bool trackValid (const ProjectState& s, int i, std::string& err) { return indexValid (s, i, err); }
+    static int busIndexByName (const ProjectState& s, const std::string& name)
+    {
+        for (size_t i = 0; i < s.buses.size(); ++i) if (s.buses[i].name == name) return static_cast<int> (i);
+        return -1;
+    }
+    static double readValueNumber (const JsonValue& p, const std::string& key, double fallback)
+    {
+        const auto& v = p.get (key);
+        if (v.type == JsonValue::Type::Number) return v.number;
+        if (v.type == JsonValue::Type::Bool) return v.boolean ? 1.0 : 0.0;
+        if (v.type == JsonValue::Type::String)
+        {
+            std::string t = v.string;
+            for (auto& c : t) if (c == ',') c = '.';
+            try { return std::stod (t); } catch (...) { return fallback; }
+        }
+        return fallback;
+    }
+
+    // ============================================== type de canal et routage
+    static bool setChannelType (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        const int i = jInt (p, "index", -1);
+        if (! trackValid (s, i, err)) return false;
+        const auto type = jString (p, "type", s.tracks[static_cast<size_t> (i)].channelType);
+        static const char* valid[] = { "audio", "instrument", "midi", "group", "fx" };
+        if (std::find (std::begin (valid), std::end (valid), type) == std::end (valid))
+        { err = "Type de canal inconnu : " + type; return false; }
+        auto& t = s.tracks[static_cast<size_t> (i)];
+        t.channelType = type;
+        t.syncChannelFlags();
+        if (type == "group" || type == "fx") { t.arm = false; t.clips.clear(); }
+        if (type == "midi") { t.clips.clear(); t.arm = false; }
+        return true;
+    }
+    static bool setTrackRouting (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        const int i = jInt (p, "index", -1);
+        if (! trackValid (s, i, err)) return false;
+        auto& t = s.tracks[static_cast<size_t> (i)];
+        if (p.has ("inputDevice")) t.inputDevice = jString (p, "inputDevice", t.inputDevice);
+        if (p.has ("outputDevice")) t.outputDevice = jString (p, "outputDevice", t.outputDevice);
+        if (p.has ("inputChannel")) t.inputChannel = std::max (0, jInt (p, "inputChannel", t.inputChannel));
+        if (p.has ("outputChannel")) t.outputChannel = std::max (0, jInt (p, "outputChannel", t.outputChannel));
+        if (p.has ("midiChannel")) t.midiChannel = static_cast<int> (clampValue (static_cast<double> (jInt (p, "midiChannel", t.midiChannel)), 1.0, 16.0));
+        if (p.has ("bus"))
+        {
+            const int b = static_cast<int> (clampValue (static_cast<double> (jInt (p, "bus", t.bus)), 0.0,
+                                                        std::max (0.0, static_cast<double> (s.buses.size()) - 1.0)));
+            t.bus = b;
+            if (b < static_cast<int> (s.buses.size())) t.outputDevice = s.buses[static_cast<size_t> (b)].name;
+        }
+        if (p.has ("delaySamples")) t.delaySamples = static_cast<long long> (clampValue (jNumber (p, "delaySamples", static_cast<double> (t.delaySamples)), 0.0, 1000000.0));
+        if (p.has ("transposeSemitones")) t.transposeSemitones = static_cast<int> (clampValue (static_cast<double> (jInt (p, "transposeSemitones", t.transposeSemitones)), -24.0, 24.0));
+        return true;
+    }
+    static bool setTrackLayout (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        const int i = jInt (p, "index", -1);
+        if (! trackValid (s, i, err)) return false;
+        auto& t = s.tracks[static_cast<size_t> (i)];
+        if (p.has ("height")) t.height = clampValue (jNumber (p, "height", t.height), 24.0, 400.0);
+        if (p.has ("visible")) t.visible = jBool (p, "visible", t.visible);
+        if (p.has ("frozen")) t.frozen = jBool (p, "frozen", t.frozen);
+        if (p.has ("locked")) t.locked = jBool (p, "locked", t.locked);
+        if (p.has ("colour")) t.colour = jString (p, "colour", t.colour);
+        return true;
+    }
+    static bool setTrackColour (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        const int i = jInt (p, "index", -1);
+        if (! trackValid (s, i, err)) return false;
+        const auto colour = jString (p, "colour", s.tracks[static_cast<size_t> (i)].colour);
+        if (colour.size() < 4) { err = "Couleur invalide : " + colour; return false; }
+        s.tracks[static_cast<size_t> (i)].colour = colour;
+        return true;
+    }
+    static bool setBusRouting (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        const int i = jInt (p, "index", -1);
+        if (i < 0 || i >= static_cast<int> (s.buses.size())) { err = "Indice de bus invalide"; return false; }
+        auto& b = s.buses[static_cast<size_t> (i)];
+        if (p.has ("outputDevice")) b.outputDevice = jString (p, "outputDevice", b.outputDevice);
+        if (p.has ("outputChannel")) b.outputChannel = std::max (0, jInt (p, "outputChannel", b.outputChannel));
+        if (p.has ("solo")) b.solo = jBool (p, "solo", b.solo);
+        if (p.has ("channelType")) b.channelType = jString (p, "channelType", b.channelType);
+        return true;
+    }
+
+    // ================================================== départs auxiliaires
+    static bool addSend (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        const int i = jInt (p, "index", -1);
+        if (! trackValid (s, i, err)) return false;
+        const int bus = static_cast<int> (clampValue (static_cast<double> (jInt (p, "bus", 0)), 0.0,
+                                                      std::max (0.0, static_cast<double> (s.buses.size()) - 1.0)));
+        SendState send;
+        send.bus = bus;
+        send.db = clampValue (jNumber (p, "db", -6.0), -60.0, 12.0);
+        send.preFader = jBool (p, "preFader", false);
+        send.enabled = jBool (p, "enabled", true);
+        s.tracks[static_cast<size_t> (i)].sends.push_back (send);
+        return true;
+    }
+    static bool setSend (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        const int i = jInt (p, "index", -1);
+        if (! trackValid (s, i, err)) return false;
+        auto& sends = s.tracks[static_cast<size_t> (i)].sends;
+        const int k = jInt (p, "sendIndex", -1);
+        if (k < 0 || k >= static_cast<int> (sends.size())) { err = "Indice de départ invalide"; return false; }
+        auto& send = sends[static_cast<size_t> (k)];
+        const auto field = jString (p, "field");
+        if (field == "db") send.db = clampValue (readValueNumber (p, "value", send.db), -60.0, 12.0);
+        else if (field == "bus") send.bus = static_cast<int> (clampValue (readValueNumber (p, "value", static_cast<double> (send.bus)), 0.0, std::max (0.0, static_cast<double> (s.buses.size()) - 1.0)));
+        else if (field == "preFader") send.preFader = jBool (p, "value", send.preFader);
+        else if (field == "enabled") send.enabled = jBool (p, "value", send.enabled);
+        else if (field.empty())
+        {
+            if (p.has ("db")) send.db = clampValue (jNumber (p, "db", send.db), -60.0, 12.0);
+            if (p.has ("bus")) send.bus = static_cast<int> (clampValue (static_cast<double> (jInt (p, "bus", send.bus)), 0.0, std::max (0.0, static_cast<double> (s.buses.size()) - 1.0)));
+            if (p.has ("preFader")) send.preFader = jBool (p, "preFader", send.preFader);
+            if (p.has ("enabled")) send.enabled = jBool (p, "enabled", send.enabled);
+        }
+        else { err = "Champ de départ inconnu : " + field; return false; }
+        return true;
+    }
+    static bool removeSend (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        const int i = jInt (p, "index", -1);
+        if (! trackValid (s, i, err)) return false;
+        auto& sends = s.tracks[static_cast<size_t> (i)].sends;
+        const int k = jInt (p, "sendIndex", -1);
+        if (k < 0 || k >= static_cast<int> (sends.size())) { err = "Indice de départ invalide"; return false; }
+        sends.erase (sends.begin() + k);
+        return true;
+    }
+
+    // ============================================ inserts / greffons réels
+    static InsertState insertFromPayload (const JsonValue& p)
+    {
+        InsertState i;
+        i.uid = jString (p, "uid");
+        i.name = jString (p, "name", "Insert");
+        i.format = jString (p, "format", "VST3");
+        i.file = jString (p, "file");
+        i.manufacturer = jString (p, "manufacturer");
+        i.category = jString (p, "category");
+        i.bypassed = jBool (p, "bypassed", false);
+        i.enabled = jBool (p, "enabled", true);
+        i.stateBase64 = jString (p, "stateBase64");
+        i.latencySamples = std::max (0, jInt (p, "latencySamples", 0));
+        for (const auto& v : p.get ("params").array) i.params.push_back (v.number);
+        for (const auto& v : p.get ("paramNames").array) i.paramNames.push_back (v.string);
+        return i;
+    }
+    static bool insertTarget (ProjectState& s, const JsonValue& p, std::vector<InsertState>& out, std::string& err)
+    {
+        const auto kind = jString (p, "kind", "track");
+        if (kind == "bus")
+        {
+            const int b = jInt (p, "busIndex", -1);
+            if (b < 0 || b >= static_cast<int> (s.buses.size())) { err = "Indice de bus invalide"; return false; }
+            out = s.buses[static_cast<size_t> (b)].inserts;
+            return true;
+        }
+        const int i = jInt (p, "index", -1);
+        if (! trackValid (s, i, err)) return false;
+        out = s.tracks[static_cast<size_t> (i)].inserts;
+        return true;
+    }
+    static void commitInserts (ProjectState& s, const JsonValue& p, const std::vector<InsertState>& inserts)
+    {
+        if (jString (p, "kind", "track") == "bus")
+            s.buses[static_cast<size_t> (std::max (0, jInt (p, "busIndex", 0)))].inserts = inserts;
+        else
+            s.tracks[static_cast<size_t> (std::max (0, jInt (p, "index", 0)))].inserts = inserts;
+    }
+    static bool addInsert (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        std::vector<InsertState> inserts;
+        if (! insertTarget (s, p, inserts, err)) return false;
+        auto i = insertFromPayload (p);
+        if (i.uid.empty() && i.file.empty()) { err = "Greffon sans identifiant réel"; return false; }
+        const int slot = static_cast<int> (clampValue (static_cast<double> (jInt (p, "slot", static_cast<int> (inserts.size()))), 0.0, static_cast<double> (inserts.size())));
+        inserts.insert (inserts.begin() + slot, i);
+        commitInserts (s, p, inserts);
+        return true;
+    }
+    static bool removeInsert (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        std::vector<InsertState> inserts;
+        if (! insertTarget (s, p, inserts, err)) return false;
+        const int k = jInt (p, "insertIndex", -1);
+        if (k < 0 || k >= static_cast<int> (inserts.size())) { err = "Indice d'insert invalide"; return false; }
+        inserts.erase (inserts.begin() + k);
+        commitInserts (s, p, inserts);
+        return true;
+    }
+    static bool moveInsert (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        std::vector<InsertState> inserts;
+        if (! insertTarget (s, p, inserts, err)) return false;
+        const int from = jInt (p, "insertIndex", -1), to = jInt (p, "to", -1);
+        if (from < 0 || from >= static_cast<int> (inserts.size()) || to < 0 || to >= static_cast<int> (inserts.size()))
+        { err = "Déplacement d'insert invalide"; return false; }
+        const InsertState moved = inserts[static_cast<size_t> (from)];
+        inserts.erase (inserts.begin() + from);
+        inserts.insert (inserts.begin() + to, moved);
+        commitInserts (s, p, inserts);
+        return true;
+    }
+    static bool setInsertBypass (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        std::vector<InsertState> inserts;
+        if (! insertTarget (s, p, inserts, err)) return false;
+        const int k = jInt (p, "insertIndex", -1);
+        if (k < 0 || k >= static_cast<int> (inserts.size())) { err = "Indice d'insert invalide"; return false; }
+        inserts[static_cast<size_t> (k)].bypassed = jBool (p, "bypassed", ! inserts[static_cast<size_t> (k)].bypassed);
+        commitInserts (s, p, inserts);
+        return true;
+    }
+    static bool setInsertParameter (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        std::vector<InsertState> inserts;
+        if (! insertTarget (s, p, inserts, err)) return false;
+        const int k = jInt (p, "insertIndex", -1);
+        if (k < 0 || k >= static_cast<int> (inserts.size())) { err = "Indice d'insert invalide"; return false; }
+        auto& ins = inserts[static_cast<size_t> (k)];
+        const int param = jInt (p, "paramIndex", -1);
+        if (param < 0) { err = "Indice de paramètre invalide"; return false; }
+        const double value = clampValue (readValueNumber (p, "value", 0.0), 0.0, 1.0);
+        if (param >= static_cast<int> (ins.params.size())) ins.params.resize (static_cast<size_t> (param) + 1, 0.0);
+        ins.params[static_cast<size_t> (param)] = value;
+        commitInserts (s, p, inserts);
+        return true;
+    }
+    static bool setInsertState (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        std::vector<InsertState> inserts;
+        if (! insertTarget (s, p, inserts, err)) return false;
+        const int k = jInt (p, "insertIndex", -1);
+        if (k < 0 || k >= static_cast<int> (inserts.size())) { err = "Indice d'insert invalide"; return false; }
+        auto& ins = inserts[static_cast<size_t> (k)];
+        ins.stateBase64 = jString (p, "stateBase64", ins.stateBase64);
+        ins.latencySamples = std::max (0, jInt (p, "latencySamples", ins.latencySamples));
+        if (p.has ("enabled")) ins.enabled = jBool (p, "enabled", ins.enabled);
+        commitInserts (s, p, inserts);
+        return true;
+    }
+
+    // ======================================================== Quick Controls
+    static bool setQuickControl (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        const int i = jInt (p, "index", -1);
+        if (! trackValid (s, i, err)) return false;
+        auto& controls = s.tracks[static_cast<size_t> (i)].quickControls;
+        const int slot = jInt (p, "slot", -1);
+        if (slot < 0 || slot >= static_cast<int> (controls.size())) { err = "Emplacement de Quick Control invalide"; return false; }
+        auto& c = controls[static_cast<size_t> (slot)];
+        c.target = jString (p, "target", c.target);
+        c.param = jString (p, "param", c.param);
+        c.label = jString (p, "label", c.label.empty() ? c.param : c.label);
+        c.index = std::max (0, jInt (p, "controllerIndex", c.index));
+        c.assigned = jBool (p, "assigned", true);
+        return true;
+    }
+    static bool applyQuickControl (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        const int i = jInt (p, "index", -1);
+        if (! trackValid (s, i, err)) return false;
+        auto& t = s.tracks[static_cast<size_t> (i)];
+        const int slot = jInt (p, "slot", -1);
+        if (slot < 0 || slot >= static_cast<int> (t.quickControls.size())) { err = "Emplacement de Quick Control invalide"; return false; }
+        const auto& c = t.quickControls[static_cast<size_t> (slot)];
+        if (! c.assigned) { err = "Quick Control non affecté"; return false; }
+        const double value = readValueNumber (p, "value", c.value);
+        JsonValue q (JsonValue::Type::Object);
+        q["index"] = JsonValue (i);
+        q["value"] = JsonValue (value);
+        std::string ignored;
+        if (c.target == "track") return setTrackField (s, c.param, i, value, ignored);
+        if (c.target == "bus") { q["index"] = JsonValue (c.index); q["field"] = JsonValue (c.param); return setBus (s, q, ignored); }
+        if (c.target == "eq")
+        {
+            q["band"] = JsonValue (c.index);
+            q["field"] = JsonValue (c.param);
+            return setFx (s, q, ignored);
+        }
+        if (c.target == "send") { q["sendIndex"] = JsonValue (c.index); q["field"] = JsonValue (c.param); return setSend (s, q, ignored); }
+        if (c.target == "insert" || c.target == "plugin")
+        {
+            q["insertIndex"] = JsonValue (c.index);
+            q["paramIndex"] = JsonValue (static_cast<int> (std::max (0.0, value)));
+            q["value"] = JsonValue (c.value);
+            return setInsertParameter (s, q, ignored);
+        }
+        err = "Cible de Quick Control inconnue : " + c.target;
+        return false;
+    }
+    static bool setTrackField (ProjectState& s, const std::string& field, int i, double value, std::string& err)
+    {
+        if (! trackValid (s, i, err)) return false;
+        auto& t = s.tracks[static_cast<size_t> (i)];
+        if (field == "volumeDb") t.volumeDb = clampValue (value, -60.0, 12.0);
+        else if (field == "pan") t.pan = clampValue (value, -1.0, 1.0);
+        else if (field == "sendDb") t.sendDb = clampValue (value, -60.0, 12.0);
+        else if (field == "mute") t.mute = value > 0.5;
+        else if (field == "solo") t.solo = value > 0.5;
+        else if (field == "arm") t.arm = value > 0.5;
+        else if (field == "bus") t.bus = static_cast<int> (clampValue (value, 0.0, std::max (0.0, static_cast<double> (s.buses.size()) - 1.0)));
+        else { err = "Paramètre de piste inconnu : " + field; return false; }
+        return true;
+    }
+
+    // ============================================================ marqueurs
+    static bool addMarker (ProjectState& s, const JsonValue& p, std::string&)
+    {
+        MarkerState m;
+        m.bars = clampValue (jNumber (p, "bars", s.positionBars), 1.0, 100000.0);
+        m.endBars = std::max (m.bars, clampValue (jNumber (p, "endBars", m.bars), 1.0, 100000.0));
+        m.name = jString (p, "name", "Marqueur " + std::to_string (s.markers.size() + 1));
+        m.cycle = jBool (p, "cycle", false);
+        s.markers.push_back (m);
+        std::sort (s.markers.begin(), s.markers.end(), [] (const MarkerState& a, const MarkerState& b) { return a.bars < b.bars; });
+        return true;
+    }
+    static bool removeMarker (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        const int i = jInt (p, "markerIndex", -1);
+        if (i < 0 || i >= static_cast<int> (s.markers.size())) { err = "Indice de marqueur invalide"; return false; }
+        s.markers.erase (s.markers.begin() + i);
+        return true;
+    }
+    static bool renameMarker (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        const int i = jInt (p, "markerIndex", -1);
+        if (i < 0 || i >= static_cast<int> (s.markers.size())) { err = "Indice de marqueur invalide"; return false; }
+        const auto name = jString (p, "name", s.markers[static_cast<size_t> (i)].name);
+        if (name.empty()) { err = "Nom de marqueur vide"; return false; }
+        s.markers[static_cast<size_t> (i)].name = name;
+        if (p.has ("bars")) s.markers[static_cast<size_t> (i)].bars = clampValue (jNumber (p, "bars", 1.0), 1.0, 100000.0);
+        if (p.has ("endBars")) s.markers[static_cast<size_t> (i)].endBars = std::max (s.markers[static_cast<size_t> (i)].bars, clampValue (jNumber (p, "endBars", 1.0), 1.0, 100000.0));
+        if (p.has ("cycle")) s.markers[static_cast<size_t> (i)].cycle = jBool (p, "cycle", false);
+        return true;
+    }
+
+    // ============================================ carte de tempo et mesures
+    static bool addTempoEvent (ProjectState& s, const JsonValue& p, std::string&)
+    {
+        const double bars = clampValue (jNumber (p, "bars", s.positionBars), 1.0, 100000.0);
+        const double bpm = clampValue (jNumber (p, "bpm", s.bpm), 20.0, 300.0);
+        for (auto& e : s.tempoEvents)
+            if (std::fabs (e.bars - bars) < 1e-9) { e.bpm = bpm; if (bars <= 1.0) s.bpm = bpm; return true; }
+        s.tempoEvents.push_back ({ bars, bpm });
+        std::sort (s.tempoEvents.begin(), s.tempoEvents.end(), [] (const TempoEvent& a, const TempoEvent& b) { return a.bars < b.bars; });
+        if (bars <= 1.0) s.bpm = bpm;
+        return true;
+    }
+    static bool removeTempoEvent (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        const double bars = jNumber (p, "bars", -1.0);
+        for (size_t i = 0; i < s.tempoEvents.size(); ++i)
+            if (std::fabs (s.tempoEvents[i].bars - bars) < 1e-9)
+            {
+                if (s.tempoEvents.size() == 1) { err = "Le projet doit conserver un tempo"; return false; }
+                s.tempoEvents.erase (s.tempoEvents.begin() + static_cast<long> (i));
+                s.bpm = s.tempoEvents.front().bpm;
+                return true;
+            }
+        err = "Aucun événement de tempo à cette mesure";
+        return false;
+    }
+    static bool addSignature (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        SignatureEvent v;
+        v.bars = clampValue (jNumber (p, "bars", s.positionBars), 1.0, 100000.0);
+        v.numerator = static_cast<int> (clampValue (static_cast<double> (jInt (p, "numerator", 4)), 1.0, 16.0));
+        v.denominator = static_cast<int> (clampValue (static_cast<double> (jInt (p, "denominator", 4)), 1.0, 16.0));
+        if ((v.denominator & (v.denominator - 1)) != 0) { err = "Le dénominateur doit être une puissance de 2"; return false; }
+        for (auto& e : s.signatures)
+            if (std::fabs (e.bars - v.bars) < 1e-9) { e = v; return true; }
+        s.signatures.push_back (v);
+        std::sort (s.signatures.begin(), s.signatures.end(), [] (const SignatureEvent& a, const SignatureEvent& b) { return a.bars < b.bars; });
+        return true;
+    }
+    static bool removeSignature (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        const double bars = jNumber (p, "bars", -1.0);
+        for (size_t i = 0; i < s.signatures.size(); ++i)
+            if (std::fabs (s.signatures[i].bars - bars) < 1e-9)
+            {
+                if (s.signatures.size() == 1) { err = "Le projet doit conserver une mesure"; return false; }
+                s.signatures.erase (s.signatures.begin() + static_cast<long> (i));
+                return true;
+            }
+        err = "Aucun changement de mesure à cette position";
+        return false;
+    }
+
+    // ==================================================== informations projet
+    static bool setProjectInfo (ProjectState& s, const JsonValue& p, std::string&)
+    {
+        if (p.has ("name")) { const auto n = jString (p, "name", s.name); if (! n.empty()) s.name = n; }
+        if (p.has ("author")) s.info.author = jString (p, "author", s.info.author);
+        if (p.has ("copyright")) s.info.copyright = jString (p, "copyright", s.info.copyright);
+        if (p.has ("notes")) s.info.notes = jString (p, "notes", s.info.notes);
+        if (p.has ("originator")) s.info.originator = jString (p, "originator", s.info.originator);
+        if (p.has ("reference")) s.info.reference = jString (p, "reference", s.info.reference);
+        if (p.has ("sampleRate")) s.info.sampleRate = jString (p, "sampleRate", s.info.sampleRate);
+        if (p.has ("bitDepth")) s.info.bitDepth = jString (p, "bitDepth", s.info.bitDepth);
+        if (p.has ("startTimecode")) s.info.startTimecode = jString (p, "startTimecode", s.info.startTimecode);
+        return true;
+    }
+
+    // ==================================================== espaces de travail
+    static int workspaceIndex (const ProjectState& s, const JsonValue& p)
+    {
+        const auto name = jString (p, "name");
+        if (! name.empty())
+            for (size_t i = 0; i < s.workspaces.size(); ++i) if (s.workspaces[i].name == name) return static_cast<int> (i);
+        return jInt (p, "index", -1);
+    }
+    static bool storeWorkspace (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        const auto name = jString (p, "name");
+        if (name.empty()) { err = "Nom d'espace de travail requis"; return false; }
+        WorkspaceState w;
+        w.name = name;
+        w.barW = clampValue (jNumber (p, "barW", 64.0), 4.0, 2000.0);
+        w.scrollLeft = std::max (0.0, jNumber (p, "scrollLeft", 0.0));
+        w.scrollTop = std::max (0.0, jNumber (p, "scrollTop", 0.0));
+        w.positionBars = clampValue (jNumber (p, "positionBars", s.positionBars), 1.0, 1000000.0);
+        w.selectedTrack = std::max (0, jInt (p, "selectedTrack", s.selectedTrack));
+        w.panelState = jString (p, "panelState", "");
+        w.locked = jBool (p, "locked", false);
+        for (const auto& n : p.get ("windows").array) if (n.type == JsonValue::Type::String) w.windows.push_back (n.string);
+        for (const auto& n : p.get ("toolbarItems").array) if (n.type == JsonValue::Type::String) w.toolbarItems.push_back (n.string);
+        const int existing = workspaceIndex (s, p);
+        if (existing >= 0 && existing < static_cast<int> (s.workspaces.size()))
+        {
+            if (s.workspaces[static_cast<size_t> (existing)].locked) { err = "Espace de travail verrouillé : " + name; return false; }
+            w.locked = s.workspaces[static_cast<size_t> (existing)].locked;
+            s.workspaces[static_cast<size_t> (existing)] = w;
+        }
+        else s.workspaces.push_back (w);
+        return true;
+    }
+    static bool recallWorkspace (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        const int i = workspaceIndex (s, p);
+        if (i < 0 || i >= static_cast<int> (s.workspaces.size())) { err = "Espace de travail introuvable"; return false; }
+        const auto& w = s.workspaces[static_cast<size_t> (i)];
+        s.positionBars = w.positionBars;
+        s.selectedTrack = w.selectedTrack;
+        s.layout.toolbarItems = w.toolbarItems.empty() ? s.layout.toolbarItems : w.toolbarItems;
+        s.recalledWorkspace = w.name;
+        return true;
+    }
+    static bool deleteWorkspace (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        const int i = workspaceIndex (s, p);
+        if (i < 0 || i >= static_cast<int> (s.workspaces.size())) { err = "Espace de travail introuvable"; return false; }
+        if (s.workspaces[static_cast<size_t> (i)].locked) { err = "Espace de travail verrouillé"; return false; }
+        s.workspaces.erase (s.workspaces.begin() + i);
+        return true;
+    }
+    static bool setWorkspaceLock (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        const int i = workspaceIndex (s, p);
+        if (i < 0 || i >= static_cast<int> (s.workspaces.size())) { err = "Espace de travail introuvable"; return false; }
+        s.workspaces[static_cast<size_t> (i)].locked = jBool (p, "locked", ! s.workspaces[static_cast<size_t> (i)].locked);
+        return true;
+    }
+
+    // ================================================= instantanés de mixage
+    static bool storeSnapshot (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        const auto name = jString (p, "name");
+        if (name.empty()) { err = "Nom d'instantané requis"; return false; }
+        SnapshotState sn;
+        sn.name = name;
+        sn.masterDb = s.masterDb;
+        sn.tracks = s.tracks;
+        sn.buses = s.buses;
+        for (auto& existing : s.snapshots)
+            if (existing.name == name) { existing = sn; return true; }
+        s.snapshots.push_back (sn);
+        return true;
+    }
+    static bool recallSnapshot (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        const auto name = jString (p, "name");
+        const int index = jInt (p, "index", -1);
+        int found = index;
+        if (! name.empty())
+            for (size_t i = 0; i < s.snapshots.size(); ++i) if (s.snapshots[i].name == name) found = static_cast<int> (i);
+        if (found < 0 || found >= static_cast<int> (s.snapshots.size())) { err = "Instantané introuvable"; return false; }
+        const auto& sn = s.snapshots[static_cast<size_t> (found)];
+        s.masterDb = sn.masterDb;
+        for (size_t i = 0; i < s.tracks.size() && i < sn.tracks.size(); ++i)
+        {
+            auto& t = s.tracks[i];
+            const auto& src = sn.tracks[i];
+            t.volumeDb = src.volumeDb; t.pan = src.pan; t.mute = src.mute; t.solo = src.solo;
+            t.bus = src.bus; t.sendDb = src.sendDb; t.fx = src.fx; t.sends = src.sends;
+        }
+        for (size_t i = 0; i < s.buses.size() && i < sn.buses.size(); ++i)
+        {
+            auto& b = s.buses[i];
+            const auto& src = sn.buses[i];
+            b.volumeDb = src.volumeDb; b.pan = src.pan; b.mute = src.mute;
+        }
+        return true;
+    }
+    static bool deleteSnapshot (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        const auto name = jString (p, "name");
+        for (size_t i = 0; i < s.snapshots.size(); ++i)
+            if (s.snapshots[i].name == name) { s.snapshots.erase (s.snapshots.begin() + static_cast<long> (i)); return true; }
+        err = "Instantané introuvable : " + name;
+        return false;
+    }
+
+    // ======================================================== projets récents
+    static bool addRecent (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        const auto path = jString (p, "path");
+        if (path.empty()) { err = "Chemin de projet manquant"; return false; }
+        const auto name = jString (p, "name", path);
+        s.recents.erase (std::remove_if (s.recents.begin(), s.recents.end(),
+                                         [&path] (const RecentProject& r) { return r.path == path; }), s.recents.end());
+        s.recents.insert (s.recents.begin(), { name, path, utcNow() });
+        if (s.recents.size() > 20) s.recents.resize (20);
+        return true;
+    }
+    static bool clearRecents (ProjectState& s, const JsonValue&, std::string&) { s.recents.clear(); return true; }
+
+    // ========================================================= raccourcis
+    static bool setKeyCommand (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        const auto combo = jString (p, "combo");
+        const auto action = jString (p, "action");
+        if (combo.empty() || action.empty()) { err = "Raccourci incomplet"; return false; }
+        const bool replace = jBool (p, "replaceExisting", true);
+        if (replace)
+            for (auto& k : s.keyCommands) if (k.combo == combo) k.action = action;
+        bool found = false;
+        for (const auto& k : s.keyCommands) if (k.combo == combo && k.action == action) found = true;
+        if (! found) s.keyCommands.push_back ({ combo, action });
+        return true;
+    }
+    static bool resetKeyCommands (ProjectState& s, const JsonValue&, std::string&)
+    {
+        s.keyCommands = ProjectState::defaultKeyCommands();
+        return true;
+    }
+
+    // ============================================== éditeur logique MIDI réel
+    static bool ruleMatches (const LogicalRule& r, const MidiNote& n)
+    {
+        if (! r.enabled) return false;
+        if (n.pitch < r.pitchMin || n.pitch > r.pitchMax) return false;
+        if (n.velocity < r.velocityMin || n.velocity > r.velocityMax) return false;
+        if (n.lenBars < r.lengthMinBars || n.lenBars > r.lengthMaxBars) return false;
+        return true;
+    }
+    static bool applyRule (const LogicalRule& r, std::vector<MidiNote>& notes, int& touched)
+    {
+        const double grid = gridToBars (r.grid);
+        std::vector<MidiNote> kept;
+        kept.reserve (notes.size());
+        for (const auto& n : notes)
+        {
+            if (! ruleMatches (r, n)) { kept.push_back (n); continue; }
+            MidiNote m = n;
+            ++touched;
+            if (r.action == "setVelocity") m.velocity = static_cast<int> (clampValue (r.actionValue, 1.0, 127.0));
+            else if (r.action == "scaleVelocity") m.velocity = static_cast<int> (clampValue (static_cast<double> (m.velocity) * r.actionValue / 100.0, 1.0, 127.0));
+            else if (r.action == "transpose") m.pitch = static_cast<int> (clampValue (static_cast<double> (m.pitch) + r.actionValue, 0.0, 127.0));
+            else if (r.action == "setLength") m.lenBars = std::max (grid, r.actionValue);
+            else if (r.action == "scaleLength") m.lenBars = std::max (grid, m.lenBars * r.actionValue / 100.0);
+            else if (r.action == "quantize") m.startBars = 1.0 + std::round ((m.startBars - 1.0) / grid) * grid;
+            else if (r.action == "deleteNotes") continue;
+            else if (r.action == "invertVelocity") m.velocity = 128 - m.velocity;
+            kept.push_back (m);
+        }
+        notes.swap (kept);
+        return true;
+    }
+    static bool storeLogicalRule (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        const auto name = jString (p, "name");
+        if (name.empty()) { err = "Nom de règle requis"; return false; }
+        LogicalRule r;
+        r.name = name;
+        r.enabled = jBool (p, "enabled", true);
+        r.pitchMin = static_cast<int> (clampValue (static_cast<double> (jInt (p, "pitchMin", 0)), 0.0, 127.0));
+        r.pitchMax = static_cast<int> (clampValue (static_cast<double> (jInt (p, "pitchMax", 127)), 0.0, 127.0));
+        r.velocityMin = static_cast<int> (clampValue (static_cast<double> (jInt (p, "velocityMin", 1)), 1.0, 127.0));
+        r.velocityMax = static_cast<int> (clampValue (static_cast<double> (jInt (p, "velocityMax", 127)), 1.0, 127.0));
+        r.lengthMinBars = clampValue (jNumber (p, "lengthMinBars", 0.0), 0.0, 100000.0);
+        r.lengthMaxBars = clampValue (jNumber (p, "lengthMaxBars", 100000.0), 0.0, 100000.0);
+        r.onlySelectedTrack = jBool (p, "onlySelectedTrack", true);
+        r.typeFilter = jString (p, "typeFilter", "note");
+        r.action = jString (p, "action", "setVelocity");
+        r.actionValue = jNumber (p, "actionValue", 0.0);
+        r.grid = jString (p, "grid", "1/16");
+        const int index = jInt (p, "ruleIndex", -1);
+        if (index >= 0 && index < static_cast<int> (s.logicalRules.size())) s.logicalRules[static_cast<size_t> (index)] = r;
+        else s.logicalRules.push_back (r);
+        return true;
+    }
+    static bool deleteLogicalRule (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        const int i = jInt (p, "ruleIndex", -1);
+        if (i < 0 || i >= static_cast<int> (s.logicalRules.size())) { err = "Indice de règle invalide"; return false; }
+        s.logicalRules.erase (s.logicalRules.begin() + i);
+        return true;
+    }
+    static bool applyLogicalEdit (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        const int i = jInt (p, "ruleIndex", -1);
+        if (i < 0 || i >= static_cast<int> (s.logicalRules.size())) { err = "Indice de règle invalide"; return false; }
+        const auto rule = s.logicalRules[static_cast<size_t> (i)];
+        int touched = 0;
+        for (size_t ti = 0; ti < s.tracks.size(); ++ti)
+        {
+            if (rule.onlySelectedTrack && static_cast<int> (ti) != s.selectedTrack && ! jBool (p, "allTracks", false)) continue;
+            applyRule (rule, s.tracks[ti].midiNotes, touched);
+        }
+        s.lastLogicalTouched = touched;
+        return true;
+    }
+
+    // ================================================ modificateurs MIDI réels
+    static bool storeMidiModifier (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        const auto name = jString (p, "name");
+        if (name.empty()) { err = "Nom de modificateur requis"; return false; }
+        MidiModifier m;
+        m.name = name;
+        m.transposeSemitones = clampValue (jNumber (p, "transposeSemitones", 0.0), -24.0, 24.0);
+        m.velocityOffset = clampValue (jNumber (p, "velocityOffset", 0.0), -127.0, 127.0);
+        m.velocityScale = clampValue (jNumber (p, "velocityScale", 1.0), 0.0, 4.0);
+        m.lengthScale = clampValue (jNumber (p, "lengthScale", 1.0), 0.01, 8.0);
+        m.delayBars = clampValue (jNumber (p, "delayBars", 0.0), -8.0, 8.0);
+        m.invert = jBool (p, "invert", false);
+        const int index = jInt (p, "modifierIndex", -1);
+        if (index >= 0 && index < static_cast<int> (s.midiModifiers.size())) s.midiModifiers[static_cast<size_t> (index)] = m;
+        else s.midiModifiers.push_back (m);
+        return true;
+    }
+    static bool deleteMidiModifier (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        const int i = jInt (p, "modifierIndex", -1);
+        if (i < 0 || i >= static_cast<int> (s.midiModifiers.size())) { err = "Indice de modificateur invalide"; return false; }
+        s.midiModifiers.erase (s.midiModifiers.begin() + i);
+        return true;
+    }
+    static bool applyMidiModifier (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        const int i = jInt (p, "modifierIndex", -1);
+        if (i < 0 || i >= static_cast<int> (s.midiModifiers.size())) { err = "Indice de modificateur invalide"; return false; }
+        const auto m = s.midiModifiers[static_cast<size_t> (i)];
+        const int track = jInt (p, "trackIndex", s.selectedTrack);
+        if (! trackValid (s, track, err)) return false;
+        auto& notes = s.tracks[static_cast<size_t> (track)].midiNotes;
+        for (auto& n : notes)
+        {
+            double v = static_cast<double> (n.velocity) * m.velocityScale + m.velocityOffset;
+            if (m.invert) v = 128.0 - v;
+            n.velocity = static_cast<int> (clampValue (v, 1.0, 127.0));
+            n.pitch = static_cast<int> (clampValue (static_cast<double> (n.pitch) + m.transposeSemitones, 0.0, 127.0));
+            n.lenBars = std::max (gridToBars ("tick"), n.lenBars * m.lengthScale);
+            n.startBars = std::max (1.0, n.startBars + m.delayBars);
+        }
+        s.lastLogicalTouched = static_cast<int> (notes.size());
+        return true;
+    }
+    static bool transposeMidi (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        const int track = jInt (p, "trackIndex", s.selectedTrack);
+        if (! trackValid (s, track, err)) return false;
+        const int semitones = static_cast<int> (clampValue (static_cast<double> (jInt (p, "semitones", 0)), -24.0, 24.0));
+        auto& notes = s.tracks[static_cast<size_t> (track)].midiNotes;
+        for (auto& n : notes) n.pitch = static_cast<int> (clampValue (static_cast<double> (n.pitch) + semitones, 0.0, 127.0));
+        s.tracks[static_cast<size_t> (track)].transposeSemitones += semitones;
+        s.lastLogicalTouched = static_cast<int> (notes.size());
+        return true;
+    }
+
+    // ============================================ pistes vides, greffons, UI
+    static bool removeEmptyTracks (ProjectState& s, const JsonValue&, std::string&)
+    {
+        std::vector<TrackState> kept;
+        for (const auto& t : s.tracks)
+            if (! t.clips.empty() || ! t.midiNotes.empty() || ! t.inserts.empty()) kept.push_back (t);
+        s.lastRemovedEmpty = static_cast<int> (s.tracks.size()) - static_cast<int> (kept.size());
+        s.tracks.swap (kept);
+        return true;
+    }
+    static bool addPluginFolder (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        const auto path = jString (p, "path");
+        if (path.empty()) { err = "Chemin de dossier manquant"; return false; }
+        if (std::find (s.pluginFolders.begin(), s.pluginFolders.end(), path) == s.pluginFolders.end())
+            s.pluginFolders.push_back (path);
+        return true;
+    }
+    static bool removePluginFolder (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        const auto path = jString (p, "path");
+        const auto it = std::find (s.pluginFolders.begin(), s.pluginFolders.end(), path);
+        if (it == s.pluginFolders.end()) { err = "Dossier de greffons absent : " + path; return false; }
+        s.pluginFolders.erase (it);
+        return true;
+    }
+    static bool setUiLayout (ProjectState& s, const JsonValue& p, std::string& err)
+    {
+        auto& l = s.layout;
+        if (p.has ("rulerFormat")) { const auto v = jString (p, "rulerFormat", l.rulerFormat);
+            static const char* ok[] = { "bars", "seconds", "timecode", "samples", "frames" };
+            if (std::find (std::begin (ok), std::end (ok), v) == std::end (ok)) { err = "Format de règle inconnu : " + v; return false; }
+            l.rulerFormat = v; }
+        if (p.has ("snapMode")) l.snapMode = jString (p, "snapMode", l.snapMode);
+        if (p.has ("nudgeMode")) l.nudgeMode = jString (p, "nudgeMode", l.nudgeMode);
+        if (p.has ("editMode")) l.editMode = jString (p, "editMode", l.editMode);
+        if (p.has ("timebase")) { const auto v = jString (p, "timebase", l.timebase);
+            if (v != "musical" && v != "linear") { err = "Base temporelle inconnue : " + v; return false; }
+            l.timebase = v; }
+        if (p.has ("showToolbar")) l.showToolbar = jBool (p, "showToolbar", l.showToolbar);
+        if (p.has ("showInspector")) l.showInspector = jBool (p, "showInspector", l.showInspector);
+        if (p.has ("showOverview")) l.showOverview = jBool (p, "showOverview", l.showOverview);
+        if (p.has ("showInfoline")) l.showInfoline = jBool (p, "showInfoline", l.showInfoline);
+        if (p.has ("showMarkerTrack")) l.showMarkerTrack = jBool (p, "showMarkerTrack", l.showMarkerTrack);
+        if (p.has ("trackHeight"))
+        {
+            l.trackHeight = clampValue (jNumber (p, "trackHeight", l.trackHeight), 24.0, 400.0);
+            for (auto& t : s.tracks) t.height = l.trackHeight;
+        }
+        if (p.has ("toolbarItems"))
+        {
+            l.toolbarItems.clear();
+            for (const auto& n : p.get ("toolbarItems").array) if (n.type == JsonValue::Type::String) l.toolbarItems.push_back (n.string);
+        }
+        if (p.has ("selectedTrack")) s.selectedTrack = std::max (0, jInt (p, "selectedTrack", s.selectedTrack));
+        return true;
+    }
+    static bool setTransportState (ProjectState& s, const JsonValue& p, std::string&)
+    {
+        if (p.has ("positionBars")) s.positionBars = clampValue (jNumber (p, "positionBars", s.positionBars), 1.0, 1000000.0);
+        if (p.has ("selectedTrack")) s.selectedTrack = std::max (0, jInt (p, "selectedTrack", s.selectedTrack));
+        return true;
+    }
+    static bool closeProject (ProjectState& s, const JsonValue& p, std::string&)
+    {
+        // Fermeture réelle : l'état courant est conservé dans les projets récents
+        // (chemin réel fourni par l'hôte), puis le projet est marqué fermé.
+        const auto path = jString (p, "path", s.path);
+        if (! path.empty())
+        {
+            s.path = path;
+            s.recents.erase (std::remove_if (s.recents.begin(), s.recents.end(),
+                                             [&path] (const RecentProject& r) { return r.path == path; }), s.recents.end());
+            s.recents.insert (s.recents.begin(), { s.name, path, utcNow() });
+            if (s.recents.size() > 20) s.recents.resize (20);
+        }
+        s.closed = true;
+        s.tracks.clear();
+        s.markers.clear();
+        s.media.clear();
+        s.name = "Projet sans titre";
+        s.bpm = 120.0;
+        s.tempoEvents = { { 1.0, 120.0 } };
+        s.positionBars = 1.0;
+        s.selectedTrack = 0;
+        s.loopStartBars = 1.0;
+        s.loopEndBars = 9.0;
+        ProjectState def;
+        s.buses = def.buses;
+        s.markers = def.markers;
         return true;
     }
 };

@@ -35,6 +35,13 @@ private:
     void fitWindowToScreen();
     void timerCallback() override;
 
+    // ---- AUDIT v6 : traitements natifs réels des commandes d'interface
+    void runHeavyExchange (const juce::String& kind, const juce::File& target);
+    void printDocument (const juce::File& document);
+    void showPluginBrowser (const juce::var& payload);
+    void showProjectLibrary();
+    void choosePluginFolder();
+
     double uiScaleOverride = 1.0;
     double fontScaleOverride = 1.0;
     // L'export asynchrone conserve une propriété partagée du moteur : le
@@ -43,6 +50,10 @@ private:
     AlphaEngine& engine;
     std::unique_ptr<Browser> browser;
     std::unique_ptr<juce::FileChooser> chooser;
+    std::unique_ptr<juce::FileChooser> folderChooser;
+    // Fenêtres natives réelles ouvertes par les commandes d'interface :
+    // navigateur de greffons, bibliothèque de projets et aperçu imprimable.
+    std::vector<std::unique_ptr<juce::DocumentWindow>> nativeWindows;
     std::shared_ptr<std::atomic<bool>> alive = std::make_shared<std::atomic<bool>> (true);
     std::atomic<bool> exporting { false };
     std::shared_ptr<juce::WaitableEvent> exportDone = std::make_shared<juce::WaitableEvent>();

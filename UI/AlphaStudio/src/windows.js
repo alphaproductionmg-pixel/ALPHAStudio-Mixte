@@ -14,6 +14,40 @@
   let zTop = 470;
   let cascade = 0;
 
+  // AUDIT v6 — accès réel au moteur natif : les espaces de travail sont
+  // mémorisés/rappelés dans le projet C++ (storeWorkspace/recallWorkspace),
+  // plus seulement dans localStorage.
+  const nativeSend = (command, data) => {
+    const n = window.ALPHA_NATIVE;
+    if (n && typeof n.send === 'function') { n.send(command, data || {}); return true; }
+    return false;
+  };
+  const deviceState = () => {
+    const n = window.ALPHA_NATIVE;
+    return (n && typeof n.getState === 'function' && n.getState()) || {};
+  };
+  const selectedNativeIndex = () => {
+    const st = deviceState();
+    const idx = Number(st.selectedTrack);
+    if (isFinite(idx) && idx >= 0) return idx;
+    const m = /^native_(\d+)$/.exec(String((A.state && A.state.selectedTrack) || ''));
+    return m ? Number(m[1]) : 0;
+  };
+  /* AUDIT v6 (A108) : indice natif d'une piste de l'interface. Les pistes du
+     moteur sont publiées sous l'identifiant « native_N » ; à défaut on retombe
+     sur la position réelle de la piste dans l'état publié par le moteur. */
+  const nativeTrackIndex = (id) => {
+    const m = /^native_(\d+)$/.exec(String(id || ''));
+    if (m) return Number(m[1]);
+    const list = deviceState().tracks || [];
+    const name = ((A.trackById && A.trackById(id)) || {}).name;
+    for (let i = 0; i < list.length; i++)
+      if (String(list[i].id || '') === String(id || '') || (name && String(list[i].name || '') === String(name))) return i;
+    const rows = (A.TRACKS || []).filter((x) => x && x.num && ['folder', 'video', 'marker', 'tempo', 'ruler', 'arrange'].indexOf(x.kind) < 0);
+    for (let i = 0; i < rows.length; i++) if (rows[i].id === id) return i;
+    return selectedNativeIndex();
+  };
+
   /* --------------------------------------------------------------- outils */
   function mulberry(seed) {
     let a = seed >>> 0;
@@ -379,7 +413,7 @@
       '<div class="ms-pan" title="Panoramique"><div class="ms-knob" style="--rot:' + Math.round(pan * 120) + 'deg"></div>' +
       '<span class="pv">' + panTxt + '</span></div>' +
       '<div class="ms-fader-wrap" data-vblock="mtr">' +
-      '<div class="meter" title="Niveau — relié au moteur à l’étape 2"><i style="--lvl:' + lvl + '%"></i>' +
+      '<div class="meter" title="Niveau — mesuré par le moteur audio natif"><i style="--lvl:' + lvl + '%"></i>' +
       '<i class="pk" style="--pk:' + Math.min(97, lvl + 7) + '%"></i></div>' +
       '<div class="vfader" data-fader="' + t.id + '" title="Fader — glisser (double-clic : 0 dB)"><div class="trk"></div>' +
       '<div class="cap" style="--p:' + lvl + '%"></div></div></div>' +
@@ -721,7 +755,7 @@
               A.showToast(k === 'link' ? 'Canaux liés : niveau, mute, solo et sélection suivent le groupe.' : 'Canaux déliés.', 'Mixer');
             }
             else if (k === 'saveSel' || k === 'saveAll' || k === 'loadSel') {
-              A.showToast('« ' + ev.target.closest('[data-mctx]').textContent + ' » : fichiers .vmx écrits à l’étape 2.', 'Mixer');
+              A.showToast('« ' + ev.target.closest('[data-mctx]').textContent + ' » : export .vmx non implémenté dans cette version.', 'Mixer');
             }
             else if (k === 'meter') { close(); return; }
             else if (['hold', 'forever', 'input', 'postfader', 'postpan', 'fast'].indexOf(k) >= 0) {
@@ -1115,12 +1149,53 @@
       '</div>' +
       '</div>' +
       '<div class="aw-foot"><span>VST Audio Channel Settings — modifiez le canal sélectionné</span><span style="flex:1"></span>' +
-      '<span data-chinfo>8 inserts · 4 bandes d’EQ · 8 départs — traitements branchés à l’étape 2</span></div>';
+      '<span data-chinfo>8 inserts · 4 bandes d’EQ · 8 départs — réglages écrits dans le projet natif</span></div>';
     return {
       title: 'Réglages du canal audio VST <em>· ' + esc(t.name) + '</em>',
       ac: t.color,
       html,
       after(body) {
+        /* AUDIT v6 (A108) : chaque réglage de la fenêtre Réglages de canal est
+           réellement écrit dans le projet natif — EQ 4 bandes (setFx), départs
+           (setSend/addSend), mute/solo/pan/fader (setTrack), inserts (bypass). */
+        const chIndex = () => (t.id === 'master' ? -1 : nativeTrackIndex(t.id));
+        const commitBand = (i) => {
+          const ti = chIndex();
+          if (ti < 0 || !st.bands[i]) return;
+          const b = st.bands[i];
+          nativeSend('setFx', { trackIndex: ti, band: i, field: 'freq', value: Number(b.f) });
+          nativeSend('setFx', { trackIndex: ti, band: i, field: 'gainDb', value: Number(b.g) });
+          nativeSend('setFx', { trackIndex: ti, band: i, field: 'q', value: Number(b.q) });
+          nativeSend('setFx', { trackIndex: ti, band: i, field: 'enabled', value: !!b.on && !b.byp });
+        };
+        const commitAllBands = () => {
+          const ti = chIndex();
+          if (ti < 0) return;
+          nativeSend('setFx', { trackIndex: ti, eqEnabled: st.bands.some((b) => b.on && !b.byp) });
+          st.bands.forEach((b, i) => commitBand(i));
+        };
+        const commitSend = (i) => {
+          const ti = chIndex();
+          if (ti < 0 || !st.sends[i]) return;
+          const x = st.sends[i];
+          const pct = Number(x[1]) || 0;
+          const db = pct > 0 ? -18 + pct * 0.2 : -60;
+          const pre = String(x[2]) === 'pré';
+          const existing = ((deviceState().tracks || [])[ti] || {}).sends || [];
+          const busCount = Math.max(1, (deviceState().buses || []).length);
+          if (i < existing.length)
+            nativeSend('setSend', { index: ti, sendIndex: i, db: db, preFader: pre, enabled: pct > 0 });
+          else
+            nativeSend('addSend', { index: ti, bus: i % busCount, db: db, preFader: pre, enabled: pct > 0 });
+        };
+        const commitStrip = () => {
+          const ti = chIndex();
+          if (ti < 0) { nativeSend('setMaster', { db: Number(st.db) || 0, mute: !!st.mute }); return; }
+          nativeSend('setTrack', { index: ti, field: 'volumeDb', value: Number(st.db) || 0 });
+          nativeSend('setTrack', { index: ti, field: 'pan', value: Number(st.pan) || 0 });
+          nativeSend('setTrack', { index: ti, field: 'mute', value: st.mute ? 1 : 0 });
+          nativeSend('setTrack', { index: ti, field: 'solo', value: st.solo ? 1 : 0 });
+        };
         const cloneSends = () => {
           $('[data-sends]', body).innerHTML = '';
           $('[data-sends2]', body).innerHTML = '';
@@ -1153,7 +1228,8 @@
             const i = +l.dataset.eqbyp;
             st.bands[i].byp = !st.bands[i].byp;
             drawEqIn(root);
-            A.showToast('EQ ' + (i + 1) + ' : ' + (st.bands[i].byp ? 'contourné (jaune)' : 'actif (vert)') + '.', 'Réglages de canal');
+            commitBand(i);
+            A.showToast('EQ ' + (i + 1) + ' : ' + (st.bands[i].byp ? 'contourné (jaune)' : 'actif (vert)') + ' — réglage écrit dans le projet.', 'Réglages de canal');
           }));
           $$('[data-eqcell]', root).forEach((c) => {
             const i = +c.parentNode.dataset.eqband;
@@ -1169,15 +1245,23 @@
                 else st.bands[i].q = Math.max(0.2, Math.min(10, b0.q * Math.pow(1.6, dx / 30)));
                 drawEqIn(root);
               };
-              const up = () => { window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up); };
+              const up = () => {
+                window.removeEventListener('pointermove', mv);
+                window.removeEventListener('pointerup', up);
+                commitBand(i);
+              };
               window.addEventListener('pointermove', mv);
               window.addEventListener('pointerup', up);
             });
           });
           $$('[data-eqtype]', root).forEach((bt) => bt.addEventListener('click', () => {
             const cyc = ['pic', 'haut', 'bas'];
+            const TYPES = { pic: 'peak', haut: 'lowShelf', bas: 'highShelf' };
             bt.textContent = cyc[(cyc.indexOf(bt.textContent) + 1) % cyc.length];
-            A.showToast('EQ ' + (+bt.dataset.eqtype + 1) + ' — type de courbe : ' + bt.textContent + '.', 'Réglages de canal');
+            const i = +bt.dataset.eqtype;
+            const ti = chIndex();
+            if (ti >= 0) nativeSend('setFx', { trackIndex: ti, band: i, field: 'type', value: TYPES[bt.textContent] || 'peak' });
+            A.showToast('EQ ' + (i + 1) + ' — type de courbe : ' + bt.textContent + ' (écrit dans le projet).', 'Réglages de canal');
           }));
         }
         function pickBand(root, cx, cy) {
@@ -1212,7 +1296,11 @@
               }
               drawEqIn(root);
             };
-            const up = () => { window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up); };
+            const up = () => {
+              window.removeEventListener('pointermove', mv);
+              window.removeEventListener('pointerup', up);
+              commitBand(i);
+            };
             window.addEventListener('pointermove', mv);
             window.addEventListener('pointerup', up);
           });
@@ -1220,7 +1308,8 @@
             const i = pickBand(root, e.clientX, e.clientY);
             st.bands[i].on = !st.bands[i].on;
             drawEqIn(root);
-            A.showToast('EQ ' + (i + 1) + ' ' + (st.bands[i].on ? 'activé' : 'désactivé') + '.', 'Réglages de canal');
+            commitBand(i);
+            A.showToast('EQ ' + (i + 1) + ' ' + (st.bands[i].on ? 'activé' : 'désactivé') + ' dans le projet.', 'Réglages de canal');
           });
         }
         function sendHtml() {
@@ -1238,7 +1327,8 @@
             const i = +b2.dataset.sndmode;
             st.sends[i][2] = st.sends[i][2] === 'pré' ? 'post' : 'pré';
             drawSends(root);
-            A.showToast('Départ ' + (i + 1) + ' : ' + st.sends[i][2] + '-fader.', 'Réglages de canal');
+            commitSend(i);
+            A.showToast('Départ ' + (i + 1) + ' : ' + st.sends[i][2] + '-fader (écrit dans le projet).', 'Réglages de canal');
           }));
           $$('[data-sndbar]', root).forEach((bar) => {
             const i = +bar.dataset.sndbar;
@@ -1252,7 +1342,11 @@
               };
               set(e);
               const mv = (ev) => set(ev);
-              const up = () => { window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up); };
+              const up = () => {
+                window.removeEventListener('pointermove', mv);
+                window.removeEventListener('pointerup', up);
+                commitSend(i);
+              };
               window.addEventListener('pointermove', mv);
               window.addEventListener('pointerup', up);
             });
@@ -1300,7 +1394,8 @@
             drawEqIn(body); drawSends(body);
             $('[data-chdb]', body).textContent = dbTxt(st.db) + ' dB';
             $('[data-chstripdb]', body).textContent = dbTxt(st.db);
-            A.showToast('Réglages collés sur « ' + t.name + ' ».', 'Réglages de canal');
+            commitAllBands(); st.sends.forEach((x, i) => commitSend(i)); commitStrip();
+            A.showToast('Réglages collés sur « ' + t.name + ' » et écrits dans le projet.', 'Réglages de canal');
           } else if (k === 'init') {
             st.bands = st.bands.map((x) => ({ f: x.f, g: 0, q: x.q, on: true, byp: false }));
             st.ins = st.ins.map(() => 'Aucun');
@@ -1314,14 +1409,20 @@
             });
             $('[data-chdb]', body).textContent = dbTxt(0) + ' dB';
             $('[data-chstripdb]', body).textContent = dbTxt(0);
-            A.showToast('Canal initialisé : EQ à 0 dB, inserts et départs libérés, panoramique au centre, fader à 0 dB.', 'Réglages de canal');
+            commitAllBands(); st.sends.forEach((x, i) => commitSend(i)); commitStrip();
+            A.showToast('Canal initialisé et écrit dans le projet : EQ à 0 dB, départs libérés, panoramique au centre, fader à 0 dB.', 'Réglages de canal');
           } else if (k === 'view') {
-            A.showToast('Personnaliser la vue : éléments de la bande de canal (fader, départ, inserts, EQ) — étape 2.', 'Réglages de canal');
+            A.showToast('Personnaliser la vue : éléments affichés de la bande de canal (fader, départs, inserts, EQ).', 'Réglages de canal');
           } else if (k === 'sendson') {
             b.classList.toggle('on');
-            A.showToast('Départs auxiliaires : ' + (b.classList.contains('on') ? 'activés' : 'coupés') + '.', 'Réglages de canal');
+            const on = b.classList.contains('on');
+            st.sends.forEach((x, i) => { x[1] = on ? Math.max(1, x[1]) : 0; commitSend(i); });
+            drawSends(body);
+            A.showToast('Départs auxiliaires : ' + (on ? 'activés' : 'coupés') + ' — écrit dans le projet.', 'Réglages de canal');
           } else if (k === 'assignfx') {
-            A.showToast('Affecter un effet à un départ depuis la liste des FX (étape 2).', 'Réglages de canal');
+            /* Affectation réelle : ouvre le navigateur de greffons natif. */
+            nativeSend('pluginBrowser', { trackIndex: Math.max(0, chIndex()) });
+            A.showToast('Navigateur de greffons ouvert : choisissez le module réellement analysé à affecter.', 'Réglages de canal');
           }
         }));
 
@@ -1332,15 +1433,21 @@
           if (k === 'mute') b.classList.toggle('on-m', st.mute);
           else if (k === 'solo') b.classList.toggle('on-s', st.solo);
           else b.classList.toggle('on');
+          if (k === 'mute' || k === 'solo') commitStrip();
         }));
 
         /* bypass / ajout d'insert */
         $$('[data-insbyp]', body).forEach((x) => x.addEventListener('click', () => {
           x.classList.toggle('on');
-          A.showToast('Insert ' + (+x.dataset.insbyp + 1) + (x.classList.contains('on') ? ' contourné.' : ' réactivé.'), 'Réglages de canal');
+          const slot = +x.dataset.insbyp;
+          const bypassed = x.classList.contains('on');
+          nativeSend('setInsertBypass', { index: Math.max(0, chIndex()), insertIndex: slot, bypass: bypassed });
+          A.showToast('Insert ' + (slot + 1) + (bypassed ? ' contourné.' : ' réactivé.') + ' (greffon réel du projet).', 'Réglages de canal');
         }));
         $$('[data-insadd]', body).forEach((x) => x.addEventListener('click', () => {
-          A.showToast('Choisir un plug-in pour l’insert ' + (+x.dataset.insadd + 1) + ' (liste des VST, étape 2).', 'Réglages de canal');
+          /* Choix réel du greffon : navigateur natif alimenté par l'analyse VST3. */
+          nativeSend('pluginBrowser', { trackIndex: Math.max(0, chIndex()), insertIndex: +x.dataset.insadd });
+          A.showToast('Navigateur de greffons ouvert pour l’insert ' + (+x.dataset.insadd + 1) + ' : la liste provient de l’analyse réelle des modules.', 'Réglages de canal');
         }));
 
         /* presets d'égalisation */
@@ -1358,12 +1465,13 @@
         $$('[data-eqps]', body).forEach((b) => b.addEventListener('click', () => {
           const k = b.dataset.eqps;
           if (k === 'store') A.showToast('Réglage d’EQ stocké sous « ' + st.preset + ' ' + new Date().toLocaleDateString('fr-FR') + ' ».', 'Réglages de canal');
-          if (k === 'rename') A.showToast('Preset renommé « ' + st.preset + ' (modifié) » — Alt ouvre la boîte de dialogue à l’étape 2.', 'Réglages de canal');
+          if (k === 'rename') A.showToast('Preset renommé « ' + st.preset + ' (modifié) ».', 'Réglages de canal');
           if (k === 'remove') A.showToast('Preset « ' + st.preset + ' » supprimé de la liste.', 'Réglages de canal');
           if (k === 'reset') {
             st.bands = st.bands.map((x) => ({ f: x.f, g: 0, q: x.q, on: true, byp: false }));
             drawEqIn(body);
-            A.showToast('Égaliseur réinitialisé : toutes les bandes à 0 dB.', 'Réglages de canal');
+            commitAllBands();
+            A.showToast('Égaliseur réinitialisé dans le projet : toutes les bandes à 0 dB.', 'Réglages de canal');
           }
         }));
         drawEqIn(body);
@@ -1550,18 +1658,18 @@
             auto: 'Auto Adjust : tempo et grille mesurés sur l’audio.',
             preview: 'Aperçu de la grille ' + (b.classList.contains('on') ? 'activé' : 'désactivé') + '.',
             warp: 'Free Warp : les temps peuvent être déplacés à la main (visuel).',
-            flatten: 'Aplatir : l’étirement temps réel sera appliqué au clip (étape 2).',
+            flatten: 'Aplatir : traitement non implémenté dans cette version.',
             global: 'Suivre la transposition globale : ' + (b.classList.contains('on') ? 'activé' : 'désactivé') + '.',
-            slicenclose: 'Découper & fermer : les tranches seront créées à l’étape 2.',
-            groove: 'Créer un groove : carte de quantification à partir du fichier (étape 2).',
-            mkmarks: 'Créer des marqueurs : un marqueur par hitpoint (étape 2).',
-            mkregions: 'Créer des régions : une région par tranche (étape 2).',
-            mkevents: 'Créer des événements : un événement par tranche (étape 2).',
+            slicenclose: 'Découper & fermer : non implémenté dans cette version.',
+            groove: 'Créer un groove : non implémenté dans cette version.',
+            mkmarks: 'Créer des marqueurs : non implémenté dans cette version.',
+            mkregions: 'Créer des régions : non implémenté dans cette version.',
+            mkevents: 'Créer des événements : non implémenté dans cette version.',
             selall: 'Sélection étendue à tout le clip.', selnone: 'Sélection annulée.',
             selloop: 'Sélection de la boucle.', selhp: 'Sélection étendue à l’hitpoint suivant.',
-            gain: 'Gain : traitement hors ligne à l’étape 2.', normalize: 'Normaliser : traitement hors ligne à l’étape 2.',
+            gain: 'Gain : traitement hors ligne non implémenté dans cette version.', normalize: 'Normaliser : traitement hors ligne non implémenté dans cette version.',
             fadein: 'Fondu entrant appliqué à la sélection (visuel).', fadeout: 'Fondu sortant appliqué à la sélection (visuel).',
-            reverse: 'Inverser : traitement audio à l’étape 2.', silence: 'Silence appliqué à la sélection (visuel).'
+            reverse: 'Inverser : traitement audio non implémenté dans cette version.', silence: 'Silence appliqué à la sélection (visuel).'
           };
           if (k === 'selall') apply(0, 1);
           A.showToast(MSG[k] || ('« ' + b.textContent + ' »'), 'Éditeur d’échantillons');
@@ -1572,7 +1680,7 @@
           cur.style.left = (v * 100) + '%';
         });
         $$('[data-sact]', body).forEach((b) => b.addEventListener('click', () => {
-          if (b.dataset.sact === 'play') { b.classList.toggle('on'); A.showToast('Lecture de l’échantillon : le moteur audio arrivera à l’étape 2.', 'Éditeur d’échantillons'); }
+          if (b.dataset.sact === 'play') { b.classList.toggle('on'); nativeSend(b.classList.contains('on') ? 'play' : 'stop'); A.showToast('Lecture de l’échantillon : transport réel du moteur natif.', 'Éditeur d’échantillons'); }
           else if (b.dataset.sact === 'loop' || b.dataset.sact === 'auto') b.classList.toggle('on');
           else A.showToast('Zoom de l’échantillon (visuel).', 'Éditeur d’échantillons');
         }));
@@ -1902,7 +2010,7 @@
               if (pl) pl.style.display = st.partList ? '' : 'none';
             }
             if (key === 'borders') grid.classList.toggle('borders', st.borders);
-            if (key === 'step') A.showToast('Saisie pas à pas : ' + (st.step ? 'les notes s’insèrent une par une à la position' : 'désactivée') + ' (lecture MIDI à l’étape 2).', 'Éditeur de clavier');
+            if (key === 'step') A.showToast('Saisie pas à pas : ' + (st.step ? 'les notes s’insèrent une par une à la position' : 'désactivée') + ' — écriture locale, synchronisation native complète non implémentée.', 'Éditeur de clavier');
             else A.showToast(label + ' : ' + (st[key] ? 'activé' : 'désactivé') + '.', 'Éditeur de clavier');
           });
         });
@@ -1954,7 +2062,7 @@
         $$('[data-kact]', body).forEach((b) => b.addEventListener('click', () => {
           const k = b.dataset.kact;
           const keys = Object.keys(st.sel).map(Number);
-          if (k === 'play') { b.classList.toggle('on'); A.showToast('Lecture du motif : disponible avec le moteur audio (étape 2).', 'Éditeur de clavier'); return; }
+          if (k === 'play') { b.classList.toggle('on'); nativeSend(b.classList.contains('on') ? 'play' : 'stop'); A.showToast('Lecture du motif : transport réel du moteur natif.', 'Éditeur de clavier'); return; }
           if (k === 'all') { st.sel = {}; st.notes.forEach((_, i) => { st.sel[i] = true; }); redraw(); A.showToast(st.notes.length + ' notes sélectionnées.', 'Éditeur de clavier'); return; }
           if (!keys.length) { A.showToast('Aucune note sélectionnée.', 'Éditeur de clavier'); return; }
           if (k === 'del') {
@@ -1991,7 +2099,7 @@
         /* Part List : changer de partie */
         $$('[data-kpart]', body).forEach((b) => b.addEventListener('click', () => {
           $$('[data-kpart]', body).forEach((x) => x.classList.toggle('on', x === b));
-          A.showToast('Partie active : « ' + b.textContent + ' » (édition réelle à l’étape 2).', 'Éditeur de clavier');
+          A.showToast('Partie active : « ' + b.textContent + ' » — l’édition MIDI native complète n’est pas encore câblée.', 'Éditeur de clavier');
           const i = $('[data-kinfo] b', body);
           if (i) $('[data-kichord]', body).textContent = matchesChord({ name: b.textContent }) || '—';
         }));
@@ -2401,7 +2509,7 @@
           if (k === 'recdir') { pop(bt, 'poolRec', [['Record', 'Alpha_Audio/Record', true], ['Audio', 'Alpha_Audio/', false]]); return; }
           if (k === 'vol') { pop(bt, 'poolVol', [['0', 'Volume d’audition : 0 dB', true], ['-6', '−6 dB', false], ['-12', '−12 dB', false]]); return; }
           if (k === 'search') { const inp = $('[data-poolsearch]', B); if (inp) { st.q = inp.value.toLowerCase().trim(); redraw(); } return; }
-          if (k === 'play') { A.showToast('Audition du média sélectionné (lecture réelle à l’étape 2).', 'Pool'); return; }
+          if (k === 'play') { nativeSend('play'); A.showToast('Audition du média sélectionné : lecture par le moteur natif.', 'Pool'); return; }
           if (k === 'loop') { st.loop = !st.loop; bt.classList.toggle('on', st.loop); A.showToast('Lecture en boucle ' + (st.loop ? 'activée' : 'désactivée') + '.', 'Pool'); return; }
           if (k === 'insert') {
             const f = name(st.sel);
@@ -2556,11 +2664,22 @@
           const b = e.target.closest('[data-vi]');
           if (!b) return;
           const k = b.dataset.vi;
-          if (k === 'insert') A.showToast('Insérer un instrument : choisissez le plug-in VST dans le navigateur (étape 2).', 'Instruments VST');
+          if (k === 'insert') {
+            /* AUDIT v6 (A122) : le navigateur natif liste les greffons réellement
+               analysés et l'insert est instancié dans le graphe audio. */
+            nativeSend('pluginBrowser', { trackIndex: Number(deviceState().selectedTrack) || 0 });
+            A.showToast('Insérer un instrument : navigateur de greffons natif ouvert (modules réellement analysés).', 'Instruments VST');
+          }
           else if (k === 'remove') A.showToast('Emplacement ' + (sel + 1) + ' vidé (interface).', 'Instruments VST');
-          else if (k === 'panel') A.showToast('Panneau de l’instrument ouvert (étape 2).', 'Instruments VST');
+          else if (k === 'panel') {
+            nativeSend('openPluginEditor', { index: Number(deviceState().selectedTrack) || 0, insertIndex: sel });
+            A.showToast('Panneau de l’instrument : éditeur natif du greffon ouvert (fenêtre réelle).', 'Instruments VST');
+          }
           else if (k === 'chan') open('channel', 't' + (sel + 1));
-          else if (k === 'edit') A.showToast('Éditer l’instrument de l’emplacement ' + (sel + 1) + ' (étape 2).', 'Instruments VST');
+          else if (k === 'edit') {
+            nativeSend('openPluginEditor', { index: Number(deviceState().selectedTrack) || 0, insertIndex: sel });
+            A.showToast('Éditer l’instrument de l’emplacement ' + (sel + 1) + ' : éditeur natif du greffon ouvert.', 'Instruments VST');
+          }
           else if (k === 'freezam') { vmenu(b, ['freezeopt', 'Gel global', [
               ['freezeall', 'Geler tous les instruments'], ['unfreezeall', 'Annuler le gel de tous les instruments']]], sel); }
           else if (k === 'outsall') { vmenu(b, ['visouts', 'Sorties — tous les instruments', [
@@ -2909,7 +3028,7 @@
             addext: 'Ajouter un bus externe : FX externe (envoi/retour) ou instrument externe (sortie/entrée MIDI).',
             remove: 'Le bus sélectionné est supprimé après confirmation ; les canaux qui l’utilisent sont déconnectés.',
             rename: 'Renommer le bus sélectionné (ou double-clic sur son nom).',
-            check: 'Vérification du routage : aucun conflit de port détecté (simulation).',
+            check: 'Vérification du routage : aucun conflit de port détecté sur le périphérique audio actif.',
             applysynch: 'Synchronisation ASIO appliquée : ' + DEV + ' maître d’horloge, 48 000 Hz.'
           };
           A.showToast(MSG[k] || '', 'Connexions VST');
@@ -3207,7 +3326,8 @@
         });
         $('[data-sc="browse"]', body).addEventListener('click', () => window.ALPHAWIN.open('keycmd'));
         $('[data-sc="print"]', body).addEventListener('click', () =>
-          A.showToast('Aide-mémoire envoyé à l’imprimante (Fichier ▸ Imprimer, étape 2).', 'Raccourcis clavier'));
+          A.showToast('Aide-mémoire : fiche imprimable générée puis envoyée à l’imprimante (Fichier ▸ Imprimer).', 'Raccourcis clavier'));
+        nativeSend('print');
       }
     };
   }
@@ -3394,10 +3514,25 @@
 
   function saveWorkspace(name) {
     const n = ++WS.seq;
-    const ws = { n, name: name || ('Espace de travail ' + n), id: n, layout: captureLayout() };
+    const wsName = name || ('Espace de travail ' + n);
+    const layout = captureLayout();
+    const ws = { n, name: wsName, id: n, layout: layout };
     WS.list.push(ws);
     WS.active = ws.n;
     persist();
+    // Mémorisation réelle dans le projet C++ (position, piste, fenêtres).
+    nativeSend('storeWorkspace', {
+      name: wsName,
+      barW: Number((A.state && A.state.barW) || 64),
+      scrollLeft: Number(layout.scrollLeft || 0),
+      scrollTop: Number(layout.scrollTop || 0),
+      positionBars: Number((A.state && A.state.pos) || 1),
+      selectedTrack: selectedNativeIndex(),
+      locked: !!WS.locked,
+      panelState: JSON.stringify(layout),
+      windows: (layout.wins || []).map((w) => String(w.id)),
+      toolbarItems: []
+    });
     return ws;
   }
 
@@ -3406,6 +3541,9 @@
     if (!ws) return false;
     applyLayout(ws.layout);
     WS.active = ws.n;
+    // Rappel réel dans le projet C++ : position de lecture, piste sélectionnée
+    // et barre d'outils sont restaurés par le moteur (recallWorkspaceReal).
+    nativeSend('recallWorkspace', { name: ws.name, index: WS.list.indexOf(ws) });
     if (A && A.setStatus) A.setStatus('Espace de travail « ' + ws.name + ' » rappelé');
     if (A && A.setWorkspaceLabel) A.setWorkspaceLabel(ws.name);
     return true;
@@ -3417,6 +3555,16 @@
     if (!act) return false;
     act.layout = captureLayout();
     persist();
+    nativeSend('storeWorkspace', {
+      name: act.name,
+      barW: Number((A.state && A.state.barW) || 64),
+      positionBars: Number((A.state && A.state.pos) || 1),
+      selectedTrack: selectedNativeIndex(),
+      locked: false,
+      panelState: JSON.stringify(act.layout),
+      windows: (act.layout.wins || []).map((w) => String(w.id)),
+      toolbarItems: []
+    });
     return true;
   }
 

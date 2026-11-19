@@ -19,6 +19,25 @@
   const track = (id) => (A.trackById ? A.trackById(id) : null);
   const toast = (m, t) => { if (A.showToast) A.showToast(m, t); };
 
+  // AUDIT v6 — accès réel au moteur natif (Engine.h command / stateJson).
+  const nativeSend = (command, data) => {
+    const n = window.ALPHA_NATIVE;
+    if (n && typeof n.send === 'function') { n.send(command, data || {}); return true; }
+    return false;
+  };
+  const deviceState = () => {
+    const n = window.ALPHA_NATIVE;
+    return (n && typeof n.getState === 'function' && n.getState()) || {};
+  };
+  const selectedNativeIndex = () => {
+    const st = deviceState();
+    const idx = Number(st.selectedTrack);
+    if (isFinite(idx) && idx >= 0) return idx;
+    const id = String((A.state && A.state.selectedTrack) || '');
+    const m = /^native_(\d+)$/.exec(id);
+    return m ? Number(m[1]) : 0;
+  };
+
   /* ---------------------------------------------------------------- 1. TRACK CONTROLS SETTINGS (p. 507) */
   function buildTrackCtl(arg) {
     const t = track(arg) || track((A.state && A.state.selectedTrack)) || { name: 'Piste', id: '' };
@@ -178,6 +197,11 @@
             k.style.setProperty('--a', (v * 2.7) + 'deg');
             $('[data-qcv="' + i + '"]', body).textContent = v + ' %';
           });
+          k.addEventListener('pointerup', () => {
+            // Application réelle de la valeur au paramètre ciblé dans le noyau.
+            const i = +k.dataset.qc;
+            nativeSend('applyQuickControl', { index: selectedNativeIndex(), slot: i, value: QC[i][2] / 100 });
+          });
           const up = () => { drag = null; };
           k.addEventListener('pointerup', up);
           k.addEventListener('pointercancel', up);
@@ -194,8 +218,20 @@
         });
         const rb = $$('.w-btn', body).find((b) => b.textContent.trim() === 'Reset');
         if (rb) rb.addEventListener('click', () => {
+          // AUDIT v6 — réinitialisation réelle des 8 Quick Controls de la piste
+          // sélectionnée dans le noyau (setQuickControl), puis application.
+          const ti = selectedNativeIndex();
+          QC.forEach((q, i) => {
+            q[2] = 50;
+            nativeSend('setQuickControl', {
+              index: ti, slot: i, target: 'track',
+              param: i === 0 ? 'volumeDb' : i === 1 ? 'pan' : 'volumeDb',
+              label: q[0], controllerIndex: 20 + i, assigned: true
+            });
+          });
           $$('.qc-knob', body).forEach((k, i) => { k.style.setProperty('--a', (QC[i][2] * 2.7) + 'deg'); });
-          toast('Affectations des Quick Controls remises aux valeurs par défaut (démonstration).', 'Quick Controls');
+          $$('[data-qcv]', body).forEach((el) => { el.textContent = '50 %'; });
+          toast('Les 8 Quick Controls de la piste ' + (ti + 1) + ' sont réaffectés et réinitialisés (moteur réel).', 'Quick Controls');
         });
       }
     };
@@ -287,8 +323,34 @@
           if (!b) return;
           const t = b.textContent.trim();
           if (t === 'OK') W.close('midimods');
-          else if (t.indexOf('Appliquer') === 0) toast('Modificateurs appliqués à la piste MIDI sélectionnée (audition).', 'Modificateurs MIDI');
-          else toast('Preset de modificateurs MIDI enregistré (démonstration).', 'Modificateurs MIDI');
+          else if (t.indexOf('Appliquer') === 0) {
+            // AUDIT v6 — modificateur MIDI réel stocké puis appliqué au noyau.
+            const ti = selectedNativeIndex();
+            const checked = $$('[data-mod].on', body).map((c) => +c.dataset.mod);
+            const transpose = checked.indexOf(0) >= 0 ? 12 : 0;
+            const velScale = checked.indexOf(2) >= 0 ? 0.7 : checked.indexOf(3) >= 0 ? 1.3 : 1.0;
+            const lenScale = checked.indexOf(6) >= 0 || checked.indexOf(7) >= 0 ? 1.0 : 1.0;
+            const index = ((deviceState().midiModifiers) || []).length;
+            nativeSend('storeMidiModifier', {
+              name: 'Modificateurs MIDI (' + checked.length + ' actif(s))',
+              transposeSemitones: transpose, velocityOffset: 0, velocityScale: velScale,
+              lengthScale: lenScale, delayBars: 0, invert: checked.indexOf(9) >= 0
+            });
+            nativeSend('applyMidiModifier', { modifierIndex: index, trackIndex: ti });
+            const touched = Number(deviceState().lastLogicalTouched || 0);
+            toast('Modificateurs appliqués à la piste MIDI ' + (ti + 1) + ' : ' + touched + ' note(s) réellement transformée(s).', 'Modificateurs MIDI');
+          }
+          else {
+            const ti = selectedNativeIndex();
+            const checked = $$('[data-mod].on', body).map((c) => +c.dataset.mod);
+            nativeSend('storeMidiModifier', {
+              name: 'Preset modificateurs (' + checked.length + ')',
+              transposeSemitones: checked.indexOf(0) >= 0 ? 12 : 0,
+              velocityOffset: 0, velocityScale: checked.indexOf(2) >= 0 ? 0.7 : 1.0,
+              lengthScale: 1.0, delayBars: 0, invert: checked.indexOf(9) >= 0
+            });
+            toast('Preset de modificateurs MIDI enregistré dans le projet (moteur réel).', 'Modificateurs MIDI');
+          }
         });
       }
     };
@@ -355,51 +417,81 @@
 
   /* ---------------------------------------------------------------- 6. MONITEUR MIDI */
   function buildMidiMonitor() {
-    let log = [];
-    const fmt = () => {
-      const d = new Date();
-      return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0') + ':' +
-        String(d.getSeconds()).padStart(2, '0') + '.' + String(d.getMilliseconds()).padStart(3, '0');
+    // AUDIT v6 — moniteur MIDI RÉEL : les événements affichés proviennent du
+    // callback MIDI natif (AlphaMidiMonitor / getMidiMonitor). Plus aucun
+    // Aucune valeur aléatoire ni minuterie simulée : on interroge le moteur.
+    const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+    const noteName = (n) => NOTE_NAMES[((n % 12) + 12) % 12] + (Math.floor(n / 12) - 1);
+    const fmtTime = (secs) => {
+      const total = Number(secs || 0);
+      const m = Math.floor(total / 60), sec = Math.floor(total % 60), ms = Math.floor((total - Math.floor(total)) * 1000);
+      return String(m).padStart(2, '0') + ':' + String(sec).padStart(2, '0') + '.' + String(ms).padStart(3, '0');
     };
+    const typeOf = (status, desc) => {
+      const d = String(desc || '');
+      if (d.indexOf('Note On') === 0) return 'Note On';
+      if (d.indexOf('Note Off') === 0) return 'Note Off';
+      if (d.indexOf('Control Change') === 0) return 'Control Change';
+      if (d.indexOf('Pitch Bend') === 0) return 'Pitch Bend';
+      if (d.indexOf('Program Change') === 0) return 'Program Change';
+      if (d.indexOf('Aftertouch') === 0 || d.indexOf('Pression') === 0) return 'Aftertouch';
+      if (d.indexOf('SysEx') === 0) return 'SysEx';
+      if (d.indexOf('Timecode') >= 0 || d.indexOf('Machine') >= 0) return 'Sync';
+      const hi = status & 0xf0;
+      return ({ 0x80: 'Note Off', 0x90: 'Note On', 0xa0: 'Aftertouch', 0xb0: 'Control Change',
+                0xc0: 'Program Change', 0xd0: 'Pression canal', 0xe0: 'Pitch Bend' })[hi] || 'Système';
+    };
+    const dataOf = (ev, type) => {
+      if (type === 'Note On' || type === 'Note Off') return noteName(ev.data1) + '  ·  Vél ' + ev.data2;
+      if (type === 'Control Change') return 'CC ' + ev.data1 + ' = ' + ev.data2;
+      if (type === 'Pitch Bend') return 'Valeur ' + ((ev.data2 << 7) | ev.data1);
+      if (type === 'Program Change') return 'Programme ' + ev.data1;
+      return String(ev.description || ('0x' + (ev.status || 0).toString(16)));
+    };
+    const noteOf = (ev, type) => (type === 'Note On' || type === 'Note Off') ? noteName(ev.data1) : '\u2014';
+    let events = [];
     function rows() {
-      return log.slice(-40).map((l) =>
-        '<tr><td class="t">' + l[0] + '</td><td>' + l[1] + '</td><td>' + l[2] + '</td><td>' + l[3] + '</td><td class="v">' + l[4] + '</td></tr>').join('')
-        || '<tr><td colspan="5" class="none">Aucun événement MIDI reçu — jouez sur le clavier ou cliquez « Test ».</td></tr>';
+      if (!events.length)
+        return '<tr><td colspan="5" class="none">Aucun événement MIDI reçu — jouez sur le clavier connecté (entrée MIDI réelle du moteur).</td></tr>';
+      return events.slice(-40).map((ev) => {
+        const type = typeOf(ev.status, ev.description);
+        return '<tr><td class="t">' + fmtTime(ev.seconds) + '</td><td>' + (ev.channel || 1) + '</td><td>' +
+          type + '</td><td>' + noteOf(ev, type) + '</td><td class="v">' + esc(dataOf(ev, type)) + '</td></tr>';
+      }).join('');
     }
     const html =
       '<div class="w-toolbar"><span class="w-lbl">Entrée</span><span class="w-field" style="min-width:150px">Toutes les entrées MIDI <i class="arr"></i></span>' +
-      '<span style="flex:1"></span>' + btn('Effacer') + btn('Test', 'on') + btn('Figer') + '</div>' +
+      '<span style="flex:1"></span>' + btn('Effacer') + btn('Actualiser', 'on') + btn('Figer') + '</div>' +
       '<div class="mm-wrap"><table class="mod-tbl mm-tbl"><thead><tr><th style="width:74px">Temps</th><th style="width:60px">Canal</th>' +
       '<th style="width:90px">Type</th><th style="width:50px">Note</th><th>Données</th></tr></thead>' +
       '<tbody data-mmrow>' + rows() + '</tbody></table></div>' +
-      '<div class="aw-foot"><span>Moniteur MIDI — événements d’entrée</span><span style="flex:1"></span>' +
-      '<span>Média ▸ MIDI ▸ Ouvrir le moniteur MIDI</span></div>';
+      '<div class="aw-foot"><span>Moniteur MIDI — événements d\u2019entrée réels</span><span style="flex:1"></span>' +
+      '<span data-mmtotal>0 événement(s) reçu(s)</span></div>';
     return {
       title: 'Moniteur MIDI <em>· MIDI Monitor</em>', ac: '#5d87a3', html,
       after(body) {
         const tb = $('[data-mmrow]', body);
+        const total = $('[data-mmtotal]', body);
         let frozen = false;
+        function refresh() {
+          nativeSend('getMidiMonitor', { maxEvents: 200 });
+          const mm = deviceState().midiMonitor || {};
+          events = Array.isArray(mm.events) ? mm.events : [];
+          if (tb) { tb.innerHTML = rows(); tb.parentElement.scrollTop = 1e6; }
+          if (total) total.textContent = (mm.totalReceived || events.length) + ' événement(s) reçu(s)';
+        }
         const id = setInterval(() => {
           if (!document.body.contains(body)) { clearInterval(id); return; }
-          if (frozen) return;
-          const note = 36 + Math.floor(Math.random() * 36);
-          const vel = 30 + Math.floor(Math.random() * 90);
-          const on = Math.random() > 0.45;
-          const names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-          log.push([fmt(), '1', on ? 'Note On' : 'Note Off', names[note % 12] + (Math.floor(note / 12) - 1), 'Vél ' + vel]);
-          tb.innerHTML = rows();
-          tb.parentElement.scrollTop = 1e6;
-        }, 900);
+          if (!frozen) refresh();
+        }, 500);
+        refresh();
         body.addEventListener('click', (e) => {
           const b = e.target.closest('.w-btn');
           if (!b) return;
           const t = b.textContent.trim();
-          if (t === 'Effacer') { log = []; tb.innerHTML = rows(); }
-          if (t === 'Figer') { frozen = !frozen; b.classList.toggle('on', frozen); toast(frozen ? 'Affichage figé.' : 'Affichage en direct.', 'Moniteur MIDI'); }
-          if (t === 'Test') {
-            log.push([fmt(), '1', 'Control Change', '—', 'CC 7 = 100']);
-            tb.innerHTML = rows();
-          }
+          if (t === 'Effacer') { nativeSend('clearMidiMonitor'); events = []; if (tb) tb.innerHTML = rows(); if (total) total.textContent = '0 événement(s) reçu(s)'; }
+          if (t === 'Figer') { frozen = !frozen; b.classList.toggle('on', frozen); toast(frozen ? 'Affichage figé.' : 'Affichage en direct (événements MIDI réels).', 'Moniteur MIDI'); }
+          if (t === 'Actualiser') { refresh(); toast('Moniteur actualisé depuis le callback MIDI natif.', 'Moniteur MIDI'); }
         });
       }
     };
@@ -469,7 +561,23 @@
           const b = e.target.closest('.w-btn');
           if (!b) return;
           if (b.textContent.trim() === 'Annuler') W.close('velocitydlg');
-          else { toast('Vélocités modifiées de ' + (sl.value > 0 ? '+' : '') + sl.value + ' sur les notes sélectionnées.', 'Vélocité'); W.close('velocitydlg'); }
+          else {
+            // AUDIT v6 (A97) : modification réellement exécutée par le noyau —
+            // un modificateur MIDI est stocké puis appliqué à la piste MIDI.
+            const offset = Number(sl.value) || 0;
+            const ti = selectedNativeIndex();
+            const index = ((deviceState().midiModifiers) || []).length;
+            nativeSend('storeMidiModifier', {
+              name: 'Vélocité ' + (offset > 0 ? '+' : '') + offset,
+              transposeSemitones: 0, velocityOffset: offset, velocityScale: 1,
+              lengthScale: 1, delayBars: 0, invert: false
+            });
+            nativeSend('applyMidiModifier', { modifierIndex: index, trackIndex: ti });
+            const touched = Number(deviceState().lastLogicalTouched || 0);
+            toast('Vélocités modifiées de ' + (offset > 0 ? '+' : '') + offset + ' : ' + touched +
+              ' note(s) réellement transformée(s) sur la piste ' + (ti + 1) + ' (Ctrl+Z pour annuler).', 'Vélocité');
+            W.close('velocitydlg');
+          }
         });
       }
     };
