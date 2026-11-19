@@ -5,6 +5,7 @@ on:
     paths:
       - "ALPHA-Studio.zip"
       - ".github/workflows/extract-alpha-archive.yml"
+      - "Integration/EXTRACT-TRIGGER.md"
   workflow_dispatch:
 
 permissions:
@@ -58,5 +59,6 @@ jobs:
             echo "No extracted changes to commit"
           else
             git commit -m "Extract ALPHA-Studio UI archive"
-            git push
+            git pull --rebase origin main
+            git push origin HEAD:main
           fi
