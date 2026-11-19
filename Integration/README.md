@@ -1,27 +1,39 @@
-# ALPHA Studio Mixte — intégration UI / moteur
+# ALPHA Studio Mixte — intégration moteur / interface
 
-## Répartition
-- UI/AlphaStudio/ : emplacement prévu pour l'interface HTML/CSS/JavaScript de l'archive fournie. À ce commit, seul le pont natif et le script de construction sont dans le dépôt ; l'archive complète (src/, alpha-studio.html, docs/) reste à transférer. L'apparence ne doit pas être recréée ni remplacée.
-- Engines/ALPHA-Studio/Source/Engine.h : moteur audio JUCE conservé comme source fonctionnelle.
-- Source/AlphaWebMain.h : hôte WebView2 et adaptateur C++.
-- UI/AlphaStudio/native-bridge.js : pont JavaScript vers les commandes natives.
-- Source/Main.cpp : point d'entrée de l'application mixte.
+## Répartition des sources
 
-## Commandes raccordées dans le pont
-Transport lecture / arrêt / enregistrement, cycle, métronome, déplacement du curseur, armement / mute / solo / volume des pistes, création de piste, import audio, ouverture et sauvegarde de projet. Le point d'entrée natif accepte aussi une commande tempo, mais aucun champ de tempo de l'interface ne l'appelle encore.
+- `UI/AlphaStudio/` : interface finale issue de l'archive ALPHA-Studio-master fournie séparément. Son apparence reste la référence et ne doit pas être remplacée par l'ancienne interface native.
+- `Engines/ALPHA-Studio/Source/Engine.h` : moteur audio JUCE 8 d'ALPHA-Studio. Ce fichier est conservé à son emplacement actif et utilisé par l'application mixte.
+- `Engines/ALPHA-Studio/ReferenceApp/` : copie de référence de l'ancien hôte JUCE (`Main.cpp`, `UI.h`, `CMakeLists.txt`, script de build et documentation). Ces fichiers sont conservés pour consultation et ne remplacent pas l'hôte WebView2 mixte.
+- `Source/AlphaWebMain.h` et `Source/Main.cpp` : hôte Windows/WebView2 et adaptateur natif de l'interface.
+- `UI/AlphaStudio/native-bridge.js` : commandes JavaScript vers le moteur audio.
 
-Le moteur reste propriétaire des données audio. L'interface reçoit un instantané périodique du transport, des pistes, des clips et des niveaux. Les callbacks natifs sont exécutés sur le thread message JUCE ; le traitement audio reste dans le moteur. Les niveaux sont transmis, mais leur rendu VU dans les widgets de l'interface reste à raccorder.
+## Capacités présentes dans le moteur
 
-## Fichier UI attendu
-Le build.py ajouté injecte native-bridge.js après les scripts ALPHA et CMake le lance avant la compilation. Le dépôt ne contient pas encore src/ ; son transfert est un prérequis avant configuration et compilation. Le HTML est généré par build.py.
+Le moteur `AlphaEngine` contient notamment :
+- graphe audio JUCE et gestion des périphériques ;
+- pistes, faders, panoramique, mute, solo et armement ;
+- lecture, arrêt, position, boucle et métronome ;
+- import audio, clips, découpe, duplication et déplacement ;
+- enregistrement WAV ;
+- inserts de plugins VST3 et gestion de la liste de plugins ;
+- chargement et sauvegarde de projets ;
+- rendu/export audio hors ligne.
 
-## Limites à ne pas masquer
-Ce premier adaptateur ne synchronise pas encore toutes les opérations d'édition de clips, les inserts VST, les automations, les fenêtres d'édition MIDI / échantillons ou les contrôles avancés de mixage. Ces raccordements nécessitent des commandes dédiées et des tests fonctionnels. Aucun de ces contrôles ne doit afficher une réussite fictive.
+## Raccordements déjà réalisés dans l'hôte mixte
 
-## Construction
-Sous Windows avec Visual Studio 2022, CMake 3.22+ et le runtime Microsoft Edge WebView2 installé :
+L'interface appelle actuellement le moteur pour lecture, arrêt, enregistrement, cycle, métronome, déplacement du curseur, tempo, création de pistes, import audio, ouverture/sauvegarde de projet, mute/solo/armement, volume et panoramique. L'hôte publie périodiquement les pistes, clips, position, état du transport et niveaux audio vers l'interface.
 
-    cmake -S . -B build -A x64
-    cmake --build build --config Release
+## Raccordements restant à terminer
 
-L'archive UI complète doit être présente dans UI/AlphaStudio/ avant le lancement. Le build et le test audio réel restent à valider sur Windows.
+Les commandes présentes dans le moteur ne sont pas toutes accessibles depuis l'interface finale. Il reste notamment à raccorder et tester les opérations d'édition des clips, la gestion visuelle des inserts VST3, les réglages de périphériques, les contrôles avancés du transport, l'export audio et l'affichage des vumètres. Les fonctions d'automation, MIDI et les fenêtres dédiées doivent être évaluées séparément : elles ne sont pas garanties par le seul moteur actuellement présent.
+
+## ASIO et dépendances
+
+Le moteur utilise JUCE 8.0.4 et héberge les plugins VST3. La prise en charge ASIO est facultative et nécessite le SDK Steinberg fourni légalement par l'utilisateur ou obtenu auprès de Steinberg. Le SDK n'est pas recopié ici : sa licence de distribution impose des conditions spécifiques. WASAPI et DirectSound restent les chemins audio Windows configurés par défaut.
+
+## Construction et vérification
+
+La configuration CMake cible Windows avec Visual Studio 2022, CMake 3.22+, Python 3 et WebView2. L'interface HTML est générée par `UI/AlphaStudio/build.py`.
+
+Aucune compilation Windows ni validation audio réelle n'a encore été effectuée sur ce dépôt. Les fonctions décrites comme présentes dans le moteur ne doivent donc pas être considérées comme validées en exécution dans l'application mixte.
