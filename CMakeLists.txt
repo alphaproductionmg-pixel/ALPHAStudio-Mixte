@@ -36,7 +36,7 @@ target_sources(AlphaStudio PRIVATE
     Source/AlphaWebMain.h
     Engines/ALPHA-Studio/Source/Engine.h)
 target_include_directories(AlphaStudio PRIVATE
-    "\${CMAKE_CURRENT_SOURCE_DIR}/Engines/ALPHA-Studio/Source")
+    "${CMAKE_CURRENT_SOURCE_DIR}/Engines/ALPHA-Studio/Source")
 
 target_compile_definitions(AlphaStudio PRIVATE
     JUCE_WEB_BROWSER=1
@@ -61,8 +61,8 @@ target_link_libraries(AlphaStudio PRIVATE
     juce::juce_recommended_lto_flags)
 
 add_custom_command(TARGET AlphaStudio POST_BUILD
-    COMMAND \${CMAKE_COMMAND} -E copy_directory
-        "\${CMAKE_CURRENT_SOURCE_DIR}/UI/AlphaStudio"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_CURRENT_SOURCE_DIR}/UI/AlphaStudio"
         "$<TARGET_FILE_DIR:AlphaStudio>/UI/AlphaStudio"
     COMMENT "Copying ALPHA Studio web interface")
 
