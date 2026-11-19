@@ -1,0 +1,62 @@
+name: Extract ALPHA-Studio archive
+
+on:
+  push:
+    paths:
+      - "ALPHA-Studio.zip"
+      - ".github/workflows/extract-alpha-archive.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify and extract archive without overwriting integration files
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f ALPHA-Studio.zip
+          unzip -t ALPHA-Studio.zip
+          mkdir -p UI/AlphaStudio/SourceArchive
+          unzip -q -o ALPHA-Studio.zip -d /tmp/alpha-archive
+          test -d /tmp/alpha-archive/ALPHA-Studio/src
+          test -d /tmp/alpha-archive/ALPHA-Studio/docs
+          cp -a /tmp/alpha-archive/ALPHA-Studio UI/AlphaStudio/SourceArchive/
+          if [ ! -e UI/AlphaStudio/src ]; then
+            cp -a /tmp/alpha-archive/ALPHA-Studio/src UI/AlphaStudio/src
+          else
+            echo "UI/AlphaStudio/src already exists; refusing to overwrite"
+            exit 1
+          fi
+          if [ ! -e UI/AlphaStudio/docs ]; then
+            cp -a /tmp/alpha-archive/ALPHA-Studio/docs UI/AlphaStudio/docs
+          else
+            echo "UI/AlphaStudio/docs already exists; refusing to overwrite"
+            exit 1
+          fi
+          cp /tmp/alpha-archive/ALPHA-Studio/README.md UI/AlphaStudio/SOURCE-README.md
+          cp /tmp/alpha-archive/ALPHA-Studio/LISEZ-MOI.txt UI/AlphaStudio/SOURCE-LISEZ-MOI.txt
+          cp /tmp/alpha-archive/ALPHA-Studio/make_comparatif.py UI/AlphaStudio/make_comparatif.py
+          cp /tmp/alpha-archive/ALPHA-Studio/make_lacunes.py UI/AlphaStudio/make_lacunes.py
+          cp /tmp/alpha-archive/ALPHA-Studio/alpha-studio.html UI/AlphaStudio/alpha-studio-original.html
+          echo "Extracted archive contents:"
+          find UI/AlphaStudio -type f -printf '%p %s bytes\n' | sort
+      - name: Commit extracted files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add UI/AlphaStudio/SourceArchive UI/AlphaStudio/src UI/AlphaStudio/docs UI/AlphaStudio/SOURCE-README.md UI/AlphaStudio/SOURCE-LISEZ-MOI.txt UI/AlphaStudio/make_comparatif.py UI/AlphaStudio/make_lacunes.py UI/AlphaStudio/alpha-studio-original.html
+          if git diff --cached --quiet; then
+            echo "No extracted changes to commit"
+          else
+            git commit -m "Extract ALPHA-Studio UI archive"
+            git push
+          fi
