@@ -37,7 +37,7 @@ Le glisser-déposer envoie les fichiers WAV / MIDI / `.alphaproj` au moteur en b
 
 ## ASIO et dépendances
 
-JUCE 8.0.4 est récupéré par CMake `FetchContent`. La prise en charge ASIO est facultative et nécessite le SDK Steinberg fourni légalement par l'utilisateur ; ce SDK n'est pas recopié ici. WASAPI et DirectSound restent les chemins Windows configurés par défaut. WebView2 est demandé par `NEEDS_WEBVIEW2 TRUE` et `JUCE_USE_WIN_WEBVIEW2=1`.
+JUCE 8.0.4 est récupéré par CMake `FetchContent`. La prise en charge ASIO est facultative et nécessite le SDK Steinberg fourni légalement par l'utilisateur ; ce SDK n'est pas recopié ici. WASAPI et DirectSound restent les chemins Windows configurés par défaut. WebView2 est demandé par `NEEDS_WEBVIEW2 TRUE` et `JUCE_USE_WIN_WEBVIEW2=1` ; le workflow télécharge le package NuGet `Microsoft.Web.WebView2 1.0.1901.177` attendu par JUCE et copie `WebView2Loader.dll` près de l’exécutable.
 
 ## Construction et vérification
 

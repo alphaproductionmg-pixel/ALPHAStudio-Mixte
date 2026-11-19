@@ -58,15 +58,35 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
+      - name: Installer le package WebView2 attendu par JUCE 8.0.4
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'NuGetPackages'
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          $zip = Join-Path $env:RUNNER_TEMP 'microsoft.web.webview2.1.0.1901.177.zip'
+          Invoke-WebRequest -Uri 'https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/1.0.1901.177/microsoft.web.webview2.1.0.1901.177.nupkg' -OutFile $zip
+          $dest = Join-Path $root 'Microsoft.Web.WebView2.1.0.1901.177'
+          Remove-Item -Recurse -Force $dest -ErrorAction SilentlyContinue
+          Expand-Archive -Path $zip -DestinationPath $dest -Force
+          if (-not (Test-Path (Join-Path $dest 'build/native/include/WebView2.h'))) { throw 'WebView2.h absent du package NuGet' }
+          if (-not (Test-Path (Join-Path $dest 'build/native/x64/WebView2LoaderStatic.lib'))) { throw 'WebView2LoaderStatic.lib absent du package NuGet' }
       - name: Configurer CMake / Visual Studio 2022
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release -DJUCE_WEBVIEW2_PACKAGE_LOCATION="${env:RUNNER_TEMP}/NuGetPackages"
       - name: Compiler ALPHA Studio
         run: cmake --build build --config Release --parallel 4
+      - name: Copier WebView2Loader.dll près de l'exécutable
+        shell: pwsh
+        run: |
+          $dll = Join-Path $env:RUNNER_TEMP 'NuGetPackages/Microsoft.Web.WebView2.1.0.1901.177/build/native/x64/WebView2Loader.dll'
+          if (-not (Test-Path $dll)) { throw 'WebView2Loader.dll absent du package NuGet' }
+          Get-ChildItem -Path build -Recurse -Directory -Filter Release | ForEach-Object { Copy-Item $dll $_.FullName -Force }
       - name: Publier l'exécutable et l'interface
         uses: actions/upload-artifact@v4
         with:
           name: ALPHA-Studio-Windows
           path: |
             build/**/Release/*.exe
+            build/**/Release/*.dll
             build/**/Release/UI/AlphaStudio/**
           if-no-files-found: warn
