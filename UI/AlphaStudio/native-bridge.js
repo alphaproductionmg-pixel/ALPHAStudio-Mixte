@@ -37,10 +37,14 @@
         });
       }));
       if (signature !== lastUiSignature) {
-        A.TRACKS.splice(4, A.TRACKS.length - 4, ...nativeTracks);
+        const displayTracks = nativeTracks.length ? nativeTracks : [{
+          id: 'voix', kind: 'folder', name: 'Aucune piste', h: 26,
+          color: '#4f7fa8', open: true, kids: []
+        }];
+        A.TRACKS.splice(4, A.TRACKS.length - 4, ...displayTracks);
         A.PARTS.splice(0, A.PARTS.length, ...nativeParts);
-        A.state.selectedTrack = nativeTracks.length ? nativeTracks[0].id : null;
-        A.state.selTracks = nativeTracks.length ? [nativeTracks[0].id] : [];
+        A.state.selectedTrack = nativeTracks.length ? nativeTracks[0].id : 'voix';
+        A.state.selTracks = nativeTracks.length ? [nativeTracks[0].id] : ['voix'];
         lastUiSignature = signature;
         A.refresh();
       }
